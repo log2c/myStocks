@@ -4,8 +4,10 @@
 #include <QFontMetrics>
 #include <QHeaderView>
 #include <QMouseEvent>
+#include <QPalette>
 #include <QSignalBlocker>
 #include <QShowEvent>
+#include <QStyleFactory>
 #include <QVBoxLayout>
 
 namespace {
@@ -58,6 +60,15 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
     m_table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_table->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_table->setFrameShape(QFrame::NoFrame);
+
+#ifdef WIN32
+    // Windows native style (QWindowsVistaStyle) ignores stylesheet color and
+    // ForegroundRole. Force Fusion so our palette and stylesheet are respected.
+    if (QStyle* fusion = QStyleFactory::create("Fusion")) {
+        m_table->setStyle(fusion);
+        m_table->horizontalHeader()->setStyle(fusion);
+    }
+#endif
 
     m_table->verticalHeader()->setVisible(false);
     m_table->verticalHeader()->setDefaultSectionSize(26);
@@ -212,6 +223,17 @@ void FloatingWindow::applyStyle() {
 
     m_panel->setStyleSheet(css);
     m_table->horizontalHeader()->setVisible(m_cfg.showHeader);
+
+#ifdef WIN32
+    // Sync palette so Fusion style picks up the correct text / base colors.
+    QPalette pal = m_table->palette();
+    pal.setColor(QPalette::Base, Qt::transparent);
+    pal.setColor(QPalette::Text, t);
+    pal.setColor(QPalette::WindowText, t);
+    m_table->setPalette(pal);
+    m_table->viewport()->setPalette(pal);
+    m_table->horizontalHeader()->setPalette(pal);
+#endif
 }
 
 void FloatingWindow::applyColumns() {
