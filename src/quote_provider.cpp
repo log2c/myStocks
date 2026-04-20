@@ -347,7 +347,7 @@ void XTickQuoteProvider::handleResponse(int reqType, const QByteArray& body, con
                     obj,
                     {"name", "stockName", "codeName", "cname", "x001", "n"}
                 );
-                q.name = remoteName.isEmpty() ? stock.name : remoteName;
+                q.name = remoteName;
                 q.price = last;
                 q.change = last - pre;
                 q.pct = qFuzzyIsNull(pre) ? 0.0 : (q.change / pre * 100.0);
@@ -481,7 +481,7 @@ void SinaQuoteProvider::handleResponse(const QByteArray& body, const QString& er
 
         QuoteItem q;
         q.code = stock.code;
-        q.name = remoteName.isEmpty() ? stock.name : remoteName;
+        q.name = remoteName;
         q.price = last;
 
         const double preSafe = (std::isnan(pre) || qFuzzyIsNull(pre)) ? last : pre;
@@ -601,7 +601,7 @@ void TencentQuoteProvider::handleResponse(const QByteArray& body, const QString&
 
         QuoteItem q;
         q.code = stock.code;
-        q.name = remoteName.isEmpty() ? stock.name : remoteName;
+        q.name = remoteName;
         q.price = last;
 
         const double preSafe = (std::isnan(pre) || qFuzzyIsNull(pre)) ? last : pre;
@@ -713,12 +713,8 @@ void EastMoneyQuoteProvider::handleResponse(
 
                     QuoteItem q;
                     q.code = stock.code;
-                    q.name = stock.name;
-
                     const QString remoteName = data.value("f58").toString().trimmed();
-                    if (!remoteName.isEmpty()) {
-                        q.name = remoteName;
-                    }
+                    q.name = remoteName;
 
                     q.price = last;
                     q.change = last - pre;

@@ -4,6 +4,7 @@
 
 #include <QDate>
 #include <QDateTime>
+#include <QHash>
 #include <QNetworkAccessManager>
 #include <QObject>
 #include <QString>
@@ -31,6 +32,8 @@ private:
     void setupTray();
     void setupHotkey();
     void rebuildProvider();
+    int writeApiNamesToDataYaml();
+    QHash<QString, QString> currentApiNamesByCode() const;
     bool shouldPollNow();
     bool isWithinTradingSession(const QDateTime& bjNow) const;
     bool probeTradingDay(const QDate& bjDate);
@@ -40,6 +43,7 @@ private:
     AppConfig m_cfg;
     QString m_resolvedLanguage;
     QVector<StockItem> m_stocks;
+    QHash<QString, QString> m_apiNamesByCode;
 
     QuoteModel* m_model = nullptr;
     FloatingWindow* m_window = nullptr;

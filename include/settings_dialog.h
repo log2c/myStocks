@@ -14,9 +14,15 @@
 #include <QSpinBox>
 #include <QVector>
 
+#include <functional>
+
 class SettingsDialog : public QDialog {
 public:
-    explicit SettingsDialog(const AppConfig& cfg, QWidget* parent = nullptr);
+    explicit SettingsDialog(
+        const AppConfig& cfg,
+        std::function<void()> onWriteStockNames,
+        QWidget* parent = nullptr
+    );
 
     AppConfig config() const;
 
@@ -38,6 +44,7 @@ private:
 
 private:
     AppConfig m_cfg;
+    std::function<void()> m_onWriteStockNames;
     QString m_uiLanguage;
 
     QSpinBox* m_pollSpin = nullptr;
@@ -54,6 +61,7 @@ private:
     QCheckBox* m_logEnabledCheck = nullptr;
     QComboBox* m_logLevelCombo = nullptr;
     QPushButton* m_openLogDirButton = nullptr;
+    QPushButton* m_writeStockNamesButton = nullptr;
 
     QCheckBox* m_transparentBackgroundCheck = nullptr;
     QSlider* m_transparentOpacitySlider = nullptr;

@@ -19,9 +19,11 @@
 #include <QHotkey>
 #endif
 #include <QMenu>
+#include <QMessageBox>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QStyle>
 #include <QSystemTrayIcon>
 #include <QTimer>
@@ -149,7 +151,19 @@ void AppController::toggleWindow() {
 void AppController::openSettings() {
     AppConfig updatedCfg = m_cfg;
     {
-        SettingsDialog dlg(m_cfg, m_window);
+        SettingsDialog dlg(
+            m_cfg,
+            [this]() {
+                const int updatedCount = writeApiNamesToDataYaml();
+                QMessageBox::information(
+                    m_window,
+                    i18n::t("app.name", m_resolvedLanguage),
+                    i18n::t("settings.other.writeStockNamesResult", m_resolvedLanguage)
+                        .arg(updatedCount)
+                );
+            },
+            m_window
+        );
         if (dlg.exec() != QDialog::Accepted) {
             return;
         }
@@ -300,10 +314,184 @@ void AppController::rebuildProvider() {
     m_provider->setLanguage(m_resolvedLanguage);
     m_provider->applyConfig(m_cfg);
 
+    m_apiNamesByCode.clear();
+    const QString sourceAtConnect = m_cfg.apiSource;
+    connect(m_provider, &IQuoteProvider::quotesReady, this, [this, sourceAtConnect](const QVector<QuoteItem>& quotes) {
+        if (sourceAtConnect == "mock") {
+            return;
+        }
+
+        for (const QuoteItem& q : quotes) {
+            const QString code = q.code.trimmed();
+            const QString name = q.name.trimmed();
+            if (code.isEmpty() || name.isEmpty()) {
+                continue;
+            }
+            m_apiNamesByCode.insert(code, name);
+        }
+    });
+
     connect(m_provider, &IQuoteProvider::quotesReady, m_model, &QuoteModel::updateQuotes);
     connect(m_provider, &IQuoteProvider::error, this, [this](const QString& msg) {
         onProviderError(msg);
     });
+}
+
+QHash<QString, QString> AppController::currentApiNamesByCode() const {
+    QHash<QString, QString> out;
+    out.reserve(m_apiNamesByCode.size());
+
+    for (auto it = m_apiNamesByCode.constBegin(); it != m_apiNamesByCode.constEnd(); ++it) {
+        const QString code = it.key().trimmed();
+        const QString name = it.value().trimmed();
+        if (code.isEmpty() || name.isEmpty()) {
+            continue;
+        }
+        out.insert(code, name);
+    }
+
+    return out;
+}
+
+int AppController::writeApiNamesToDataYaml() {
+    const QHash<QString, QString> apiNames = currentApiNamesByCode();
+    if (apiNames.isEmpty()) {
+        return 0;
+    }
+
+    const QString dataPath = findDataYaml();
+    if (dataPath.isEmpty()) {
+        qWarning() << "Write stock names skipped: data.yaml path is empty.";
+        return 0;
+    }
+
+    QFile inFile(dataPath);
+    if (!inFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        qWarning() << "Write stock names skipped: cannot open" << dataPath << inFile.errorString();
+        return 0;
+    }
+
+    const QString original = QString::fromUtf8(inFile.readAll());
+    const bool hadTrailingNewline = original.endsWith('\n');
+    QStringList lines = original.split('\n', Qt::KeepEmptyParts);
+
+    const QRegularExpression reCode("^([ \\t]*)-\\s*code\\s*:\\s*(\\S+)\\s*$");
+    const QRegularExpression reName("^([ \\t]*)name\\s*:\\s*(.*)$");
+
+    bool inStocks = false;
+    int updatedCount = 0;
+
+    for (int i = 0; i < lines.size(); ++i) {
+        const QString line = lines.at(i);
+        const QString trimmed = line.trimmed();
+
+        if (!inStocks) {
+            if (trimmed == "stocks:") {
+                inStocks = true;
+            }
+            continue;
+        }
+
+        if (trimmed.isEmpty() || trimmed.startsWith('#')) {
+            continue;
+        }
+
+        if (!line.startsWith(' ') && trimmed.endsWith(':') && trimmed != "stocks:") {
+            inStocks = false;
+            continue;
+        }
+
+        const QRegularExpressionMatch codeMatch = reCode.match(line);
+        if (!codeMatch.hasMatch()) {
+            continue;
+        }
+
+        const QString codeIndent = codeMatch.captured(1);
+        const QString code = codeMatch.captured(2).trimmed();
+        const QString apiName = apiNames.value(code).trimmed();
+        if (apiName.isEmpty()) {
+            continue;
+        }
+
+        bool hasNameLine = false;
+        int insertAt = i + 1;
+
+        for (int j = i + 1; j < lines.size(); ++j) {
+            const QString nextLine = lines.at(j);
+            const QString nextTrimmed = nextLine.trimmed();
+
+            if (nextTrimmed.isEmpty() || nextTrimmed.startsWith('#')) {
+                insertAt = j + 1;
+                continue;
+            }
+
+            if (reCode.match(nextLine).hasMatch()) {
+                insertAt = j;
+                break;
+            }
+
+            if (!nextLine.startsWith(codeIndent + "  ") && !nextLine.startsWith(codeIndent + "\t")) {
+                insertAt = j;
+                break;
+            }
+
+            const QRegularExpressionMatch nameMatch = reName.match(nextLine);
+            if (nameMatch.hasMatch()) {
+                const QString oldName = nameMatch.captured(2).trimmed();
+                if (oldName != apiName) {
+                    lines[j] = nameMatch.captured(1) + "name: " + apiName;
+                    ++updatedCount;
+                }
+                hasNameLine = true;
+                break;
+            }
+
+            insertAt = j + 1;
+        }
+
+        if (!hasNameLine) {
+            lines.insert(insertAt, codeIndent + "  name: " + apiName);
+            ++updatedCount;
+            ++i;
+        }
+    }
+
+    if (updatedCount <= 0) {
+        return 0;
+    }
+
+    QString updatedContent = lines.join('\n');
+    if (hadTrailingNewline && !updatedContent.endsWith('\n')) {
+        updatedContent.append('\n');
+    }
+
+    QSaveFile outFile(dataPath);
+    if (!outFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        qWarning() << "Write stock names failed: cannot open" << dataPath << outFile.errorString();
+        return 0;
+    }
+
+    const QByteArray bytes = updatedContent.toUtf8();
+    if (outFile.write(bytes) != bytes.size()) {
+        qWarning() << "Write stock names failed: write error" << outFile.errorString();
+        outFile.cancelWriting();
+        return 0;
+    }
+
+    if (!outFile.commit()) {
+        qWarning() << "Write stock names failed: commit error" << outFile.errorString();
+        return 0;
+    }
+
+    for (StockItem& stock : m_stocks) {
+        const QString updatedName = apiNames.value(stock.code).trimmed();
+        if (updatedName.isEmpty()) {
+            continue;
+        }
+        stock.name = updatedName;
+    }
+
+    return updatedCount;
 }
 
 bool AppController::shouldPollNow() {

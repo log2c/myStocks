@@ -11,9 +11,12 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QMessageBox>
 #include <QTabWidget>
 #include <QUrl>
 #include <QVBoxLayout>
+
+#include <utility>
 
 namespace {
 
@@ -40,9 +43,14 @@ QVector<int> normalizedColumnOrder(const QVector<int>& order) {
 
 } // namespace
 
-SettingsDialog::SettingsDialog(const AppConfig& cfg, QWidget* parent)
+SettingsDialog::SettingsDialog(
+    const AppConfig& cfg,
+    std::function<void()> onWriteStockNames,
+    QWidget* parent
+)
     : QDialog(parent)
     , m_cfg(cfg)
+    , m_onWriteStockNames(std::move(onWriteStockNames))
     , m_uiLanguage(i18n::resolveLanguage(cfg.language)) {
     setWindowTitle(trText("settings.title"));
     resize(560, 440);
@@ -404,6 +412,19 @@ QWidget* SettingsDialog::buildOtherTab() {
         QDesktopServices::openUrl(QUrl::fromLocalFile(logDir));
     });
 
+    m_writeStockNamesButton = new QPushButton(trText("settings.other.writeStockNames"), w);
+    connect(m_writeStockNamesButton, &QPushButton::clicked, this, [this]() {
+        if (!m_onWriteStockNames) {
+            QMessageBox::warning(
+                this,
+                trText("app.name"),
+                trText("settings.other.writeStockNamesUnavailable")
+            );
+            return;
+        }
+        m_onWriteStockNames();
+    });
+
     connect(m_logEnabledCheck, &QCheckBox::toggled, this, [this](bool enabled) {
         m_logLevelCombo->setEnabled(enabled);
     });
@@ -414,6 +435,7 @@ QWidget* SettingsDialog::buildOtherTab() {
     form->addRow(m_logEnabledCheck);
     form->addRow(trText("settings.other.logLevel"), m_logLevelCombo);
     form->addRow(m_openLogDirButton);
+    form->addRow(m_writeStockNamesButton);
 
     return w;
 }
