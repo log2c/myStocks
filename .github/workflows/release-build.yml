@@ -86,8 +86,21 @@ jobs:
             throw "MyStocks.exe not found"
           }
 
-          windeployqt --release $exePath
-          $bundleDir = Split-Path -Parent $exePath
+          $bundleDir = "build/windows-bundle"
+          if (Test-Path $bundleDir) {
+            Remove-Item -Recurse -Force $bundleDir
+          }
+
+          New-Item -ItemType Directory -Path $bundleDir | Out-Null
+
+          $bundleExe = Join-Path $bundleDir "MyStocks.exe"
+          Copy-Item -Path $exePath -Destination $bundleExe -Force
+
+          if (Test-Path "data.yaml") {
+            Copy-Item -Path "data.yaml" -Destination (Join-Path $bundleDir "data.yaml") -Force
+          }
+
+          windeployqt --release --no-translations --no-compiler-runtime --dir $bundleDir $bundleExe
           Compress-Archive -Path "$bundleDir/*" -DestinationPath "${{ matrix.artifact_file }}" -Force
 
       - name: Upload artifact
@@ -95,4 +108,5 @@ jobs:
         with:
           name: ${{ matrix.artifact_name }}
           path: ${{ matrix.artifact_file }}
+          compression-level: 9
           if-no-files-found: error
