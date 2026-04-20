@@ -155,9 +155,13 @@ void AppController::toggleWindow() {
 
 void AppController::openSettings() {
     AppConfig updatedCfg = m_cfg;
+    bool accepted = false;
     {
         SettingsDialog dlg(
             m_cfg,
+            m_stocks,
+            currentApiNamesByCode(),
+            findDataYaml(),
             [this]() {
                 const int updatedCount = writeApiNamesToDataYaml();
                 QMessageBox::information(
@@ -169,10 +173,32 @@ void AppController::openSettings() {
             },
             m_window
         );
-        if (dlg.exec() != QDialog::Accepted) {
-            return;
+        accepted = (dlg.exec() == QDialog::Accepted);
+        if (accepted) {
+            updatedCfg = dlg.config();
         }
-        updatedCfg = dlg.config();
+    }
+
+    // Always reload stocks from yaml: the stocks tab may have saved changes.
+    {
+        const QString dataPath = findDataYaml();
+        if (!dataPath.isEmpty()) {
+            const QVector<StockItem> reloaded = ConfigManager::loadStocksFromYaml(dataPath);
+            if (!reloaded.isEmpty()) {
+                m_stocks = reloaded;
+                m_apiNamesByCode.clear();
+                if (m_model) {
+                    m_model->setStocks(m_stocks);
+                }
+            }
+        }
+    }
+
+    if (!accepted) {
+        if (m_provider) {
+            m_provider->fetchQuotes(m_stocks);
+        }
+        return;
     }
 
     m_cfg = updatedCfg;

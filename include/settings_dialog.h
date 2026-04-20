@@ -5,6 +5,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
+#include <QHash>
 #include <QKeySequenceEdit>
 #include <QLabel>
 #include <QLineEdit>
@@ -16,10 +17,18 @@
 
 #include <functional>
 
+class QNetworkAccessManager;
+class QNetworkReply;
+class QTableWidget;
+class QTimer;
+
 class SettingsDialog : public QDialog {
 public:
     explicit SettingsDialog(
         const AppConfig& cfg,
+        const QVector<StockItem>& stocks,
+        const QHash<QString, QString>& apiNamesByCode,
+        const QString& dataYamlPath,
         std::function<void()> onWriteStockNames,
         QWidget* parent = nullptr
     );
@@ -41,9 +50,17 @@ private:
     QWidget* buildNetworkTab();
     QWidget* buildDisplayTab();
     QWidget* buildOtherTab();
+    QWidget* buildStocksTab();
+    QWidget* buildAboutTab();
+
+    void parseSinaSearchResult(const QByteArray& data);
+    void doStockSearch(bool forceSearch = false);
 
 private:
     AppConfig m_cfg;
+    QVector<StockItem> m_stocks;
+    QHash<QString, QString> m_apiNamesByCode;
+    QString m_dataYamlPath;
     std::function<void()> m_onWriteStockNames;
     QString m_uiLanguage;
 
@@ -83,4 +100,14 @@ private:
     QListWidget* m_columnList = nullptr;
     QVector<QSpinBox*> m_columnMaxWidthSpins;
     bool m_normalizingHotkeySequence = false;
+
+    // Stocks tab
+    QComboBox* m_stockMarketCombo = nullptr;
+    QLineEdit* m_stockSearchEdit = nullptr;
+    QPushButton* m_stockSearchBtn = nullptr;
+    QTimer* m_stockSearchDebounce = nullptr;
+    QNetworkAccessManager* m_stockSearchNam = nullptr;
+    QNetworkReply* m_stockSearchReply = nullptr;
+    QListWidget* m_stockSuggestList = nullptr;
+    QTableWidget* m_stockTable = nullptr;
 };

@@ -112,6 +112,9 @@ void fileMessageHandler(QtMsgType type, const QMessageLogContext&, const QString
         g_logFile.flush();
     }
 
+    // Always mirror to stderr so terminal output works during development.
+    std::fputs(line.constData(), stderr);
+
     if (type == QtFatalMsg) {
         std::abort();
     }

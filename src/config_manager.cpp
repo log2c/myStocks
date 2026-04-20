@@ -6,6 +6,7 @@
 #include <QDebug>
 #include <QFile>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QSet>
 #include <QSettings>
 
@@ -82,6 +83,32 @@ QVector<StockItem> ConfigManager::loadStocksFromYaml(const QString& filePath) {
     }
 
     return out;
+}
+
+bool ConfigManager::saveStocksToYaml(const QString& filePath, const QVector<StockItem>& stocks) {
+    if (filePath.isEmpty()) {
+        return false;
+    }
+
+    QString content;
+    content += QStringLiteral("ver: 1\n\n");
+    content += QStringLiteral("# stocks\n");
+    content += QStringLiteral("stocks:\n");
+    for (const StockItem& s : stocks) {
+        content += QStringLiteral("  - code: ") + s.code + QStringLiteral("\n");
+        content += QStringLiteral("    name: ") + s.name + QStringLiteral("\n");
+    }
+
+    QSaveFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        return false;
+    }
+    const QByteArray bytes = content.toUtf8();
+    if (file.write(bytes) != bytes.size()) {
+        file.cancelWriting();
+        return false;
+    }
+    return file.commit();
 }
 
 AppConfig ConfigManager::loadConfig() {

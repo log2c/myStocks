@@ -114,6 +114,11 @@ if(WIN32)
     endif()
 endif()
 
+target_compile_definitions(MyStocks PRIVATE
+    APP_VERSION_STRING="${PROJECT_VERSION}"
+    APP_GITHUB_URL="https://github.com/chenshu/myStocks"
+)
+
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     target_compile_definitions(MyStocks PRIVATE DEBUG_MODE SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 endif()

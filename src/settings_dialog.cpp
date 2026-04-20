@@ -1,24 +1,220 @@
 #include "settings_dialog.h"
 
 #include "app_logging.h"
+#include "config_manager.h"
 #include "i18n.h"
+#include "network_utils.h"
 
 #include <QAbstractItemView>
 #include <QColorDialog>
 #include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDropEvent>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QHeaderView>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QMessageBox>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QPixmap>
+#include <QStringConverter>
+#include <QTableWidget>
 #include <QTabWidget>
+#include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include <functional>
 #include <utility>
 
 namespace {
+
+class StockTableWidget : public QTableWidget {
+public:
+    explicit StockTableWidget(QWidget* parent = nullptr)
+        : QTableWidget(0, 4, parent) {
+        setSelectionBehavior(QAbstractItemView::SelectRows);
+        setSelectionMode(QAbstractItemView::SingleSelection);
+        setDragDropMode(QAbstractItemView::NoDragDrop);
+        setEditTriggers(QAbstractItemView::NoEditTriggers);
+        verticalHeader()->setVisible(false);
+        horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+        horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+        horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+        horizontalHeader()->setSectionResizeMode(3, QHeaderView::Fixed);
+        horizontalHeader()->setStretchLastSection(false);
+        setColumnWidth(3, 64);
+    }
+
+protected:
+    void keyPressEvent(QKeyEvent* e) override {
+        const int row = currentRow();
+        if (e->key() == Qt::Key_Up && (e->modifiers() & Qt::AltModifier) == 0) {
+            if (row > 0) {
+                const int newRow = moveRowUp(row);
+                if (newRow >= 0) setCurrentCell(newRow, 0);
+            }
+            e->accept();
+            return;
+        }
+        if (e->key() == Qt::Key_Down && (e->modifiers() & Qt::AltModifier) == 0) {
+            if (row >= 0 && row < rowCount() - 1) {
+                const int newRow = moveRowDown(row);
+                if (newRow >= 0) setCurrentCell(newRow, 0);
+            }
+            e->accept();
+            return;
+        }
+        QTableWidget::keyPressEvent(e);
+    }
+
+public:
+    // confirmDelete: receives display text (code + name), returns true to proceed
+    void setConfirmDelete(std::function<bool(const QString&)> fn) {
+        m_confirmDelete = std::move(fn);
+    }
+
+    void addStockRow(const QString& code, const QString& name) {
+        const int row = rowCount();
+        insertRow(row);
+        populateRow(row, code, name);
+        renumberRows();
+    }
+
+    bool containsCode(const QString& code) const {
+        for (int r = 0; r < rowCount(); ++r) {
+            if (item(r, 1) && item(r, 1)->text() == code) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    QVector<StockItem> stocks() const {
+        QVector<StockItem> result;
+        result.reserve(rowCount());
+        for (int r = 0; r < rowCount(); ++r) {
+            const QString code = item(r, 1) ? item(r, 1)->text() : QString();
+            const QString name = item(r, 2) ? item(r, 2)->text() : QString();
+            if (!code.isEmpty()) {
+                result.push_back({code, name});
+            }
+        }
+        return result;
+    }
+
+    // Returns the new row index, or -1 if nothing moved.
+    int moveRowUp(int row) {
+        if (row <= 0 || row >= rowCount()) return -1;
+        return swapRows(row, row - 1);
+    }
+
+    int moveRowDown(int row) {
+        if (row < 0 || row >= rowCount() - 1) return -1;
+        return swapRows(row, row + 1);
+    }
+
+    int moveRowTop(int row) {
+        if (row <= 0 || row >= rowCount()) return -1;
+        const QString code = item(row, 1) ? item(row, 1)->text() : QString();
+        const QString name = item(row, 2) ? item(row, 2)->text() : QString();
+        removeRow(row);
+        insertRow(0);
+        populateRow(0, code, name);
+        renumberRows();
+        selectRow(0);
+        return 0;
+    }
+
+    int moveRowBottom(int row) {
+        if (row < 0 || row >= rowCount() - 1) return -1;
+        const QString code = item(row, 1) ? item(row, 1)->text() : QString();
+        const QString name = item(row, 2) ? item(row, 2)->text() : QString();
+        removeRow(row);
+        const int newRow = rowCount();
+        insertRow(newRow);
+        populateRow(newRow, code, name);
+        renumberRows();
+        selectRow(newRow);
+        return newRow;
+    }
+
+private:
+    int swapRows(int a, int b) {
+        // b is always a+1 or a-1; do a single remove+insert to keep cell widgets intact
+        const int lo = qMin(a, b);
+        const int hi = qMax(a, b);
+        const QString codeA = item(lo, 1) ? item(lo, 1)->text() : QString();
+        const QString nameA = item(lo, 2) ? item(lo, 2)->text() : QString();
+        const QString codeB = item(hi, 1) ? item(hi, 1)->text() : QString();
+        const QString nameB = item(hi, 2) ? item(hi, 2)->text() : QString();
+
+        removeRow(hi);
+        removeRow(lo);
+        insertRow(lo);
+        populateRow(lo, codeB, nameB);
+        insertRow(hi);
+        populateRow(hi, codeA, nameA);
+
+        renumberRows();
+        // a moved to: if a was the higher row (moved up), it's now at lo; if lower (moved down), at hi
+        const int newCurrent = (a > b) ? lo : hi;
+        selectRow(newCurrent);
+        return newCurrent;
+    }
+
+    void populateRow(int row, const QString& code, const QString& name) {
+        QTableWidgetItem* seqItem = new QTableWidgetItem(QString::number(row + 1));
+        seqItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        setItem(row, 0, seqItem);
+
+        QTableWidgetItem* codeItem = new QTableWidgetItem(code);
+        codeItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        setItem(row, 1, codeItem);
+
+        QTableWidgetItem* nameItem = new QTableWidgetItem(name);
+        nameItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        setItem(row, 2, nameItem);
+
+        QPushButton* delBtn = new QPushButton(QStringLiteral("\u2715 Del"));
+        delBtn->setFlat(true);
+        setCellWidget(row, 3, delBtn);
+
+        connect(delBtn, &QPushButton::clicked, this, [this]() {
+            QPushButton* btn = qobject_cast<QPushButton*>(sender());
+            if (!btn) {
+                return;
+            }
+            for (int r = 0; r < rowCount(); ++r) {
+                if (cellWidget(r, 3) == btn) {
+                    const QString code = item(r, 1) ? item(r, 1)->text() : QString();
+                    const QString name = item(r, 2) ? item(r, 2)->text() : QString();
+                    const QString display = code + (name.isEmpty() ? QString() : (QStringLiteral(" ") + name));
+                    if (m_confirmDelete && !m_confirmDelete(display)) {
+                        return;
+                    }
+                    removeRow(r);
+                    renumberRows();
+                    return;
+                }
+            }
+        });
+    }
+
+    void renumberRows() {
+        for (int r = 0; r < rowCount(); ++r) {
+            if (QTableWidgetItem* it = item(r, 0)) {
+                it->setText(QString::number(r + 1));
+            }
+        }
+    }
+
+    std::function<bool(const QString&)> m_confirmDelete;
+};
 
 QVector<int> normalizedColumnOrder(const QVector<int>& order) {
     QVector<int> out;
@@ -70,31 +266,52 @@ QKeySequence normalizedHotkeySequence(const QKeySequence& sequence) {
 
 SettingsDialog::SettingsDialog(
     const AppConfig& cfg,
+    const QVector<StockItem>& stocks,
+    const QHash<QString, QString>& apiNamesByCode,
+    const QString& dataYamlPath,
     std::function<void()> onWriteStockNames,
     QWidget* parent
 )
     : QDialog(parent)
     , m_cfg(cfg)
+    , m_stocks(stocks)
+    , m_apiNamesByCode(apiNamesByCode)
+    , m_dataYamlPath(dataYamlPath)
     , m_onWriteStockNames(std::move(onWriteStockNames))
     , m_uiLanguage(i18n::resolveLanguage(cfg.language)) {
     setWindowTitle(trText("settings.title"));
-    resize(560, 440);
+    setWindowFlags(windowFlags() & ~Qt::WindowMaximizeButtonHint);
+    resize(600, 560);
 
     QVBoxLayout* root = new QVBoxLayout(this);
     QTabWidget* tabs = new QTabWidget(this);
     tabs->addTab(buildGeneralTab(), trText("settings.tab.general"));
     tabs->addTab(buildNetworkTab(), trText("settings.tab.network"));
     tabs->addTab(buildDisplayTab(), trText("settings.tab.display"));
+    tabs->addTab(buildStocksTab(), trText("settings.tab.stocks"));
     tabs->addTab(buildOtherTab(), trText("settings.tab.other"));
+    tabs->addTab(buildAboutTab(), trText("settings.tab.about"));
     root->addWidget(tabs);
 
     QDialogButtonBox* box = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
         this
     );
+    // Disable AutoDefault so pressing Enter does not close the dialog
+    if (auto* okBtn = box->button(QDialogButtonBox::Ok)) {
+        okBtn->setAutoDefault(false);
+        okBtn->setDefault(false);
+    }
+    if (auto* cancelBtn = box->button(QDialogButtonBox::Cancel)) {
+        cancelBtn->setAutoDefault(false);
+        cancelBtn->setDefault(false);
+    }
     connect(box, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(box, &QDialogButtonBox::rejected, this, &QDialog::reject);
     root->addWidget(box);
+
+    // Prevent user from resizing the dialog
+    layout()->setSizeConstraint(QLayout::SetFixedSize);
 }
 
 AppConfig SettingsDialog::config() const {
@@ -524,5 +741,477 @@ QWidget* SettingsDialog::buildOtherTab() {
     form->addRow(m_openLogDirButton);
     form->addRow(m_writeStockNamesButton);
 
+    return w;
+}
+
+QWidget* SettingsDialog::buildStocksTab() {
+    QWidget* w = new QWidget(this);
+    QVBoxLayout* vbox = new QVBoxLayout(w);
+    vbox->setSpacing(6);
+    vbox->setContentsMargins(8, 8, 8, 8);
+
+    // --- Search row ---
+    QWidget* searchRow = new QWidget(w);
+    QHBoxLayout* searchLayout = new QHBoxLayout(searchRow);
+    searchLayout->setContentsMargins(0, 0, 0, 0);
+    searchLayout->setSpacing(6);
+
+    m_stockMarketCombo = new QComboBox(searchRow);
+    m_stockMarketCombo->addItem(trText("settings.stocks.market1"), QStringLiteral("1"));
+    m_stockMarketCombo->addItem(trText("settings.stocks.market2"), QStringLiteral("2"));
+    m_stockMarketCombo->addItem(trText("settings.stocks.market3"), QStringLiteral("3"));
+    m_stockMarketCombo->addItem(trText("settings.stocks.market4"), QStringLiteral("4"));
+    m_stockMarketCombo->addItem(trText("settings.stocks.market5"), QStringLiteral("5"));
+    m_stockMarketCombo->addItem(trText("settings.stocks.market6"), QString());
+
+    m_stockSearchEdit = new QLineEdit(searchRow);
+    m_stockSearchEdit->setPlaceholderText(trText("settings.stocks.searchPlaceholder"));
+
+    m_stockSearchBtn = new QPushButton(trText("settings.stocks.search"), searchRow);
+
+    searchLayout->addWidget(m_stockMarketCombo);
+    searchLayout->addWidget(m_stockSearchEdit, 1);
+    searchLayout->addWidget(m_stockSearchBtn);
+    vbox->addWidget(searchRow);
+
+    // --- Suggestion list (floating overlay, not in layout) ---
+    m_stockSuggestList = new QListWidget(this);
+    m_stockSuggestList->setMaximumHeight(160);
+    m_stockSuggestList->setFrameShape(QFrame::StyledPanel);
+    m_stockSuggestList->hide();
+    // Not added to vbox — positioned absolutely when shown
+
+    // --- Stock table + order buttons ---
+    StockTableWidget* table = new StockTableWidget(w);
+    table->setHorizontalHeaderLabels({
+        trText("settings.stocks.colSeq"),
+        trText("settings.stocks.colCode"),
+        trText("settings.stocks.colName"),
+        trText("settings.stocks.colDel")
+    });
+    table->setMinimumHeight(220);
+
+    for (const StockItem& s : m_stocks) {
+        // Use API name if available, fall back to stored name
+        const QString displayName = m_apiNamesByCode.value(s.code, s.name);
+        table->addStockRow(s.code, displayName);
+    }
+
+    m_stockTable = table;
+    table->setConfirmDelete([this](const QString& display) -> bool {
+        const int ret = QMessageBox::question(
+            this,
+            trText("app.name"),
+            trText("settings.stocks.delConfirm").arg(display),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No
+        );
+        return ret == QMessageBox::Yes;
+    });
+
+    // Order buttons column on the right
+    QWidget* tableArea = new QWidget(w);
+    QHBoxLayout* tableAreaLayout = new QHBoxLayout(tableArea);
+    tableAreaLayout->setContentsMargins(0, 0, 0, 0);
+    tableAreaLayout->setSpacing(4);
+    tableAreaLayout->addWidget(m_stockTable, 1);
+
+    QWidget* orderBtnCol = new QWidget(tableArea);
+    QVBoxLayout* orderBtnLayout = new QVBoxLayout(orderBtnCol);
+    orderBtnLayout->setContentsMargins(0, 0, 0, 0);
+    orderBtnLayout->setSpacing(4);
+
+    auto makeOrderBtn = [&](const QString& label) -> QPushButton* {
+        QPushButton* btn = new QPushButton(label, orderBtnCol);
+        btn->setFixedWidth(60);
+        return btn;
+    };
+
+    QPushButton* btnTop    = makeOrderBtn(trText("settings.stocks.moveTop"));
+    QPushButton* btnUp     = makeOrderBtn(trText("settings.stocks.moveUp"));
+    QPushButton* btnDown   = makeOrderBtn(trText("settings.stocks.moveDown"));
+    QPushButton* btnBottom = makeOrderBtn(trText("settings.stocks.moveBottom"));
+
+    orderBtnLayout->addStretch();
+    orderBtnLayout->addWidget(btnTop);
+    orderBtnLayout->addWidget(btnUp);
+    orderBtnLayout->addWidget(btnDown);
+    orderBtnLayout->addWidget(btnBottom);
+    orderBtnLayout->addStretch();
+
+    tableAreaLayout->addWidget(orderBtnCol);
+    vbox->addWidget(tableArea, 1);
+
+    // --- Buttons row ---
+    QWidget* btnRow = new QWidget(w);
+    QHBoxLayout* btnLayout = new QHBoxLayout(btnRow);
+    btnLayout->setContentsMargins(0, 0, 0, 0);
+    QPushButton* saveBtn = new QPushButton(trText("settings.stocks.save"), btnRow);
+    QPushButton* resetBtn = new QPushButton(trText("settings.stocks.reset"), btnRow);
+    btnLayout->addStretch();
+    btnLayout->addWidget(saveBtn);
+    btnLayout->addWidget(resetBtn);
+    vbox->addWidget(btnRow);
+
+    // --- Network setup ---
+    m_stockSearchNam = new QNetworkAccessManager(this);
+    m_stockSearchNam->setProxy(network_utils::proxyFromConfig(m_cfg));
+
+    m_stockSearchDebounce = new QTimer(this);
+    m_stockSearchDebounce->setSingleShot(true);
+    m_stockSearchDebounce->setInterval(400);
+
+    // --- Connections ---
+
+    // Order buttons
+    auto currentTableRow = [this]() -> int {
+        return m_stockTable->currentRow();
+    };
+    connect(btnTop, &QPushButton::clicked, this, [this, currentTableRow]() {
+        const int newRow = static_cast<StockTableWidget*>(m_stockTable)->moveRowTop(currentTableRow());
+        m_stockTable->setCurrentCell(newRow, 0);
+    });
+    connect(btnUp, &QPushButton::clicked, this, [this, currentTableRow]() {
+        const int newRow = static_cast<StockTableWidget*>(m_stockTable)->moveRowUp(currentTableRow());
+        m_stockTable->setCurrentCell(newRow, 0);
+    });
+    connect(btnDown, &QPushButton::clicked, this, [this, currentTableRow]() {
+        const int newRow = static_cast<StockTableWidget*>(m_stockTable)->moveRowDown(currentTableRow());
+        m_stockTable->setCurrentCell(newRow, 0);
+    });
+    connect(btnBottom, &QPushButton::clicked, this, [this, currentTableRow]() {
+        const int newRow = static_cast<StockTableWidget*>(m_stockTable)->moveRowBottom(currentTableRow());
+        m_stockTable->setCurrentCell(newRow, 0);
+    });
+
+    // Filter spaces; trigger debounce on 3+ chars
+    connect(m_stockSearchEdit, &QLineEdit::textEdited, this, [this](const QString& rawText) {
+        qInfo() << "[StockSearch] textEdited:" << rawText;
+        QString text = rawText;
+        text.remove(QLatin1Char(' '));
+        if (text != rawText) {
+            m_stockSearchEdit->setText(text);
+        }
+        if (text.length() < 3) {
+            m_stockSearchDebounce->stop();
+            m_stockSuggestList->clear();
+            m_stockSuggestList->hide();
+            return;
+        }
+        qInfo() << "[StockSearch] starting debounce for:" << text;
+        m_stockSearchDebounce->start();
+    });
+
+    // When market type changes, re-trigger search if text is ready
+    connect(m_stockMarketCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        if (m_stockSearchEdit->text().length() >= 3) {
+            m_stockSearchDebounce->start();
+        }
+    });
+
+    // Manual search button: fire immediately (bypass debounce and min-length)
+    connect(m_stockSearchBtn, &QPushButton::clicked, this, [this]() {
+        qInfo() << "[StockSearch] button clicked, keyword:" << m_stockSearchEdit->text();
+        m_stockSearchDebounce->stop();
+        doStockSearch(true);
+    });
+
+    // Debounce fires: make network request
+    connect(m_stockSearchDebounce, &QTimer::timeout, this, [this]() {
+        doStockSearch();
+    });
+
+    // Click on suggestion: add to table
+    connect(m_stockSuggestList, &QListWidget::itemClicked, this, [this](QListWidgetItem* listItem) {
+        if (!listItem) {
+            return;
+        }
+        const QString code = listItem->data(Qt::UserRole).toString();
+        const QString name = listItem->data(Qt::UserRole + 1).toString();
+        if (code.isEmpty()) {
+            return;
+        }
+
+        StockTableWidget* tbl = static_cast<StockTableWidget*>(m_stockTable);
+        if (tbl->containsCode(code)) {
+            QMessageBox::information(
+                this,
+                trText("app.name"),
+                trText("settings.stocks.duplicate")
+            );
+        } else {
+            tbl->addStockRow(code, name);
+        }
+
+        m_stockSuggestList->clear();
+        m_stockSuggestList->hide();
+        m_stockSearchEdit->clear();
+    });
+
+    // Save button: write current table to data.yaml
+    connect(saveBtn, &QPushButton::clicked, this, [this]() {
+        if (m_dataYamlPath.isEmpty()) {
+            QMessageBox::warning(this, trText("app.name"), trText("settings.stocks.saveFail"));
+            return;
+        }
+        const QVector<StockItem> stocks =
+            static_cast<StockTableWidget*>(m_stockTable)->stocks();
+        if (ConfigManager::saveStocksToYaml(m_dataYamlPath, stocks)) {
+            QMessageBox::information(this, trText("app.name"), trText("settings.stocks.saveOk"));
+        } else {
+            QMessageBox::warning(this, trText("app.name"), trText("settings.stocks.saveFail"));
+        }
+    });
+
+    // Reset button: reload from data.yaml and repopulate
+    connect(resetBtn, &QPushButton::clicked, this, [this]() {
+        // Clear search state
+        m_stockSearchEdit->clear();
+        m_stockSuggestList->clear();
+        m_stockSuggestList->hide();
+        if (m_stockSearchDebounce) {
+            m_stockSearchDebounce->stop();
+        }
+        if (m_stockSearchReply) {
+            m_stockSearchReply->abort();
+            m_stockSearchReply->deleteLater();
+            m_stockSearchReply = nullptr;
+        }
+
+        // Reload stocks from yaml
+        QVector<StockItem> loaded;
+        if (!m_dataYamlPath.isEmpty()) {
+            loaded = ConfigManager::loadStocksFromYaml(m_dataYamlPath);
+        }
+
+        // Rebuild table
+        StockTableWidget* tbl = static_cast<StockTableWidget*>(m_stockTable);
+        tbl->setRowCount(0);
+        for (const StockItem& s : loaded) {
+            tbl->addStockRow(s.code, s.name);
+        }
+    });
+
+    return w;
+}
+
+void SettingsDialog::parseSinaSearchResult(const QByteArray& data) {
+    if (data.isEmpty()) {
+        qInfo() << "[StockSearch] parseSinaSearchResult: empty data";
+        m_stockSuggestList->clear();
+        m_stockSuggestList->hide();
+        return;
+    }
+
+    // Sina suggest API returns GBK-encoded text; decode accordingly.
+    QString response;
+    auto decoder = QStringDecoder(QStringDecoder::System);
+    // Try GB18030 first (superset of GBK/GB2312)
+    auto gb18030 = QStringDecoder("GB18030");
+    if (gb18030.isValid()) {
+        response = gb18030.decode(data);
+    } else {
+        // Fallback: system encoding or UTF-8
+        response = decoder.isValid() ? decoder.decode(data) : QString::fromUtf8(data);
+    }
+
+    qInfo() << "[StockSearch] parseSinaSearchResult response:" << response.left(300);
+
+    // Response format: var suggestvalue="name,type,short,name,pinyin,fullcode,...|..."
+    const int startQuote = response.indexOf(QLatin1Char('"'));
+    const int endQuote = response.lastIndexOf(QLatin1Char('"'));
+    if (startQuote < 0 || endQuote <= startQuote) {
+        qInfo() << "[StockSearch] No quoted content found in response";
+        m_stockSuggestList->clear();
+        m_stockSuggestList->hide();
+        return;
+    }
+
+    const QString content = response.mid(startQuote + 1, endQuote - startQuote - 1).trimmed();
+    if (content.isEmpty()) {
+        qInfo() << "[StockSearch] Quoted content is empty";
+        m_stockSuggestList->clear();
+        m_stockSuggestList->hide();
+        return;
+    }
+
+    qInfo() << "[StockSearch] Parsed content:" << content.left(300);
+
+    const QStringList entries = content.split(QLatin1Char(';'), Qt::SkipEmptyParts);
+
+    // When market type is empty (ETF mode), only keep type=203 entries
+    const bool etfModeOnly = m_stockMarketCombo->currentData().toString().isEmpty();
+
+    m_stockSuggestList->clear();
+
+    for (const QString& entry : entries) {
+        const QStringList fields = entry.split(QLatin1Char(','));
+        qInfo() << "[StockSearch] entry fields count:" << fields.size() << fields;
+        if (fields.size() < 4) {
+            continue;
+        }
+        const QString typeStr = fields.at(1).trimmed();
+
+        // ETF (type=203): name,type,shortcode,fullcode,...  → [0]=name, [3]=fullcode
+        // Others (type=1/2/3/4/5): fullcode,type,shortcode,fullcode,name,...  → [0]=fullcode, [4]=name
+        QString fullCode, name;
+        if (typeStr == QLatin1String("203")) {
+            fullCode = fields.at(3).trimmed();
+            name     = fields.at(0).trimmed();
+        } else {
+            if (etfModeOnly) {
+                continue;  // ETF mode: skip non-ETF entries
+            }
+            if (fields.size() < 5) {
+                continue;
+            }
+            fullCode = fields.at(0).trimmed();
+            name     = fields.at(4).trimmed();
+        }
+
+        if (fullCode.isEmpty()) {
+            continue;
+        }
+
+        const QString displayText = fullCode + QStringLiteral(" - ") + name;
+        QListWidgetItem* item = new QListWidgetItem(displayText, m_stockSuggestList);
+        item->setData(Qt::UserRole, fullCode);
+        item->setData(Qt::UserRole + 1, name);
+    }
+
+    qInfo() << "[StockSearch] suggestion count:" << m_stockSuggestList->count();
+
+    if (m_stockSuggestList->count() > 0) {
+        // Position floating list below the search edit, overlaying the table
+        const QPoint topLeft = m_stockSearchEdit->mapTo(this,
+            QPoint(0, m_stockSearchEdit->height() + 2));
+        const int w = m_stockSearchEdit->width() + 6 + m_stockSearchBtn->width();
+        const int itemH = m_stockSuggestList->sizeHintForRow(0);
+        const int h = qMin(m_stockSuggestList->count() * (itemH > 0 ? itemH : 22) + 6, 160);
+        m_stockSuggestList->setGeometry(topLeft.x(), topLeft.y(), w, h);
+        m_stockSuggestList->raise();
+        m_stockSuggestList->setVisible(true);
+    } else {
+        m_stockSuggestList->setVisible(false);
+    }
+}
+
+void SettingsDialog::doStockSearch(bool forceSearch) {
+    qInfo() << "[StockSearch] doStockSearch called"
+             << "edit:" << (m_stockSearchEdit ? "ok" : "null")
+             << "nam:" << (m_stockSearchNam ? "ok" : "null");
+    if (!m_stockSearchEdit || !m_stockSearchNam) {
+        return;
+    }
+
+    const QString keyword = m_stockSearchEdit->text().trimmed();
+    qInfo() << "[StockSearch] keyword:" << keyword << "length:" << keyword.length();
+    if (!forceSearch && keyword.length() < 3) {
+        return;
+    }
+    if (keyword.isEmpty()) {
+        return;
+    }
+
+    // Cancel in-flight request
+    if (m_stockSearchReply) {
+        m_stockSearchReply->abort();
+        m_stockSearchReply->deleteLater();
+        m_stockSearchReply = nullptr;
+    }
+
+    const QString marketType = m_stockMarketCombo->currentData().toString();
+    const QUrl url(
+        QStringLiteral("http://suggest3.sinajs.cn/suggest/type=")
+        + marketType
+        + QStringLiteral("&key=")
+        + QString::fromUtf8(QUrl::toPercentEncoding(keyword))
+        + QStringLiteral("&name=myStocksApp")
+    );
+
+    qInfo() << "[StockSearch] GET" << url.toString();
+
+    QNetworkRequest req(url);
+    req.setHeader(
+        QNetworkRequest::UserAgentHeader,
+        network_utils::effectiveUserAgent(m_cfg)
+    );
+    req.setRawHeader("Referer", "https://finance.sina.com.cn");
+
+    m_stockSearchReply = m_stockSearchNam->get(req);
+    connect(m_stockSearchReply, &QNetworkReply::finished, this, [this]() {
+        if (!m_stockSearchReply) {
+            return;
+        }
+        const int httpStatus = m_stockSearchReply->attribute(
+            QNetworkRequest::HttpStatusCodeAttribute
+        ).toInt();
+        const QNetworkReply::NetworkError netErr = m_stockSearchReply->error();
+        const QByteArray data = m_stockSearchReply->readAll();
+        m_stockSearchReply->deleteLater();
+        m_stockSearchReply = nullptr;
+
+        if (netErr != QNetworkReply::NoError) {
+            qWarning() << "[StockSearch] Network error" << netErr
+                       << "HTTP status" << httpStatus;
+        } else {
+            qInfo() << "[StockSearch] HTTP" << httpStatus
+                     << "body size" << data.size()
+                     << "preview:" << data.left(200);
+        }
+
+        parseSinaSearchResult(data);
+    });
+}
+
+QWidget* SettingsDialog::buildAboutTab() {
+    QWidget* w = new QWidget(this);
+    QVBoxLayout* vbox = new QVBoxLayout(w);
+    vbox->setAlignment(Qt::AlignCenter);
+    vbox->setSpacing(12);
+    vbox->setContentsMargins(24, 32, 24, 32);
+
+    // Icon
+    QLabel* iconLabel = new QLabel(w);
+    QPixmap pm(QLatin1String(":/icon.png"));
+    if (!pm.isNull()) {
+        iconLabel->setPixmap(pm.scaled(64, 64, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    }
+    iconLabel->setAlignment(Qt::AlignCenter);
+    vbox->addWidget(iconLabel);
+
+    // App name
+    QLabel* nameLabel = new QLabel(trText("app.name"), w);
+    QFont nameFont = nameLabel->font();
+    nameFont.setPointSize(nameFont.pointSize() + 6);
+    nameFont.setBold(true);
+    nameLabel->setFont(nameFont);
+    nameLabel->setAlignment(Qt::AlignCenter);
+    vbox->addWidget(nameLabel);
+
+    // Version
+    const QString versionStr = QString::fromLatin1(APP_VERSION_STRING);
+    QLabel* versionLabel = new QLabel(
+        trText("settings.about.version") + QLatin1String(": ") + versionStr, w
+    );
+    versionLabel->setAlignment(Qt::AlignCenter);
+    vbox->addWidget(versionLabel);
+
+    vbox->addSpacing(8);
+
+    // GitHub link
+    const QString githubUrl = QString::fromLatin1(APP_GITHUB_URL);
+    QLabel* linkLabel = new QLabel(w);
+    linkLabel->setText(
+        trText("settings.about.github") +
+        QLatin1String(": <a href=\"") + githubUrl + QLatin1String("\">") +
+        githubUrl + QLatin1String("</a>")
+    );
+    linkLabel->setAlignment(Qt::AlignCenter);
+    linkLabel->setOpenExternalLinks(true);
+    linkLabel->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    vbox->addWidget(linkLabel);
+
+    vbox->addStretch();
     return w;
 }
