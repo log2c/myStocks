@@ -10,6 +10,13 @@
 #include <QStyleFactory>
 #include <QVBoxLayout>
 
+#ifdef WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace {
 
 QVector<int> normalizedColumnOrder(const QVector<int>& order) {
@@ -38,8 +45,15 @@ QVector<int> normalizedColumnOrder(const QVector<int>& order) {
 FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
     : QWidget(parent)
     , m_model(model) {
-    // Qt::Tool suppresses the taskbar entry on Windows while keeping top-most behavior
-    setWindowFlags(Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+    Qt::WindowFlags flags = Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint;
+#ifdef WIN32
+    // Qt::Tool suppresses the taskbar entry on Windows.
+    flags |= Qt::Tool;
+#else
+    // Use a normal top-level window on non-Windows to avoid tool-window stacking quirks.
+    flags |= Qt::Window;
+#endif
+    setWindowFlags(flags);
     setAttribute(Qt::WA_TranslucentBackground, true);
 
     QVBoxLayout* root = new QVBoxLayout(this);
@@ -131,6 +145,8 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
         auto* mouseEvent = static_cast<QMouseEvent*>(event);
         if (mouseEvent->button() == Qt::LeftButton) {
             m_dragging = false;
+            releaseMouse();
+            enforceTopMost(false);
             return true;
         }
         break;
@@ -152,6 +168,11 @@ void FloatingWindow::applyConfig(const AppConfig& cfg) {
 
     applyStyle();
     applyColumns();
+
+    if (isVisible()) {
+        // Re-assert top-most after style/geometry changes.
+        enforceTopMost(false);
+    }
 }
 
 void FloatingWindow::mousePressEvent(QMouseEvent* event) {
@@ -175,6 +196,7 @@ void FloatingWindow::mouseReleaseEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
         m_dragging = false;
         releaseMouse();
+        enforceTopMost(false);
     }
     QWidget::mouseReleaseEvent(event);
 }
@@ -182,9 +204,41 @@ void FloatingWindow::mouseReleaseEvent(QMouseEvent* event) {
 void FloatingWindow::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
 
-    // Re-raise on show to keep the floating window above normal app windows.
+    enforceTopMost(true);
+}
+
+void FloatingWindow::enforceTopMost(bool activate) {
+    if (!isVisible()) {
+        return;
+    }
+
+    if (!windowFlags().testFlag(Qt::WindowStaysOnTopHint)) {
+        const QRect oldGeometry = geometry();
+        setWindowFlag(Qt::WindowStaysOnTopHint, true);
+        show();
+        setGeometry(oldGeometry);
+    }
+
     raise();
-    activateWindow();
+
+#ifdef WIN32
+    const HWND hwnd = reinterpret_cast<HWND>(winId());
+    if (hwnd) {
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING
+        );
+    }
+#endif
+
+    if (activate) {
+        activateWindow();
+    }
 }
 
 void FloatingWindow::applyStyle() {
