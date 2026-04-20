@@ -20,7 +20,7 @@ jobs:
           - os: windows-latest
             artifact_name: MyStocks-windows-release
             artifact_file: MyStocks-windows-release.zip
-            qt_arch: win64_msvc2022_64
+            qt_arch: win64_msvc2019_64
 
     steps:
       - name: Checkout
