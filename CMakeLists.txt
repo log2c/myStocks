@@ -36,10 +36,12 @@ if(WIN32)
     )
     FetchContent_MakeAvailable(QHotkey)
 
-    set_target_properties(qhotkey PROPERTIES
-        MSVC_RUNTIME_LIBRARY "MultiThreadedDLL"
-    )
-    target_compile_options(qhotkey PRIVATE /EHsc)
+    if(MSVC)
+        set_target_properties(qhotkey PROPERTIES
+            MSVC_RUNTIME_LIBRARY "MultiThreadedDLL"
+        )
+        target_compile_options(qhotkey PRIVATE /EHsc)
+    endif()
 endif()
 
 qt_add_executable(MyStocks
