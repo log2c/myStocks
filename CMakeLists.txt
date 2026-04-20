@@ -39,6 +39,7 @@ endif()
 
 qt_add_executable(MyStocks
     main.cpp
+    resources.qrc
     src/app_logging.cpp
     src/app_controller.cpp
     src/config_manager.cpp
@@ -72,6 +73,11 @@ target_link_libraries(MyStocks PRIVATE
 if(WIN32)
     # Build as a GUI app so startup does not show a transient console window.
     set_target_properties(MyStocks PROPERTIES WIN32_EXECUTABLE TRUE)
+
+    # Windows EXE file icon (Explorer/taskbar) from assets/icons/icon.ico.
+    target_sources(MyStocks PRIVATE
+        app_icon.rc
+    )
 
     target_link_libraries(MyStocks PRIVATE QHotkey::QHotkey)
 
@@ -113,12 +119,56 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 if(APPLE)
+    set(MYSTOCKS_MAC_ICON_NAME "MyStocks.icns")
+    set(MYSTOCKS_MAC_ICON_SOURCE "${CMAKE_SOURCE_DIR}/assets/icons/icon.png")
+    set(MYSTOCKS_MAC_ICONSET_DIR "${CMAKE_CURRENT_BINARY_DIR}/MyStocks.iconset")
+    set(MYSTOCKS_MAC_ICON_ICNS "${CMAKE_CURRENT_BINARY_DIR}/${MYSTOCKS_MAC_ICON_NAME}")
+
+    find_program(MYSTOCKS_SIPS_EXECUTABLE sips)
+    find_program(MYSTOCKS_ICONUTIL_EXECUTABLE iconutil)
+
+    if(NOT MYSTOCKS_SIPS_EXECUTABLE OR NOT MYSTOCKS_ICONUTIL_EXECUTABLE)
+        message(FATAL_ERROR "sips and iconutil are required to generate the macOS app icon.")
+    endif()
+
+    add_custom_command(
+        OUTPUT "${MYSTOCKS_MAC_ICON_ICNS}"
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${MYSTOCKS_MAC_ICONSET_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${MYSTOCKS_MAC_ICONSET_DIR}"
+        COMMAND "${MYSTOCKS_SIPS_EXECUTABLE}" -z 16 16 "${MYSTOCKS_MAC_ICON_SOURCE}" --out "${MYSTOCKS_MAC_ICONSET_DIR}/icon_16x16.png"
+        COMMAND "${MYSTOCKS_SIPS_EXECUTABLE}" -z 32 32 "${MYSTOCKS_MAC_ICON_SOURCE}" --out "${MYSTOCKS_MAC_ICONSET_DIR}/icon_16x16@2x.png"
+        COMMAND "${MYSTOCKS_SIPS_EXECUTABLE}" -z 32 32 "${MYSTOCKS_MAC_ICON_SOURCE}" --out "${MYSTOCKS_MAC_ICONSET_DIR}/icon_32x32.png"
+        COMMAND "${MYSTOCKS_SIPS_EXECUTABLE}" -z 64 64 "${MYSTOCKS_MAC_ICON_SOURCE}" --out "${MYSTOCKS_MAC_ICONSET_DIR}/icon_32x32@2x.png"
+        COMMAND "${MYSTOCKS_SIPS_EXECUTABLE}" -z 128 128 "${MYSTOCKS_MAC_ICON_SOURCE}" --out "${MYSTOCKS_MAC_ICONSET_DIR}/icon_128x128.png"
+        COMMAND "${MYSTOCKS_SIPS_EXECUTABLE}" -z 256 256 "${MYSTOCKS_MAC_ICON_SOURCE}" --out "${MYSTOCKS_MAC_ICONSET_DIR}/icon_128x128@2x.png"
+        COMMAND "${MYSTOCKS_SIPS_EXECUTABLE}" -z 256 256 "${MYSTOCKS_MAC_ICON_SOURCE}" --out "${MYSTOCKS_MAC_ICONSET_DIR}/icon_256x256.png"
+        COMMAND "${MYSTOCKS_SIPS_EXECUTABLE}" -z 512 512 "${MYSTOCKS_MAC_ICON_SOURCE}" --out "${MYSTOCKS_MAC_ICONSET_DIR}/icon_256x256@2x.png"
+        COMMAND "${MYSTOCKS_SIPS_EXECUTABLE}" -z 512 512 "${MYSTOCKS_MAC_ICON_SOURCE}" --out "${MYSTOCKS_MAC_ICONSET_DIR}/icon_512x512.png"
+        COMMAND "${MYSTOCKS_SIPS_EXECUTABLE}" -z 1024 1024 "${MYSTOCKS_MAC_ICON_SOURCE}" --out "${MYSTOCKS_MAC_ICONSET_DIR}/icon_512x512@2x.png"
+        COMMAND "${MYSTOCKS_ICONUTIL_EXECUTABLE}" -c icns "${MYSTOCKS_MAC_ICONSET_DIR}" -o "${MYSTOCKS_MAC_ICON_ICNS}"
+        DEPENDS "${MYSTOCKS_MAC_ICON_SOURCE}"
+        VERBATIM
+    )
+
+    add_custom_target(MyStocksMacIcon DEPENDS "${MYSTOCKS_MAC_ICON_ICNS}")
+    add_dependencies(MyStocks MyStocksMacIcon)
+
+    set_source_files_properties("${MYSTOCKS_MAC_ICON_ICNS}" PROPERTIES
+        GENERATED TRUE
+        MACOSX_PACKAGE_LOCATION "Resources"
+    )
+
+    target_sources(MyStocks PRIVATE
+        "${MYSTOCKS_MAC_ICON_ICNS}"
+    )
+
     set_target_properties(MyStocks PROPERTIES
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_BUNDLE_NAME "MyStocks"
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.mystocks.app"
         MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_ICON_FILE "${MYSTOCKS_MAC_ICON_NAME}"
         MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/Info.plist.in"
     )
 endif()

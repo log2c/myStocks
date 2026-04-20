@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QDebug>
+#include <QIcon>
 #include <QSharedMemory>
 
 #include "app_controller.h"
@@ -8,6 +9,11 @@
 
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
+    const QIcon appIcon(QStringLiteral(":/icon.png"));
+    if (!appIcon.isNull()) {
+        app.setWindowIcon(appIcon);
+    }
+
     QApplication::setOrganizationName("myStocks");
     QApplication::setApplicationName("myStocks");
     app.setQuitOnLastWindowClosed(false);

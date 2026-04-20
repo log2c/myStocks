@@ -15,6 +15,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QIcon>
 #ifdef WIN32
 #include <QHotkey>
 #endif
@@ -301,7 +302,10 @@ void AppController::setupTray() {
         m_tray = nullptr;
     }
 
-    QIcon icon = QIcon::fromTheme("view-financial");
+    QIcon icon(QStringLiteral(":/icon.png"));
+    if (icon.isNull()) {
+        icon = QIcon::fromTheme("view-financial");
+    }
     if (icon.isNull()) {
         icon = qApp->style()->standardIcon(QStyle::SP_DesktopIcon);
     }
