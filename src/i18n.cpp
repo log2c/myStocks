@@ -12,7 +12,7 @@ const TranslationMap& translations() {
         {
             "en_US",
             {
-                {"app.name", "MyStocks"},
+                {"app.name", "myStocks"},
                 {"tray.toggle", "Show/Hide floating window"},
                 {"tray.settings", "Settings"},
                 {"tray.reload", "Reload config"},
@@ -114,7 +114,7 @@ const TranslationMap& translations() {
         {
             "zh_CN",
             {
-                {"app.name", "我的股票"},
+                {"app.name", "myStocks"},
                 {"tray.toggle", "显示/隐藏悬浮窗"},
                 {"tray.settings", "设置"},
                 {"tray.reload", "重新加载配置"},
