@@ -70,6 +70,9 @@ target_link_libraries(MyStocks PRIVATE
 )
 
 if(WIN32)
+    # Build as a GUI app so startup does not show a transient console window.
+    set_target_properties(MyStocks PROPERTIES WIN32_EXECUTABLE TRUE)
+
     target_link_libraries(MyStocks PRIVATE QHotkey::QHotkey)
 
     if(MSVC)
@@ -110,7 +113,14 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 if(APPLE)
-    set_target_properties(MyStocks PROPERTIES MACOSX_BUNDLE TRUE)
+    set_target_properties(MyStocks PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "MyStocks"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.mystocks.app"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/cmake/Info.plist.in"
+    )
 endif()
 
 install(TARGETS MyStocks
