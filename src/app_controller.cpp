@@ -212,6 +212,59 @@ void AppController::openSettings() {
     refreshQuotes();
 }
 
+void AppController::reloadStocksFromYaml() {
+    const QString dataPath = findDataYaml();
+    if (dataPath.isEmpty()) {
+        if (m_tray) {
+            m_tray->showMessage(
+                i18n::t("app.name", m_resolvedLanguage),
+                i18n::t("reload.config.failed", m_resolvedLanguage),
+                QSystemTrayIcon::Warning,
+                2500
+            );
+        }
+        return;
+    }
+
+    const QVector<StockItem> loaded = ConfigManager::loadStocksFromYaml(dataPath);
+    if (loaded.isEmpty()) {
+        if (m_tray) {
+            m_tray->showMessage(
+                i18n::t("app.name", m_resolvedLanguage),
+                i18n::t("reload.config.failed", m_resolvedLanguage),
+                QSystemTrayIcon::Warning,
+                2500
+            );
+        }
+        return;
+    }
+
+    m_stocks = loaded;
+    m_apiNamesByCode.clear();
+
+    if (m_model) {
+        m_model->setStocks(m_stocks);
+    }
+
+    if (m_provider) {
+        // Manual reload should refresh immediately regardless of polling window.
+        m_provider->fetchQuotes(m_stocks);
+    }
+
+    if (m_window && m_window->isVisible()) {
+        m_window->raise();
+    }
+
+    if (m_tray) {
+        m_tray->showMessage(
+            i18n::t("app.name", m_resolvedLanguage),
+            i18n::t("reload.config.success", m_resolvedLanguage).arg(m_stocks.size()),
+            QSystemTrayIcon::Information,
+            2000
+        );
+    }
+}
+
 void AppController::refreshQuotes() {
     if (!m_provider) {
         return;
@@ -251,6 +304,7 @@ void AppController::setupTray() {
 
     menu->addAction(i18n::t("tray.toggle", m_resolvedLanguage), this, [this]() { toggleWindow(); });
     menu->addAction(i18n::t("tray.settings", m_resolvedLanguage), this, [this]() { openSettings(); });
+    menu->addAction(i18n::t("tray.reload", m_resolvedLanguage), this, [this]() { reloadStocksFromYaml(); });
     menu->addSeparator();
     menu->addAction(i18n::t("tray.quit", m_resolvedLanguage), qApp, &QCoreApplication::quit);
 

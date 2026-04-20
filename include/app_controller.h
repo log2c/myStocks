@@ -27,6 +27,7 @@ private:
     QString findDataYaml() const;
     void toggleWindow();
     void openSettings();
+    void reloadStocksFromYaml();
     void refreshQuotes();
     void onProviderError(const QString& message);
     void setupTray();

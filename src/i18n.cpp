@@ -15,6 +15,7 @@ const TranslationMap& translations() {
                 {"app.name", "MyStocks"},
                 {"tray.toggle", "Show/Hide floating window"},
                 {"tray.settings", "Settings"},
+                {"tray.reload", "Reload config"},
                 {"tray.quit", "Quit"},
                 {"settings.title", "Settings"},
                 {"settings.tab.general", "General"},
@@ -74,7 +75,9 @@ const TranslationMap& translations() {
                 {"settings.language.en", "English"},
                 {"settings.color.pick", "Pick color"},
                 {"hotkey.register.failed", "Global hotkey registration failed. It may be in use by another app."},
-                {"provider.xtick.token.empty", "XTick token is empty"}
+                {"provider.xtick.token.empty", "XTick token is empty"},
+                {"reload.config.success", "Reloaded %1 stocks from data.yaml."},
+                {"reload.config.failed", "Failed to reload data.yaml or no valid stocks found."}
             }
         },
         {
@@ -83,6 +86,7 @@ const TranslationMap& translations() {
                 {"app.name", "我的股票"},
                 {"tray.toggle", "显示/隐藏悬浮窗"},
                 {"tray.settings", "设置"},
+                {"tray.reload", "重新加载配置"},
                 {"tray.quit", "退出"},
                 {"settings.title", "设置"},
                 {"settings.tab.general", "通用"},
@@ -142,7 +146,9 @@ const TranslationMap& translations() {
                 {"settings.language.en", "英文"},
                 {"settings.color.pick", "选择颜色"},
                 {"hotkey.register.failed", "全局热键注册失败，可能已被其他应用占用。"},
-                {"provider.xtick.token.empty", "XTick 令牌为空"}
+                {"provider.xtick.token.empty", "XTick 令牌为空"},
+                {"reload.config.success", "已从 data.yaml 重新加载 %1 条股票。"},
+                {"reload.config.failed", "重新加载 data.yaml 失败或没有有效股票。"}
             }
         }
     };
