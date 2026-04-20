@@ -1,0 +1,85 @@
+name: Build Release (macOS + Windows)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact_name: MyStocks-macos-release
+            artifact_file: MyStocks-macos-release.zip
+          - os: windows-latest
+            artifact_name: MyStocks-windows-release
+            artifact_file: MyStocks-windows-release.zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.2'
+          cache: true
+
+      - name: Configure (Release)
+        shell: bash
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DQt6_DIR="${Qt6_DIR}"
+
+      - name: Build (Release)
+        shell: bash
+        run: |
+          cmake --build build --config Release --parallel
+
+      - name: Package macOS bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP_PATH="build/MyStocks.app"
+          if [[ ! -d "$APP_PATH" && -d "build/Release/MyStocks.app" ]]; then
+            APP_PATH="build/Release/MyStocks.app"
+          fi
+
+          if [[ ! -d "$APP_PATH" ]]; then
+            echo "MyStocks.app not found"
+            exit 1
+          fi
+
+          macdeployqt "$APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "${{ matrix.artifact_file }}"
+
+      - name: Package Windows bundle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exePath = "build/MyStocks.exe"
+          if (!(Test-Path $exePath) -and (Test-Path "build/Release/MyStocks.exe")) {
+            $exePath = "build/Release/MyStocks.exe"
+          }
+
+          if (!(Test-Path $exePath)) {
+            throw "MyStocks.exe not found"
+          }
+
+          windeployqt --release $exePath
+          $bundleDir = Split-Path -Parent $exePath
+          Compress-Archive -Path "$bundleDir/*" -DestinationPath "${{ matrix.artifact_file }}" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_file }}
+          if-no-files-found: error

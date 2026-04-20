@@ -1,0 +1,371 @@
+#include "app_controller.h"
+
+#include "config_manager.h"
+#include "floating_window.h"
+#include "i18n.h"
+#include "network_logger.h"
+#include "network_utils.h"
+#include "quote_model.h"
+#include "quote_provider.h"
+#include "settings_dialog.h"
+
+#include <QApplication>
+#include <QCoreApplication>
+#include <QEventLoop>
+#include <QDir>
+#include <QFileInfo>
+#include <QHotkey>
+#include <QMenu>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QRegularExpression>
+#include <QStyle>
+#include <QSystemTrayIcon>
+#include <QTimer>
+#include <QTimeZone>
+
+AppController::AppController(QObject* parent)
+    : QObject(parent) {
+    m_cfg = ConfigManager::loadConfig();
+    m_resolvedLanguage = i18n::resolveLanguage(m_cfg.language);
+
+    m_stocks = ConfigManager::loadStocksFromYaml(findDataYaml());
+    if (m_stocks.isEmpty()) {
+        m_stocks = {
+            {"sh000001", "SSE Composite"},
+            {"sz399001", "SZSE Component"},
+            {"sz399006", "ChiNext"}
+        };
+    }
+
+    m_model = new QuoteModel(this);
+    m_model->setLanguage(m_resolvedLanguage);
+    m_model->setConfig(m_cfg);
+    m_model->setStocks(m_stocks);
+
+    m_window = new FloatingWindow(m_model);
+    m_window->setGeometry(m_cfg.windowRect);
+    m_window->applyConfig(m_cfg);
+    m_window->show();
+
+    setupTray();
+    setupHotkey();
+    rebuildProvider();
+
+    m_timer = new QTimer(this);
+    m_timer->setInterval(qMax(500, m_cfg.pollMs));
+    connect(m_timer, &QTimer::timeout, this, [this]() { refreshQuotes(); });
+    m_timer->start();
+
+    connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() {
+        if (m_window) {
+            m_cfg.windowRect = m_window->geometry();
+        }
+        ConfigManager::saveConfig(m_cfg);
+    });
+
+    refreshQuotes();
+}
+
+QString AppController::findDataYaml() const {
+    const QStringList candidates = {
+        QDir::current().filePath("data.yaml"),
+        QDir(QCoreApplication::applicationDirPath()).filePath("data.yaml"),
+        QDir(QCoreApplication::applicationDirPath()).filePath("../data.yaml"),
+        QDir(QCoreApplication::applicationDirPath()).filePath("../../data.yaml")
+    };
+
+    for (const QString& p : candidates) {
+        if (QFileInfo::exists(p)) {
+            return QDir::cleanPath(p);
+        }
+    }
+
+    return {};
+}
+
+void AppController::toggleWindow() {
+    if (!m_window) {
+        return;
+    }
+
+    if (m_window->isVisible()) {
+        m_window->hide();
+    } else {
+        m_window->show();
+        m_window->raise();
+        m_window->activateWindow();
+    }
+}
+
+void AppController::openSettings() {
+    AppConfig updatedCfg = m_cfg;
+    {
+        SettingsDialog dlg(m_cfg, m_window);
+        if (dlg.exec() != QDialog::Accepted) {
+            return;
+        }
+        updatedCfg = dlg.config();
+    }
+
+    m_cfg = updatedCfg;
+    m_resolvedLanguage = i18n::resolveLanguage(m_cfg.language);
+    m_probeCheckedAt = QDateTime();
+
+    // Preserve window position before destroying.
+    QPoint windowPos(120, 120);
+    bool wasVisible = false;
+    if (m_window) {
+        windowPos = m_window->pos();
+        wasVisible = m_window->isVisible();
+        delete m_window;
+        m_window = nullptr;
+    }
+
+    ConfigManager::saveConfig(m_cfg);
+
+    m_model->setLanguage(m_resolvedLanguage);
+    m_model->setConfig(m_cfg);
+
+    // Recreate the floating window so column visibility/order takes effect cleanly.
+    m_window = new FloatingWindow(m_model);
+    m_window->move(windowPos);
+    m_window->applyConfig(m_cfg);
+    if (wasVisible) {
+        m_window->show();
+        m_window->raise();
+        m_window->activateWindow();
+    }
+
+    if (m_timer) {
+        m_timer->setInterval(qMax(500, m_cfg.pollMs));
+    }
+
+    setupTray();
+    setupHotkey();
+    rebuildProvider();
+    refreshQuotes();
+}
+
+void AppController::refreshQuotes() {
+    if (!m_provider) {
+        return;
+    }
+
+    if (!shouldPollNow()) {
+        return;
+    }
+
+    m_provider->fetchQuotes(m_stocks);
+}
+
+void AppController::onProviderError(const QString& message) {
+    if (m_tray) {
+        m_tray->showMessage(i18n::t("app.name", m_resolvedLanguage), message, QSystemTrayIcon::Warning, 2500);
+    }
+}
+
+void AppController::setupTray() {
+    if (!QSystemTrayIcon::isSystemTrayAvailable()) {
+        return;
+    }
+
+    if (m_tray) {
+        m_tray->hide();
+        m_tray->deleteLater();
+        m_tray = nullptr;
+    }
+
+    QIcon icon = QIcon::fromTheme("view-financial");
+    if (icon.isNull()) {
+        icon = qApp->style()->standardIcon(QStyle::SP_DesktopIcon);
+    }
+
+    m_tray = new QSystemTrayIcon(icon, this);
+    QMenu* menu = new QMenu;
+
+    menu->addAction(i18n::t("tray.toggle", m_resolvedLanguage), this, [this]() { toggleWindow(); });
+    menu->addAction(i18n::t("tray.settings", m_resolvedLanguage), this, [this]() { openSettings(); });
+    menu->addSeparator();
+    menu->addAction(i18n::t("tray.quit", m_resolvedLanguage), qApp, &QCoreApplication::quit);
+
+    m_tray->setContextMenu(menu);
+    m_tray->show();
+
+    connect(m_tray, &QSystemTrayIcon::activated, this,
+        [this](QSystemTrayIcon::ActivationReason reason) {
+            if (reason == QSystemTrayIcon::Trigger) {
+                toggleWindow();
+            }
+        }
+    );
+}
+
+void AppController::setupHotkey() {
+    if (m_hotkey) {
+        m_hotkey->setRegistered(false);
+        m_hotkey->deleteLater();
+        m_hotkey = nullptr;
+    }
+
+    m_hotkey = new QHotkey(QKeySequence(m_cfg.hotkey), true, this);
+    connect(m_hotkey, &QHotkey::activated, this, [this]() { toggleWindow(); });
+
+    if (!m_hotkey->isRegistered() && m_tray) {
+        m_tray->showMessage(
+            i18n::t("app.name", m_resolvedLanguage),
+            i18n::t("hotkey.register.failed", m_resolvedLanguage),
+            QSystemTrayIcon::Warning,
+            3000
+        );
+    }
+}
+
+void AppController::rebuildProvider() {
+    if (m_provider) {
+        disconnect(m_provider, nullptr, this, nullptr);
+        m_provider->deleteLater();
+        m_provider = nullptr;
+    }
+
+    if (m_cfg.apiSource == "xtick") {
+        m_provider = new XTickQuoteProvider(m_cfg.xtickToken, this);
+    } else if (m_cfg.apiSource == "sina") {
+        m_provider = new SinaQuoteProvider(this);
+    } else if (m_cfg.apiSource == "tencent") {
+        m_provider = new TencentQuoteProvider(this);
+    } else if (m_cfg.apiSource == "eastmoney") {
+        m_provider = new EastMoneyQuoteProvider(this);
+    } else {
+        m_provider = new MockQuoteProvider(this);
+    }
+
+    m_provider->setLanguage(m_resolvedLanguage);
+    m_provider->applyConfig(m_cfg);
+
+    connect(m_provider, &IQuoteProvider::quotesReady, m_model, &QuoteModel::updateQuotes);
+    connect(m_provider, &IQuoteProvider::error, this, [this](const QString& msg) {
+        onProviderError(msg);
+    });
+}
+
+bool AppController::shouldPollNow() {
+    if (m_cfg.debugIgnoreTradingTime) {
+        return true;
+    }
+
+    if (m_cfg.apiSource == "mock") {
+        return true;
+    }
+
+    const QTimeZone bjZone("Asia/Shanghai");
+    if (!bjZone.isValid()) {
+        return true;
+    }
+
+    const QDateTime bjNow = QDateTime::currentDateTimeUtc().toTimeZone(bjZone);
+    if (!isWithinTradingSession(bjNow)) {
+        return false;
+    }
+
+    const QDate today = bjNow.date();
+    if (m_probeDate != today) {
+        m_probeDate = today;
+        m_probeCheckedAt = QDateTime();
+        m_probeTradingDay = true;
+    }
+
+    const bool needProbe = !m_probeCheckedAt.isValid()
+        || m_probeCheckedAt.secsTo(bjNow) >= 300;
+
+    if (needProbe) {
+        m_probeTradingDay = probeTradingDay(today);
+        m_probeCheckedAt = bjNow;
+    }
+
+    return m_probeTradingDay;
+}
+
+bool AppController::isWithinTradingSession(const QDateTime& bjNow) const {
+    if (!bjNow.isValid()) {
+        return true;
+    }
+
+    if (bjNow.date().dayOfWeek() > 5) {
+        return false;
+    }
+
+    const QTime t = bjNow.time();
+    const bool morning = (t >= QTime(9, 30) && t < QTime(11, 30));
+    const bool afternoon = (t >= QTime(13, 0) && t < QTime(15, 0));
+    return morning || afternoon;
+}
+
+bool AppController::probeTradingDay(const QDate& bjDate) {
+    const QNetworkProxy proxy = network_utils::proxyFromConfig(m_cfg);
+    m_probeNam.setProxy(proxy);
+
+    QNetworkRequest req(QUrl("https://qt.gtimg.cn/q=sh000001"));
+    req.setRawHeader("User-Agent", network_utils::effectiveUserAgent(m_cfg).toUtf8());
+    req.setRawHeader("Referer", "https://gu.qq.com");
+    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
+
+    const network_logger::RequestTrace trace = network_logger::logRequestStart(
+        "market-probe",
+        "GET",
+        req,
+        proxy
+    );
+
+    QNetworkReply* reply = m_probeNam.get(req);
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+
+    connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+
+    timeout.start(network_logger::kNetworkRequestTimeoutMs);
+    loop.exec();
+
+    if (timeout.isActive()) {
+        timeout.stop();
+    }
+
+    if (!reply->isFinished()) {
+        reply->abort();
+    }
+
+    const QByteArray body = reply->readAll();
+    network_logger::logRequestFinish(trace, reply, body.size());
+
+    const QString errorText = reply->error() == QNetworkReply::NoError ? QString() : reply->errorString();
+    reply->deleteLater();
+
+    if (!errorText.isEmpty()) {
+        // Fallback to avoid losing intraday updates when probe endpoint is temporarily unreachable.
+        return true;
+    }
+
+    const QString tradeDateText = probeTradingDateText(body);
+    if (tradeDateText.size() != 8) {
+        return true;
+    }
+
+    const QDate tradeDate = QDate::fromString(tradeDateText, "yyyyMMdd");
+    if (!tradeDate.isValid()) {
+        return true;
+    }
+
+    return tradeDate == bjDate;
+}
+
+QString AppController::probeTradingDateText(const QByteArray& body) const {
+    const QString text = QString::fromLatin1(body);
+    const QRegularExpression re("(20\\d{6})\\d{6}");
+    const QRegularExpressionMatch match = re.match(text);
+    if (!match.hasMatch()) {
+        return {};
+    }
+    return match.captured(1);
+}
