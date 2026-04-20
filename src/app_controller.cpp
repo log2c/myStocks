@@ -433,15 +433,22 @@ QHash<QString, QString> AppController::currentApiNamesByCode() const {
 int AppController::writeApiNamesToDataYaml() {
     const QHash<QString, QString> apiNames = currentApiNamesByCode();
     if (apiNames.isEmpty()) {
+        qInfo() << "Write stock names skipped: api names are empty.";
         return 0;
     }
 
     const QString homeDataPath = QDir(QDir::homePath()).filePath(".myStocks/data.yaml");
+    const auto nativePath = [](const QString& path) {
+        return QDir::toNativeSeparators(path);
+    };
 
     QString sourcePath = findDataYaml();
     if (sourcePath.isEmpty()) {
         sourcePath = homeDataPath;
     }
+
+    qInfo() << "Write stock names resolved source path:" << nativePath(sourcePath);
+    qInfo() << "Write stock names resolved home path:" << nativePath(homeDataPath);
 
     if (sourcePath.isEmpty()) {
         qWarning() << "Write stock names skipped: data.yaml path is empty.";
@@ -546,6 +553,7 @@ int AppController::writeApiNamesToDataYaml() {
     }
 
     if (updatedCount <= 0) {
+        qInfo() << "Write stock names skipped: no yaml content changes.";
         return 0;
     }
 
@@ -557,6 +565,10 @@ int AppController::writeApiNamesToDataYaml() {
     const QByteArray bytes = updatedContent.toUtf8();
 
     auto writeContentToPath = [&](const QString& targetPath) -> bool {
+        qInfo() << "Write stock names target path:" << nativePath(targetPath);
+        qInfo() << "Write stock names content bytes:" << bytes.size();
+        qInfo().noquote() << "Write stock names content begin\n" + updatedContent + "\nWrite stock names content end";
+
         QSaveFile outFile(targetPath);
         if (!outFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
             qWarning() << "Write stock names failed: cannot open" << targetPath << outFile.errorString();

@@ -5,7 +5,6 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
-#include <QDoubleSpinBox>
 #include <QKeySequenceEdit>
 #include <QLabel>
 #include <QLineEdit>
@@ -49,7 +48,6 @@ private:
     QString m_uiLanguage;
 
     QSpinBox* m_pollSpin = nullptr;
-    QDoubleSpinBox* m_opacitySpin = nullptr;
     QKeySequenceEdit* m_hotkeyEdit = nullptr;
     QComboBox* m_sourceCombo = nullptr;
     QLineEdit* m_tokenEdit = nullptr;
@@ -79,4 +77,5 @@ private:
     QCheckBox* m_showHeaderCheck = nullptr;
     QListWidget* m_columnList = nullptr;
     QVector<QSpinBox*> m_columnMaxWidthSpins;
+    bool m_normalizingHotkeySequence = false;
 };

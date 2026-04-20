@@ -41,6 +41,31 @@ QVector<int> normalizedColumnOrder(const QVector<int>& order) {
     return out;
 }
 
+QKeySequence normalizedHotkeySequence(const QKeySequence& sequence) {
+    if (sequence.isEmpty()) {
+        return {};
+    }
+
+    const int keyCombo = sequence[0];
+    const int key = keyCombo & ~Qt::KeyboardModifierMask;
+    const Qt::KeyboardModifiers mods = Qt::KeyboardModifiers(keyCombo & Qt::KeyboardModifierMask);
+
+    if (key == Qt::Key_Backspace || key == Qt::Key_Delete) {
+        return {};
+    }
+
+    const bool hasModifier = mods.testFlag(Qt::ControlModifier)
+        || mods.testFlag(Qt::AltModifier)
+        || mods.testFlag(Qt::ShiftModifier)
+        || mods.testFlag(Qt::MetaModifier);
+
+    if (!hasModifier) {
+        return {};
+    }
+
+    return sequence;
+}
+
 } // namespace
 
 SettingsDialog::SettingsDialog(
@@ -76,8 +101,7 @@ AppConfig SettingsDialog::config() const {
     AppConfig out = m_cfg;
 
     out.pollMs = m_pollSpin->value();
-    out.opacity = m_opacitySpin->value();
-    out.hotkey = m_hotkeyEdit->keySequence().toString(QKeySequence::PortableText);
+    out.hotkey = normalizedHotkeySequence(m_hotkeyEdit->keySequence()).toString(QKeySequence::PortableText);
     out.apiSource = m_sourceCombo->currentData().toString();
     out.xtickToken = m_tokenEdit->text().trimmed();
     out.userAgent = m_userAgentEdit->text().trimmed();
@@ -180,14 +204,29 @@ QWidget* SettingsDialog::buildGeneralTab() {
     m_pollSpin->setRange(500, 60000);
     m_pollSpin->setValue(m_cfg.pollMs);
 
-    m_opacitySpin = new QDoubleSpinBox(w);
-    m_opacitySpin->setRange(0.2, 1.0);
-    m_opacitySpin->setSingleStep(0.05);
-    m_opacitySpin->setDecimals(2);
-    m_opacitySpin->setValue(m_cfg.opacity);
-
     m_hotkeyEdit = new QKeySequenceEdit(QKeySequence(m_cfg.hotkey), w);
     m_hotkeyEdit->setToolTip(trText("settings.general.hotkeyHint"));
+    connect(m_hotkeyEdit, &QKeySequenceEdit::keySequenceChanged, this, [this](const QKeySequence& sequence) {
+        if (m_normalizingHotkeySequence || !m_hotkeyEdit) {
+            return;
+        }
+
+        const QKeySequence normalized = normalizedHotkeySequence(sequence);
+        if (normalized == sequence) {
+            return;
+        }
+
+        m_normalizingHotkeySequence = true;
+        m_hotkeyEdit->setKeySequence(normalized);
+        m_normalizingHotkeySequence = false;
+    });
+
+    {
+        const QKeySequence initialNormalized = normalizedHotkeySequence(m_hotkeyEdit->keySequence());
+        if (initialNormalized != m_hotkeyEdit->keySequence()) {
+            m_hotkeyEdit->setKeySequence(initialNormalized);
+        }
+    }
 
     m_sourceCombo = new QComboBox(w);
     m_sourceCombo->addItem(trText("settings.source.mock"), "mock");
@@ -248,7 +287,6 @@ QWidget* SettingsDialog::buildGeneralTab() {
         m_transparentOpacitySlider->setEnabled(enabled);
         m_transparentOpacityLabel->setEnabled(enabled);
         m_bgBtn->setEnabled(!enabled);
-        m_opacitySpin->setEnabled(!enabled);
     });
 
     m_transparentOpacityLabel->setText(
@@ -259,10 +297,8 @@ QWidget* SettingsDialog::buildGeneralTab() {
     m_transparentOpacitySlider->setEnabled(transparentModeEnabled);
     m_transparentOpacityLabel->setEnabled(transparentModeEnabled);
     m_bgBtn->setEnabled(!transparentModeEnabled);
-    m_opacitySpin->setEnabled(!transparentModeEnabled);
 
     form->addRow(trText("settings.general.poll"), m_pollSpin);
-    form->addRow(trText("settings.general.opacity"), m_opacitySpin);
     form->addRow(trText("settings.general.hotkey"), m_hotkeyEdit);
     form->addRow(trText("settings.general.apiSource"), m_sourceCombo);
     form->addRow(trText("settings.general.token"), m_tokenEdit);
