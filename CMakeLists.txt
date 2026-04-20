@@ -35,13 +35,6 @@ if(WIN32)
         GIT_TAG 1.5.0
     )
     FetchContent_MakeAvailable(QHotkey)
-
-    if(MSVC)
-        set_target_properties(qhotkey PROPERTIES
-            MSVC_RUNTIME_LIBRARY "${CMAKE_MSVC_RUNTIME_LIBRARY}"
-        )
-        target_compile_options(qhotkey PRIVATE /EHsc)
-    endif()
 endif()
 
 qt_add_executable(MyStocks
@@ -76,6 +69,38 @@ target_link_libraries(MyStocks PRIVATE
 
 if(WIN32)
     target_link_libraries(MyStocks PRIVATE QHotkey::QHotkey)
+
+    if(MSVC)
+        # Use static runtime (/MT) for Release to reduce redistribution footprint.
+        # Keep Debug on /MDd for better debugging experience.
+        set(_mystocks_msvc_runtime "MultiThreaded$<$<CONFIG:Debug>:DebugDLL>")
+
+        set_target_properties(MyStocks PROPERTIES
+            MSVC_RUNTIME_LIBRARY "${_mystocks_msvc_runtime}"
+        )
+
+        if(TARGET qhotkey)
+            set_target_properties(qhotkey PROPERTIES
+                MSVC_RUNTIME_LIBRARY "${_mystocks_msvc_runtime}"
+            )
+            target_compile_options(qhotkey PRIVATE /EHsc)
+        endif()
+
+        target_compile_options(MyStocks PRIVATE
+            $<$<CONFIG:Release>:/Gy>
+            $<$<CONFIG:Release>:/Gw>
+        )
+        target_link_options(MyStocks PRIVATE
+            $<$<CONFIG:Release>:/OPT:REF>
+            $<$<CONFIG:Release>:/OPT:ICF>
+        )
+    elseif(MINGW)
+        target_link_options(MyStocks PRIVATE
+            $<$<CONFIG:Release>:-s>
+            $<$<CONFIG:Release>:-static-libgcc>
+            $<$<CONFIG:Release>:-static-libstdc++>
+        )
+    endif()
 endif()
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
