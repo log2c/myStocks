@@ -77,7 +77,7 @@ AppConfig SettingsDialog::config() const {
 
     out.pollMs = m_pollSpin->value();
     out.opacity = m_opacitySpin->value();
-    out.hotkey = m_hotkeyEdit->text().trimmed();
+    out.hotkey = m_hotkeyEdit->keySequence().toString(QKeySequence::PortableText);
     out.apiSource = m_sourceCombo->currentData().toString();
     out.xtickToken = m_tokenEdit->text().trimmed();
     out.userAgent = m_userAgentEdit->text().trimmed();
@@ -186,8 +186,8 @@ QWidget* SettingsDialog::buildGeneralTab() {
     m_opacitySpin->setDecimals(2);
     m_opacitySpin->setValue(m_cfg.opacity);
 
-    m_hotkeyEdit = new QLineEdit(m_cfg.hotkey, w);
-    m_hotkeyEdit->setPlaceholderText(trText("settings.general.hotkeyHint"));
+    m_hotkeyEdit = new QKeySequenceEdit(QKeySequence(m_cfg.hotkey), w);
+    m_hotkeyEdit->setToolTip(trText("settings.general.hotkeyHint"));
 
     m_sourceCombo = new QComboBox(w);
     m_sourceCombo->addItem(trText("settings.source.mock"), "mock");

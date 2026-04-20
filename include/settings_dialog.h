@@ -6,6 +6,7 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDoubleSpinBox>
+#include <QKeySequenceEdit>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -49,7 +50,7 @@ private:
 
     QSpinBox* m_pollSpin = nullptr;
     QDoubleSpinBox* m_opacitySpin = nullptr;
-    QLineEdit* m_hotkeyEdit = nullptr;
+    QKeySequenceEdit* m_hotkeyEdit = nullptr;
     QComboBox* m_sourceCombo = nullptr;
     QLineEdit* m_tokenEdit = nullptr;
     QLineEdit* m_userAgentEdit = nullptr;
