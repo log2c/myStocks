@@ -74,7 +74,7 @@ AppController::AppController(QObject* parent)
         ConfigManager::saveConfig(m_cfg);
     });
 
-    refreshQuotes();
+    refreshQuotes(true);
 }
 
 namespace {
@@ -214,7 +214,7 @@ void AppController::openSettings() {
     setupHotkey();
 #endif
     rebuildProvider();
-    refreshQuotes();
+    refreshQuotes(true);
 }
 
 void AppController::reloadStocksFromYaml() {
@@ -273,12 +273,12 @@ void AppController::reloadStocksFromYaml() {
     }
 }
 
-void AppController::refreshQuotes() {
+void AppController::refreshQuotes(bool force) {
     if (!m_provider) {
         return;
     }
 
-    if (!shouldPollNow()) {
+    if (!force && !shouldPollNow()) {
         return;
     }
 

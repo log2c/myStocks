@@ -28,7 +28,7 @@ private:
     void toggleWindow();
     void openSettings();
     void reloadStocksFromYaml();
-    void refreshQuotes();
+    void refreshQuotes(bool force = false);
     void onProviderError(const QString& message);
     void setupTray();
     void setupHotkey();
