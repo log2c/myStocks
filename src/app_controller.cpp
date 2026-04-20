@@ -350,6 +350,29 @@ QHash<QString, QString> AppController::currentApiNamesByCode() const {
         out.insert(code, name);
     }
 
+    if (out.isEmpty() && m_model) {
+        const int rows = m_model->rowCount();
+        for (int row = 0; row < rows; ++row) {
+            const QString code = m_model->data(
+                m_model->index(row, ColCode),
+                Qt::DisplayRole
+            ).toString().trimmed();
+            const QString name = m_model->data(
+                m_model->index(row, ColName),
+                Qt::DisplayRole
+            ).toString().trimmed();
+
+            if (code.isEmpty() || name.isEmpty()) {
+                continue;
+            }
+            if (name.compare(code, Qt::CaseInsensitive) == 0) {
+                continue;
+            }
+
+            out.insert(code, name);
+        }
+    }
+
     return out;
 }
 
@@ -359,16 +382,28 @@ int AppController::writeApiNamesToDataYaml() {
         return 0;
     }
 
-    const QString dataPath = findDataYaml();
-    if (dataPath.isEmpty()) {
+    const QString homeDataPath = QDir(QDir::homePath()).filePath(".myStocks/data.yaml");
+
+    QString sourcePath = findDataYaml();
+    if (sourcePath.isEmpty()) {
+        sourcePath = homeDataPath;
+    }
+
+    if (sourcePath.isEmpty()) {
         qWarning() << "Write stock names skipped: data.yaml path is empty.";
         return 0;
     }
 
-    QFile inFile(dataPath);
+    QFile inFile(sourcePath);
     if (!inFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        qWarning() << "Write stock names skipped: cannot open" << dataPath << inFile.errorString();
-        return 0;
+        if (sourcePath != homeDataPath) {
+            sourcePath = homeDataPath;
+            inFile.setFileName(sourcePath);
+        }
+        if (!inFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            qWarning() << "Write stock names skipped: cannot open" << sourcePath << inFile.errorString();
+            return 0;
+        }
     }
 
     const QString original = QString::fromUtf8(inFile.readAll());
@@ -465,21 +500,44 @@ int AppController::writeApiNamesToDataYaml() {
         updatedContent.append('\n');
     }
 
-    QSaveFile outFile(dataPath);
-    if (!outFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        qWarning() << "Write stock names failed: cannot open" << dataPath << outFile.errorString();
-        return 0;
-    }
-
     const QByteArray bytes = updatedContent.toUtf8();
-    if (outFile.write(bytes) != bytes.size()) {
-        qWarning() << "Write stock names failed: write error" << outFile.errorString();
-        outFile.cancelWriting();
-        return 0;
-    }
 
-    if (!outFile.commit()) {
-        qWarning() << "Write stock names failed: commit error" << outFile.errorString();
+    auto writeContentToPath = [&](const QString& targetPath) -> bool {
+        QSaveFile outFile(targetPath);
+        if (!outFile.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            qWarning() << "Write stock names failed: cannot open" << targetPath << outFile.errorString();
+            return false;
+        }
+
+        if (outFile.write(bytes) != bytes.size()) {
+            qWarning() << "Write stock names failed: write error" << outFile.errorString();
+            outFile.cancelWriting();
+            return false;
+        }
+
+        if (!outFile.commit()) {
+            qWarning() << "Write stock names failed: commit error" << outFile.errorString();
+            return false;
+        }
+
+        return true;
+    };
+
+    bool writeOk = writeContentToPath(sourcePath);
+
+    if (!writeOk && sourcePath != homeDataPath) {
+        const QString homeDirPath = QFileInfo(homeDataPath).absolutePath();
+        if (!QDir().mkpath(homeDirPath)) {
+            qWarning() << "Write stock names failed: cannot create home data dir" << homeDirPath;
+            return 0;
+        }
+
+        if (!writeContentToPath(homeDataPath)) {
+            return 0;
+        }
+
+        qInfo() << "Write stock names fallback path:" << homeDataPath;
+    } else if (!writeOk) {
         return 0;
     }
 
