@@ -277,6 +277,25 @@ QWidget* SettingsDialog::buildGeneralTab() {
     m_downBtn = createColorButton(w, m_cfg.downColor, pickColorTitle);
     m_flatBtn = createColorButton(w, m_cfg.flatColor, pickColorTitle);
 
+    const AppConfig defaultCfg;
+    QPushButton* resetColorsButton = new QPushButton(
+        trText("settings.general.resetColors"),
+        w
+    );
+    connect(resetColorsButton, &QPushButton::clicked, this, [this, defaultCfg]() {
+        m_bgBtn->setProperty("pickColor", defaultCfg.bgColor);
+        m_textBtn->setProperty("pickColor", defaultCfg.textColor);
+        m_upBtn->setProperty("pickColor", defaultCfg.upColor);
+        m_downBtn->setProperty("pickColor", defaultCfg.downColor);
+        m_flatBtn->setProperty("pickColor", defaultCfg.flatColor);
+
+        paintColorButton(m_bgBtn, defaultCfg.bgColor);
+        paintColorButton(m_textBtn, defaultCfg.textColor);
+        paintColorButton(m_upBtn, defaultCfg.upColor);
+        paintColorButton(m_downBtn, defaultCfg.downColor);
+        paintColorButton(m_flatBtn, defaultCfg.flatColor);
+    });
+
     connect(m_transparentOpacitySlider, &QSlider::valueChanged, this, [this](int value) {
         m_transparentOpacityLabel->setText(
             trText("settings.general.transparentOpacityValue").arg(value)
@@ -310,6 +329,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
     form->addRow(trText("settings.general.up"), m_upBtn);
     form->addRow(trText("settings.general.down"), m_downBtn);
     form->addRow(trText("settings.general.flat"), m_flatBtn);
+    form->addRow(resetColorsButton);
 
     return w;
 }
