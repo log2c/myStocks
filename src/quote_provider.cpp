@@ -16,6 +16,15 @@
 
 #include <cmath>
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif defined(Q_OS_MACOS)
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
 namespace {
 
 QJsonArray extractArray(const QJsonDocument& doc) {
@@ -74,21 +83,55 @@ QString decodeMarketName(const QByteArray& raw) {
         return {};
     }
 
-    // Some market endpoints return UTF-8, while others still return GB18030/GBK.
+    // Try UTF-8 first (some APIs return UTF-8).
     QStringDecoder utf8Decoder(QStringConverter::Utf8);
     const QString utf8 = utf8Decoder(raw);
     if (!utf8Decoder.hasError()) {
         return utf8;
     }
 
-    const auto gb18030 = QStringConverter::encodingForName("GB18030");
-    if (gb18030) {
-        QStringDecoder gbDecoder(*gb18030);
+    // Decode as GBK/GB18030 using platform-native API
+    // (QStringConverter lacks built-in GBK support in Qt6 without ICU).
+#ifdef Q_OS_WIN
+    const int wlen = MultiByteToWideChar(
+        936, 0, raw.constData(), raw.size(), nullptr, 0
+    );
+    if (wlen > 0) {
+        QString result(wlen, Qt::Uninitialized);
+        MultiByteToWideChar(
+            936, 0, raw.constData(), raw.size(),
+            reinterpret_cast<wchar_t*>(result.data()), wlen
+        );
+        return result;
+    }
+#elif defined(Q_OS_MACOS)
+    const CFDataRef cfData = CFDataCreateWithBytesNoCopy(
+        kCFAllocatorDefault,
+        reinterpret_cast<const UInt8*>(raw.constData()),
+        raw.size(),
+        kCFAllocatorNull
+    );
+    if (cfData) {
+        const CFStringRef cfStr = CFStringCreateFromExternalRepresentation(
+            kCFAllocatorDefault, cfData, kCFStringEncodingGB_18030_2000
+        );
+        CFRelease(cfData);
+        if (cfStr) {
+            const QString result = QString::fromCFString(cfStr);
+            CFRelease(cfStr);
+            return result;
+        }
+    }
+#else
+    const auto gbEnc = QStringConverter::encodingForName("GB18030");
+    if (gbEnc) {
+        QStringDecoder gbDecoder(*gbEnc);
         const QString gbText = gbDecoder(raw);
         if (!gbDecoder.hasError()) {
             return gbText;
         }
     }
+#endif
 
     return QString::fromLatin1(raw);
 }
