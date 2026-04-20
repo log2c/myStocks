@@ -38,7 +38,8 @@ QVector<int> normalizedColumnOrder(const QVector<int>& order) {
 FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
     : QWidget(parent)
     , m_model(model) {
-    setWindowFlags(Qt::Window | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+    // Qt::Tool suppresses the taskbar entry on Windows while keeping top-most behavior
+    setWindowFlags(Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
     setAttribute(Qt::WA_TranslucentBackground, true);
 
     QVBoxLayout* root = new QVBoxLayout(this);

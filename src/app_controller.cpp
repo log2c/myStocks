@@ -104,6 +104,12 @@ bool ensureDataYamlExists(const QString& path) {
 } // namespace
 
 QString AppController::findDataYaml() const {
+    // First check user home directory ~/.myStocks/data.yaml
+    const QString homeDataPath = QDir(QDir::homePath()).filePath(".myStocks/data.yaml");
+    if (QFile::exists(homeDataPath)) {
+        return QDir::cleanPath(homeDataPath);
+    }
+
 #ifdef DEBUG_MODE
     // In debug mode, read from source directory
     const QString sourceDataPath = QString(SOURCE_DIR) + "/data.yaml";
