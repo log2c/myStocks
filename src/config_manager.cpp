@@ -2,6 +2,7 @@
 
 #include "i18n.h"
 
+#include <QDebug>
 #include <QFile>
 #include <QRegularExpression>
 #include <QSet>
@@ -41,6 +42,12 @@ QVector<StockItem> ConfigManager::loadStocksFromYaml(const QString& filePath) {
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         return out;
     }
+
+#ifdef DEBUG_MODE
+    const QByteArray content = file.readAll();
+    file.seek(0); // Reset to beginning for parsing
+    qDebug() << "Debug mode: data.yaml content:\n" << QString::fromUtf8(content);
+#endif
 
     QString curCode;
     QString curName;

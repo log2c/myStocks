@@ -27,15 +27,15 @@ endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
 
-include(FetchContent)
-FetchContent_Declare(
-    QHotkey
-    GIT_REPOSITORY https://github.com/Skycoder42/QHotkey.git
-    GIT_TAG 1.5.0
-)
-FetchContent_MakeAvailable(QHotkey)
-
 if(WIN32)
+    include(FetchContent)
+    FetchContent_Declare(
+        QHotkey
+        GIT_REPOSITORY https://github.com/Skycoder42/QHotkey.git
+        GIT_TAG 1.5.0
+    )
+    FetchContent_MakeAvailable(QHotkey)
+
     set_target_properties(QHotkey PROPERTIES
         MSVC_RUNTIME_LIBRARY "MultiThreadedDLL"
     )
@@ -70,8 +70,15 @@ target_include_directories(MyStocks PRIVATE include)
 target_link_libraries(MyStocks PRIVATE
     Qt6::Widgets
     Qt6::Network
-    QHotkey::QHotkey
 )
+
+if(WIN32)
+    target_link_libraries(MyStocks PRIVATE QHotkey::QHotkey)
+endif()
+
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_definitions(MyStocks PRIVATE DEBUG_MODE SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+endif()
 
 if(APPLE)
     set_target_properties(MyStocks PROPERTIES MACOSX_BUNDLE TRUE)

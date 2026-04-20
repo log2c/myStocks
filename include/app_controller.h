@@ -11,7 +11,9 @@
 
 class FloatingWindow;
 class IQuoteProvider;
+#ifdef WIN32
 class QHotkey;
+#endif
 class QuoteModel;
 class QSystemTrayIcon;
 class QTimer;
@@ -45,7 +47,9 @@ private:
 
     QTimer* m_timer = nullptr;
     QSystemTrayIcon* m_tray = nullptr;
+#ifdef WIN32
     QHotkey* m_hotkey = nullptr;
+#endif
 
     QNetworkAccessManager m_probeNam;
     QDate m_probeDate;

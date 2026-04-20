@@ -14,7 +14,9 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#ifdef WIN32
 #include <QHotkey>
+#endif
 #include <QMenu>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -49,7 +51,9 @@ AppController::AppController(QObject* parent)
     m_window->show();
 
     setupTray();
+#ifdef WIN32
     setupHotkey();
+#endif
     rebuildProvider();
 
     m_timer = new QTimer(this);
@@ -100,12 +104,23 @@ bool ensureDataYamlExists(const QString& path) {
 } // namespace
 
 QString AppController::findDataYaml() const {
+#ifdef DEBUG_MODE
+    // In debug mode, read from source directory
+    const QString sourceDataPath = QString(SOURCE_DIR) + "/data.yaml";
+    if (QFile::exists(sourceDataPath)) {
+        qDebug() << "Debug mode: Reading data.yaml from:" << sourceDataPath;
+        return QDir::cleanPath(sourceDataPath);
+    }
+    qDebug() << "Debug mode: data.yaml not found in source directory:" << sourceDataPath;
+    // In debug mode, if source data.yaml doesn't exist, return empty (no fallback)
+    return {};
+#else
     const QString appDataPath = QDir(QCoreApplication::applicationDirPath()).filePath("data.yaml");
     if (ensureDataYamlExists(appDataPath)) {
         return QDir::cleanPath(appDataPath);
     }
-
     return {};
+#endif
 }
 
 void AppController::toggleWindow() {
@@ -166,7 +181,9 @@ void AppController::openSettings() {
     }
 
     setupTray();
+#ifdef WIN32
     setupHotkey();
+#endif
     rebuildProvider();
     refreshQuotes();
 }
@@ -225,6 +242,7 @@ void AppController::setupTray() {
     );
 }
 
+#ifdef WIN32
 void AppController::setupHotkey() {
     if (m_hotkey) {
         m_hotkey->setRegistered(false);
@@ -244,6 +262,7 @@ void AppController::setupHotkey() {
         );
     }
 }
+#endif
 
 void AppController::rebuildProvider() {
     if (m_provider) {
