@@ -20,6 +20,7 @@ jobs:
           - os: windows-latest
             artifact_name: MyStocks-windows-release
             artifact_file: MyStocks-windows-release.zip
+            qt_arch: win64_msvc2019_static_64
 
     steps:
       - name: Checkout
@@ -29,6 +30,7 @@ jobs:
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.7.2'
+          arch: ${{ matrix.qt_arch }}
           cache: true
 
       - name: Setup MSVC
@@ -38,9 +40,16 @@ jobs:
       - name: Configure (Release)
         shell: bash
         run: |
-          cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DQt6_DIR="${Qt6_DIR}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cmake -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DQt6_DIR="${Qt6_DIR}" \
+              -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          else
+            cmake -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DQt6_DIR="${Qt6_DIR}"
+          fi
 
       - name: Build (Release)
         shell: bash
@@ -77,9 +86,7 @@ jobs:
             throw "MyStocks.exe not found"
           }
 
-          windeployqt --release $exePath
-          $bundleDir = Split-Path -Parent $exePath
-          Compress-Archive -Path "$bundleDir/*" -DestinationPath "${{ matrix.artifact_file }}" -Force
+          Compress-Archive -Path $exePath -DestinationPath "${{ matrix.artifact_file }}" -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

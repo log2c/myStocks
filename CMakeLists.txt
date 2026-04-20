@@ -38,7 +38,7 @@ if(WIN32)
 
     if(MSVC)
         set_target_properties(qhotkey PROPERTIES
-            MSVC_RUNTIME_LIBRARY "MultiThreadedDLL"
+            MSVC_RUNTIME_LIBRARY "${CMAKE_MSVC_RUNTIME_LIBRARY}"
         )
         target_compile_options(qhotkey PRIVATE /EHsc)
     endif()
