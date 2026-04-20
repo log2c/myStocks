@@ -41,7 +41,7 @@ struct AppConfig {
     int pollMs = 3000;
     double opacity = 0.9;
     QString hotkey = "Ctrl+Alt+S";
-    QString apiSource = "mock";
+    QString apiSource = "tencent";
     QString xtickToken;
     QString language = "auto";
 

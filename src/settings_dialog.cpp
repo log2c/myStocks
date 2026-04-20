@@ -229,10 +229,10 @@ QWidget* SettingsDialog::buildGeneralTab() {
     }
 
     m_sourceCombo = new QComboBox(w);
+    m_sourceCombo->addItem(trText("settings.source.tencent"), "tencent");
     m_sourceCombo->addItem(trText("settings.source.mock"), "mock");
     m_sourceCombo->addItem(trText("settings.source.xtick"), "xtick");
     m_sourceCombo->addItem(trText("settings.source.sina"), "sina");
-    m_sourceCombo->addItem(trText("settings.source.tencent"), "tencent");
     m_sourceCombo->addItem(trText("settings.source.eastmoney"), "eastmoney");
     const int sourceIndex = m_sourceCombo->findData(m_cfg.apiSource);
     if (sourceIndex >= 0) {

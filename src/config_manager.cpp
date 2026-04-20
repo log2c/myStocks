@@ -163,7 +163,7 @@ AppConfig ConfigManager::loadConfig() {
         && cfg.apiSource != "sina"
         && cfg.apiSource != "tencent"
         && cfg.apiSource != "eastmoney") {
-        cfg.apiSource = "mock";
+        cfg.apiSource = "tencent";
     }
 
     cfg.userAgent = cfg.userAgent.trimmed();
