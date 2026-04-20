@@ -39,6 +39,7 @@ endif()
 
 qt_add_executable(MyStocks
     main.cpp
+    src/app_logging.cpp
     src/app_controller.cpp
     src/config_manager.cpp
     src/floating_window.cpp
@@ -48,6 +49,7 @@ qt_add_executable(MyStocks
     src/quote_model.cpp
     src/quote_provider.cpp
     src/settings_dialog.cpp
+    include/app_logging.h
     include/app_controller.h
     include/config_manager.h
     include/floating_window.h

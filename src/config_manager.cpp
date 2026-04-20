@@ -1,5 +1,6 @@
 #include "config_manager.h"
 
+#include "app_logging.h"
 #include "i18n.h"
 
 #include <QDebug>
@@ -105,6 +106,10 @@ AppConfig ConfigManager::loadConfig() {
         "general/debugIgnoreTradingTime",
         cfg.debugIgnoreTradingTime
     ).toBool();
+    cfg.logEnabled = s.value("log/enabled", cfg.logEnabled).toBool();
+    cfg.logLevel = app_logging::normalizeLogLevel(
+        s.value("log/level", cfg.logLevel).toString()
+    );
     cfg.transparentBackgroundEnabled = s.value(
         "ui/transparentBackgroundEnabled",
         cfg.transparentBackgroundEnabled
@@ -209,6 +214,9 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue("general/proxyUser", cfg.proxyUser);
     s.setValue("general/proxyPassword", cfg.proxyPassword);
     s.setValue("general/debugIgnoreTradingTime", cfg.debugIgnoreTradingTime);
+
+    s.setValue("log/enabled", cfg.logEnabled);
+    s.setValue("log/level", app_logging::normalizeLogLevel(cfg.logLevel));
 
     s.setValue("ui/showHeader", cfg.showHeader);
     s.setValue("ui/bgColor", cfg.bgColor);

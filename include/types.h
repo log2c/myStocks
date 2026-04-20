@@ -54,6 +54,9 @@ struct AppConfig {
 
     bool debugIgnoreTradingTime = false;
 
+    bool logEnabled = true;
+    QString logLevel = "info";
+
     bool transparentBackgroundEnabled = false;
     int transparentBackgroundOpacity = 100;
 

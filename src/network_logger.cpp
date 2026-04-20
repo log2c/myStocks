@@ -31,7 +31,7 @@ RequestTrace logRequestStart(
         ? QString::number(req.transferTimeout())
         : QString::number(kNetworkRequestTimeoutMs);
 
-    qInfo().noquote() << QString(
+    qDebug().noquote() << QString(
         "[NET][%1][%2] start method=%3 url=%4 timeout=%5ms proxy=%6 ua=%7"
     )
         .arg(trace.id)
@@ -68,7 +68,7 @@ void logRequestFinish(
         errorText = "reply is null";
     }
 
-    qInfo().noquote() << QString(
+    qDebug().noquote() << QString(
         "[NET][%1][%2] finish elapsed=%3ms status=%4 error=%5 bytes=%6"
     )
         .arg(trace.id)

@@ -1,5 +1,6 @@
 #include "app_controller.h"
 
+#include "app_logging.h"
 #include "config_manager.h"
 #include "floating_window.h"
 #include "i18n.h"
@@ -29,6 +30,7 @@
 AppController::AppController(QObject* parent)
     : QObject(parent) {
     m_cfg = ConfigManager::loadConfig();
+    app_logging::setLogConfig(m_cfg.logEnabled, m_cfg.logLevel);
     m_resolvedLanguage = i18n::resolveLanguage(m_cfg.language);
 
     m_stocks = ConfigManager::loadStocksFromYaml(findDataYaml());
@@ -62,6 +64,7 @@ AppController::AppController(QObject* parent)
     m_timer->start();
 
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() {
+        qInfo() << "Application aboutToQuit.";
         if (m_window) {
             m_cfg.windowRect = m_window->geometry();
         }
@@ -168,6 +171,7 @@ void AppController::openSettings() {
     }
 
     ConfigManager::saveConfig(m_cfg);
+    app_logging::setLogConfig(m_cfg.logEnabled, m_cfg.logLevel);
 
     m_model->setLanguage(m_resolvedLanguage);
     m_model->setConfig(m_cfg);

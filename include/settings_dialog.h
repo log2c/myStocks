@@ -32,7 +32,9 @@ private:
     static QColor buttonColor(QPushButton* btn);
 
     QWidget* buildGeneralTab();
+    QWidget* buildNetworkTab();
     QWidget* buildDisplayTab();
+    QWidget* buildOtherTab();
 
 private:
     AppConfig m_cfg;
@@ -49,6 +51,10 @@ private:
     QSpinBox* m_proxyPortSpin = nullptr;
     QLineEdit* m_proxyUserEdit = nullptr;
     QCheckBox* m_debugIgnoreTradingTimeCheck = nullptr;
+    QCheckBox* m_logEnabledCheck = nullptr;
+    QComboBox* m_logLevelCombo = nullptr;
+    QPushButton* m_openLogDirButton = nullptr;
+
     QCheckBox* m_transparentBackgroundCheck = nullptr;
     QSlider* m_transparentOpacitySlider = nullptr;
     QLabel* m_transparentOpacityLabel = nullptr;

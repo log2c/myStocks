@@ -1,14 +1,18 @@
 #include "settings_dialog.h"
 
+#include "app_logging.h"
 #include "i18n.h"
 
 #include <QAbstractItemView>
 #include <QColorDialog>
+#include <QDesktopServices>
 #include <QDialogButtonBox>
+#include <QDir>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QTabWidget>
+#include <QUrl>
 #include <QVBoxLayout>
 
 namespace {
@@ -46,7 +50,9 @@ SettingsDialog::SettingsDialog(const AppConfig& cfg, QWidget* parent)
     QVBoxLayout* root = new QVBoxLayout(this);
     QTabWidget* tabs = new QTabWidget(this);
     tabs->addTab(buildGeneralTab(), trText("settings.tab.general"));
+    tabs->addTab(buildNetworkTab(), trText("settings.tab.network"));
     tabs->addTab(buildDisplayTab(), trText("settings.tab.display"));
+    tabs->addTab(buildOtherTab(), trText("settings.tab.other"));
     root->addWidget(tabs);
 
     QDialogButtonBox* box = new QDialogButtonBox(
@@ -72,6 +78,8 @@ AppConfig SettingsDialog::config() const {
     out.proxyPort = m_proxyPortSpin->value();
     out.proxyUser = m_proxyUserEdit->text().trimmed();
     out.debugIgnoreTradingTime = m_debugIgnoreTradingTimeCheck->isChecked();
+    out.logEnabled = m_logEnabledCheck->isChecked();
+    out.logLevel = app_logging::normalizeLogLevel(m_logLevelCombo->currentData().toString());
     out.transparentBackgroundEnabled = m_transparentBackgroundCheck->isChecked();
     out.transparentBackgroundOpacity = m_transparentOpacitySlider->value();
     out.proxyPassword = m_proxyPasswordEdit->text();
@@ -187,35 +195,6 @@ QWidget* SettingsDialog::buildGeneralTab() {
     m_tokenEdit = new QLineEdit(m_cfg.xtickToken, w);
     m_tokenEdit->setPlaceholderText(trText("settings.general.token"));
 
-    m_userAgentEdit = new QLineEdit(m_cfg.userAgent, w);
-    if (m_userAgentEdit->text().trimmed().isEmpty()) {
-        m_userAgentEdit->setText(defaultChrome100UserAgent());
-    }
-
-    m_proxyTypeCombo = new QComboBox(w);
-    m_proxyTypeCombo->addItem(trText("settings.proxy.none"), "none");
-    m_proxyTypeCombo->addItem(trText("settings.proxy.http"), "http");
-    m_proxyTypeCombo->addItem(trText("settings.proxy.socks5"), "socks5");
-    int proxyTypeIndex = m_proxyTypeCombo->findData(m_cfg.proxyType.trimmed().toLower());
-    if (proxyTypeIndex < 0) {
-        proxyTypeIndex = 0;
-    }
-    m_proxyTypeCombo->setCurrentIndex(proxyTypeIndex);
-
-    m_proxyHostEdit = new QLineEdit(m_cfg.proxyHost, w);
-
-    m_proxyPortSpin = new QSpinBox(w);
-    m_proxyPortSpin->setRange(0, 65535);
-    m_proxyPortSpin->setValue(qBound(0, m_cfg.proxyPort, 65535));
-
-    m_proxyUserEdit = new QLineEdit(m_cfg.proxyUser, w);
-
-    m_debugIgnoreTradingTimeCheck = new QCheckBox(
-        trText("settings.general.debugIgnoreTradingTime"),
-        w
-    );
-    m_debugIgnoreTradingTimeCheck->setChecked(m_cfg.debugIgnoreTradingTime);
-
     m_transparentBackgroundCheck = new QCheckBox(
         trText("settings.general.transparentBackground"),
         w
@@ -234,9 +213,6 @@ QWidget* SettingsDialog::buildGeneralTab() {
     transparentOpacityLayout->setSpacing(8);
     transparentOpacityLayout->addWidget(m_transparentOpacitySlider, 1);
     transparentOpacityLayout->addWidget(m_transparentOpacityLabel);
-
-    m_proxyPasswordEdit = new QLineEdit(m_cfg.proxyPassword, w);
-    m_proxyPasswordEdit->setEchoMode(QLineEdit::Password);
 
     m_languageCombo = new QComboBox(w);
     m_languageCombo->addItem(trText("settings.language.auto"), "auto");
@@ -282,21 +258,54 @@ QWidget* SettingsDialog::buildGeneralTab() {
     form->addRow(trText("settings.general.hotkey"), m_hotkeyEdit);
     form->addRow(trText("settings.general.apiSource"), m_sourceCombo);
     form->addRow(trText("settings.general.token"), m_tokenEdit);
-    form->addRow(trText("settings.general.userAgent"), m_userAgentEdit);
-    form->addRow(trText("settings.general.proxyType"), m_proxyTypeCombo);
-    form->addRow(trText("settings.general.proxyHost"), m_proxyHostEdit);
-    form->addRow(trText("settings.general.proxyPort"), m_proxyPortSpin);
-    form->addRow(trText("settings.general.proxyUser"), m_proxyUserEdit);
-    form->addRow(m_debugIgnoreTradingTimeCheck);
     form->addRow(m_transparentBackgroundCheck);
     form->addRow(trText("settings.general.transparentOpacity"), transparentOpacityWidget);
-    form->addRow(trText("settings.general.proxyPassword"), m_proxyPasswordEdit);
     form->addRow(trText("settings.general.language"), m_languageCombo);
     form->addRow(trText("settings.general.background"), m_bgBtn);
     form->addRow(trText("settings.general.text"), m_textBtn);
     form->addRow(trText("settings.general.up"), m_upBtn);
     form->addRow(trText("settings.general.down"), m_downBtn);
     form->addRow(trText("settings.general.flat"), m_flatBtn);
+
+    return w;
+}
+
+QWidget* SettingsDialog::buildNetworkTab() {
+    QWidget* w = new QWidget(this);
+    QFormLayout* form = new QFormLayout(w);
+
+    m_userAgentEdit = new QLineEdit(m_cfg.userAgent, w);
+    if (m_userAgentEdit->text().trimmed().isEmpty()) {
+        m_userAgentEdit->setText(defaultChrome100UserAgent());
+    }
+
+    m_proxyTypeCombo = new QComboBox(w);
+    m_proxyTypeCombo->addItem(trText("settings.proxy.none"), "none");
+    m_proxyTypeCombo->addItem(trText("settings.proxy.http"), "http");
+    m_proxyTypeCombo->addItem(trText("settings.proxy.socks5"), "socks5");
+    int proxyTypeIndex = m_proxyTypeCombo->findData(m_cfg.proxyType.trimmed().toLower());
+    if (proxyTypeIndex < 0) {
+        proxyTypeIndex = 0;
+    }
+    m_proxyTypeCombo->setCurrentIndex(proxyTypeIndex);
+
+    m_proxyHostEdit = new QLineEdit(m_cfg.proxyHost, w);
+
+    m_proxyPortSpin = new QSpinBox(w);
+    m_proxyPortSpin->setRange(0, 65535);
+    m_proxyPortSpin->setValue(qBound(0, m_cfg.proxyPort, 65535));
+
+    m_proxyUserEdit = new QLineEdit(m_cfg.proxyUser, w);
+
+    m_proxyPasswordEdit = new QLineEdit(m_cfg.proxyPassword, w);
+    m_proxyPasswordEdit->setEchoMode(QLineEdit::Password);
+
+    form->addRow(trText("settings.general.userAgent"), m_userAgentEdit);
+    form->addRow(trText("settings.general.proxyType"), m_proxyTypeCombo);
+    form->addRow(trText("settings.general.proxyHost"), m_proxyHostEdit);
+    form->addRow(trText("settings.general.proxyPort"), m_proxyPortSpin);
+    form->addRow(trText("settings.general.proxyUser"), m_proxyUserEdit);
+    form->addRow(trText("settings.general.proxyPassword"), m_proxyPasswordEdit);
 
     return w;
 }
@@ -357,6 +366,54 @@ QWidget* SettingsDialog::buildDisplayTab() {
             m_columnMaxWidthSpins[i]
         );
     }
+
+    return w;
+}
+
+QWidget* SettingsDialog::buildOtherTab() {
+    QWidget* w = new QWidget(this);
+    QFormLayout* form = new QFormLayout(w);
+
+    m_debugIgnoreTradingTimeCheck = new QCheckBox(
+        trText("settings.general.debugIgnoreTradingTime"),
+        w
+    );
+    m_debugIgnoreTradingTimeCheck->setChecked(m_cfg.debugIgnoreTradingTime);
+
+    m_logEnabledCheck = new QCheckBox(trText("settings.other.logEnabled"), w);
+    m_logEnabledCheck->setChecked(m_cfg.logEnabled);
+
+    m_logLevelCombo = new QComboBox(w);
+    m_logLevelCombo->addItem(trText("settings.other.logLevel.debug"), "debug");
+    m_logLevelCombo->addItem(trText("settings.other.logLevel.info"), "info");
+    m_logLevelCombo->addItem(trText("settings.other.logLevel.warn"), "warn");
+    m_logLevelCombo->addItem(trText("settings.other.logLevel.error"), "error");
+
+    int logLevelIndex = m_logLevelCombo->findData(app_logging::normalizeLogLevel(m_cfg.logLevel));
+    if (logLevelIndex < 0) {
+        logLevelIndex = m_logLevelCombo->findData("info");
+    }
+    if (logLevelIndex >= 0) {
+        m_logLevelCombo->setCurrentIndex(logLevelIndex);
+    }
+
+    m_openLogDirButton = new QPushButton(trText("settings.other.openLogFolder"), w);
+    connect(m_openLogDirButton, &QPushButton::clicked, this, []() {
+        const QString logDir = app_logging::logDirectoryPath();
+        QDir().mkpath(logDir);
+        QDesktopServices::openUrl(QUrl::fromLocalFile(logDir));
+    });
+
+    connect(m_logEnabledCheck, &QCheckBox::toggled, this, [this](bool enabled) {
+        m_logLevelCombo->setEnabled(enabled);
+    });
+
+    m_logLevelCombo->setEnabled(m_logEnabledCheck->isChecked());
+
+    form->addRow(m_debugIgnoreTradingTimeCheck);
+    form->addRow(m_logEnabledCheck);
+    form->addRow(trText("settings.other.logLevel"), m_logLevelCombo);
+    form->addRow(m_openLogDirButton);
 
     return w;
 }
