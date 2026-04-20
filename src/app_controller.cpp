@@ -250,6 +250,10 @@ void AppController::setupHotkey() {
         m_hotkey = nullptr;
     }
 
+    if (m_cfg.hotkey.trimmed().isEmpty()) {
+        return;
+    }
+
     m_hotkey = new QHotkey(QKeySequence(m_cfg.hotkey), true, this);
     connect(m_hotkey, &QHotkey::activated, this, [this]() { toggleWindow(); });
 

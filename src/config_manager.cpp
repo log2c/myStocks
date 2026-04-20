@@ -153,9 +153,6 @@ AppConfig ConfigManager::loadConfig() {
 
     cfg.pollMs = qMax(500, cfg.pollMs);
     cfg.opacity = qBound(0.2, cfg.opacity, 1.0);
-    if (cfg.hotkey.trimmed().isEmpty()) {
-        cfg.hotkey = "Ctrl+Alt+S";
-    }
     if (cfg.apiSource != "mock"
         && cfg.apiSource != "xtick"
         && cfg.apiSource != "sina"

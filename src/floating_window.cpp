@@ -102,6 +102,7 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
         if (mouseEvent->button() == Qt::LeftButton) {
             m_dragging = true;
             m_dragOffset = mouseEvent->globalPosition().toPoint() - frameGeometry().topLeft();
+            grabMouse();
             return true;
         }
         break;
@@ -145,6 +146,7 @@ void FloatingWindow::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
         m_dragging = true;
         m_dragOffset = event->globalPosition().toPoint() - frameGeometry().topLeft();
+        grabMouse();
     }
     QWidget::mousePressEvent(event);
 }
@@ -160,6 +162,7 @@ void FloatingWindow::mouseMoveEvent(QMouseEvent* event) {
 void FloatingWindow::mouseReleaseEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
         m_dragging = false;
+        releaseMouse();
     }
     QWidget::mouseReleaseEvent(event);
 }

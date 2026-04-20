@@ -171,6 +171,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
     m_opacitySpin->setValue(m_cfg.opacity);
 
     m_hotkeyEdit = new QLineEdit(m_cfg.hotkey, w);
+    m_hotkeyEdit->setPlaceholderText(trText("settings.general.hotkeyHint"));
 
     m_sourceCombo = new QComboBox(w);
     m_sourceCombo->addItem(trText("settings.source.mock"), "mock");
