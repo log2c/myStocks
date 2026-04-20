@@ -11,8 +11,8 @@
 
 #include <QApplication>
 #include <QCoreApplication>
-#include <QEventLoop>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QHotkey>
 #include <QMenu>
@@ -67,18 +67,42 @@ AppController::AppController(QObject* parent)
     refreshQuotes();
 }
 
-QString AppController::findDataYaml() const {
-    const QStringList candidates = {
-        QDir::current().filePath("data.yaml"),
-        QDir(QCoreApplication::applicationDirPath()).filePath("data.yaml"),
-        QDir(QCoreApplication::applicationDirPath()).filePath("../data.yaml"),
-        QDir(QCoreApplication::applicationDirPath()).filePath("../../data.yaml")
-    };
+namespace {
 
-    for (const QString& p : candidates) {
-        if (QFileInfo::exists(p)) {
-            return QDir::cleanPath(p);
-        }
+QString defaultDataYamlTemplate() {
+    return QStringLiteral(
+        "# MyStocks stock list template\n"
+        "- code: sh000001\n"
+        "  name: SSE Composite\n"
+        "- code: sz399001\n"
+        "  name: SZSE Component\n"
+        "- code: sz399006\n"
+        "  name: ChiNext\n"
+    );
+}
+
+bool ensureDataYamlExists(const QString& path) {
+    const QFileInfo info(path);
+    if (info.exists() && info.size() > 0) {
+        return true;
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        return false;
+    }
+
+    const QByteArray content = defaultDataYamlTemplate().toUtf8();
+    qint64 written = file.write(content);
+    return written == content.size();
+}
+
+} // namespace
+
+QString AppController::findDataYaml() const {
+    const QString appDataPath = QDir(QCoreApplication::applicationDirPath()).filePath("data.yaml");
+    if (ensureDataYamlExists(appDataPath)) {
+        return QDir::cleanPath(appDataPath);
     }
 
     return {};

@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
 if(APPLE)
     if(NOT DEFINED CMAKE_PREFIX_PATH AND NOT DEFINED ENV{CMAKE_PREFIX_PATH})
@@ -30,9 +31,16 @@ include(FetchContent)
 FetchContent_Declare(
     QHotkey
     GIT_REPOSITORY https://github.com/Skycoder42/QHotkey.git
-    GIT_TAG master
+    GIT_TAG 1.5.0
 )
 FetchContent_MakeAvailable(QHotkey)
+
+if(WIN32)
+    set_target_properties(QHotkey PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreadedDLL"
+    )
+    target_compile_options(QHotkey PRIVATE /EHsc)
+endif()
 
 qt_add_executable(MyStocks
     main.cpp
