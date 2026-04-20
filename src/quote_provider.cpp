@@ -10,6 +10,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRandomGenerator>
+#include <QStringConverter>
 #include <QUrl>
 #include <QUrlQuery>
 
@@ -66,6 +67,30 @@ QString firstNonEmptyStringFromObject(const QJsonObject& obj, const QStringList&
     }
 
     return {};
+}
+
+QString decodeMarketName(const QByteArray& raw) {
+    if (raw.isEmpty()) {
+        return {};
+    }
+
+    // Some market endpoints return UTF-8, while others still return GB18030/GBK.
+    QStringDecoder utf8Decoder(QStringConverter::Utf8);
+    const QString utf8 = utf8Decoder(raw);
+    if (!utf8Decoder.hasError()) {
+        return utf8;
+    }
+
+    const auto gb18030 = QStringConverter::encodingForName("GB18030");
+    if (gb18030) {
+        QStringDecoder gbDecoder(*gb18030);
+        const QString gbText = gbDecoder(raw);
+        if (!gbDecoder.hasError()) {
+            return gbText;
+        }
+    }
+
+    return QString::fromLatin1(raw);
 }
 
 QString normalizedSymbol(const QString& rawCode) {
@@ -477,7 +502,7 @@ void SinaQuoteProvider::handleResponse(const QByteArray& body, const QString& er
         const StockItem stock = m_symbolMap.value(symbol, StockItem{symbol, symbol});
         const QString remoteName = fields.isEmpty()
             ? QString()
-            : QString::fromLocal8Bit(fields.at(0).trimmed()).trimmed();
+            : decodeMarketName(fields.at(0).trimmed()).trimmed();
 
         QuoteItem q;
         q.code = stock.code;
@@ -596,7 +621,7 @@ void TencentQuoteProvider::handleResponse(const QByteArray& body, const QString&
 
         const StockItem stock = m_symbolMap.value(symbol, StockItem{symbol, symbol});
         const QString remoteName = (fields.size() > 1)
-            ? QString::fromLocal8Bit(fields.at(1).trimmed()).trimmed()
+            ? decodeMarketName(fields.at(1).trimmed()).trimmed()
             : QString();
 
         QuoteItem q;
