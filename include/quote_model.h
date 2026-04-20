@@ -4,6 +4,7 @@
 
 #include <QAbstractTableModel>
 #include <QHash>
+#include <QTimer>
 
 class QuoteModel : public QAbstractTableModel {
 public:
@@ -27,4 +28,9 @@ private:
     QHash<QString, int> m_rowByCode;
     AppConfig m_cfg;
     QString m_language = "en_US";
+
+    // blink state: row -> remaining half-periods (4 = 2 full blinks)
+    QHash<int, int> m_blinkCounters;
+    QTimer* m_blinkTimer = nullptr;
+    bool m_blinkPhase = false; // true = highlight phase
 };

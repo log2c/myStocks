@@ -13,6 +13,7 @@ enum QuoteColumn {
     ColPrice,
     ColPct,
     ColChange,
+    ColIndicator,
     ColCount
 };
 
@@ -54,6 +55,9 @@ struct AppConfig {
 
     bool debugIgnoreTradingTime = false;
 
+    bool simpleModeEnabled = false;
+    bool blinkReminderEnabled = false;
+
     bool logEnabled = true;
     QString logLevel = "info";
 
@@ -61,6 +65,8 @@ struct AppConfig {
     int transparentBackgroundOpacity = 100;
 
     bool showHeader = true;
+    bool showGrid = false;
+    QColor gridColor = QColor(255, 255, 255, 80);
     QColor bgColor = QColor(18, 18, 18, 190);
     QColor textColor = QColor(245, 245, 245);
     QColor upColor = QColor(255, 64, 64);
@@ -72,7 +78,8 @@ struct AppConfig {
         {ColName, true},
         {ColPrice, true},
         {ColPct, true},
-        {ColChange, true}
+        {ColChange, true},
+        {ColIndicator, true}
     };
 
     QVector<int> columnOrder {
@@ -80,7 +87,8 @@ struct AppConfig {
         ColName,
         ColPrice,
         ColPct,
-        ColChange
+        ColChange,
+        ColIndicator
     };
 
     // 0 means auto max width based on current column content/header.
@@ -89,7 +97,8 @@ struct AppConfig {
         {ColName, 0},
         {ColPrice, 0},
         {ColPct, 0},
-        {ColChange, 0}
+        {ColChange, 0},
+        {ColIndicator, 0}
     };
 
     QMap<int, int> columnWidths;

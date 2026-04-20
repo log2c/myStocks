@@ -63,6 +63,10 @@ const TranslationMap& translations() {
                 {"settings.proxy.http", "HTTP"},
                 {"settings.proxy.socks5", "SOCKS5"},
                 {"settings.display.showHeader", "Show table header"},
+                {"settings.display.showGrid", "Show grid lines"},
+                {"settings.display.gridColor", "Grid color"},
+                {"settings.display.simpleMode", "Simple mode"},
+                {"settings.display.blinkReminder", "Blink reminder"},
                 {"settings.display.columns", "Columns"},
                 {"settings.display.columnsHint", "Check to show, uncheck to remove, drag to reorder."},
                 {"settings.display.columnVisibleFmt", "Column %1 visible"},
@@ -134,6 +138,10 @@ const TranslationMap& translations() {
                 {"settings.proxy.http", "HTTP"},
                 {"settings.proxy.socks5", "SOCKS5"},
                 {"settings.display.showHeader", "显示表头"},
+                {"settings.display.showGrid", "显示网格线"},
+                {"settings.display.gridColor", "网格线颜色"},
+                {"settings.display.simpleMode", "简洁模式"},
+                {"settings.display.blinkReminder", "闪烁提醒"},
                 {"settings.display.columns", "显示列"},
                 {"settings.display.columnsHint", "勾选即显示，取消即移除，拖动可调整顺序。"},
                 {"settings.display.columnVisibleFmt", "第 %1 列显示"},
@@ -210,9 +218,9 @@ QString t(const QString& key, const QString& language) {
 
 QStringList columnNames(const QString& language) {
     if (resolvedLanguageCode(language) == "zh_CN") {
-        return {"代码", "名称", "最新价", "涨跌幅", "涨跌额"};
+        return {"代码", "名称", "最新价", "涨跌幅", "涨跌额", "标识"};
     }
-    return {"Code", "Name", "Price", "Change%", "Change"};
+    return {"Code", "Name", "Price", "Change%", "Change", "Signal"};
 }
 
 } // namespace i18n

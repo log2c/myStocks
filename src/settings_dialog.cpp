@@ -124,6 +124,10 @@ AppConfig SettingsDialog::config() const {
     out.flatColor = buttonColor(m_flatBtn);
 
     out.showHeader = m_showHeaderCheck->isChecked();
+    out.showGrid = m_showGridCheck->isChecked();
+    out.gridColor = buttonColor(m_gridColorBtn);
+    out.simpleModeEnabled = m_simpleModeCheck->isChecked();
+    out.blinkReminderEnabled = m_blinkReminderCheck->isChecked();
 
     for (int i = 0; i < ColCount; ++i) {
         out.visibleColumns[i] = false;
@@ -381,6 +385,28 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_showHeaderCheck = new QCheckBox(trText("settings.display.showHeader"), w);
     m_showHeaderCheck->setChecked(m_cfg.showHeader);
     form->addRow(m_showHeaderCheck);
+
+    m_showGridCheck = new QCheckBox(trText("settings.display.showGrid"), w);
+    m_showGridCheck->setChecked(m_cfg.showGrid);
+    m_gridColorBtn = createColorButton(w, m_cfg.gridColor, trText("settings.color.pick"));
+    m_gridColorBtn->setEnabled(m_cfg.showGrid);
+    connect(m_showGridCheck, &QCheckBox::toggled, this, [this](bool checked) {
+        m_gridColorBtn->setEnabled(checked);
+    });
+    form->addRow(m_showGridCheck);
+    form->addRow(trText("settings.display.gridColor"), m_gridColorBtn);
+
+    m_simpleModeCheck = new QCheckBox(trText("settings.display.simpleMode"), w);
+    m_simpleModeCheck->setChecked(m_cfg.simpleModeEnabled);
+    form->addRow(m_simpleModeCheck);
+
+    m_blinkReminderCheck = new QCheckBox(trText("settings.display.blinkReminder"), w);
+    m_blinkReminderCheck->setChecked(m_cfg.blinkReminderEnabled);
+    m_blinkReminderCheck->setEnabled(m_cfg.simpleModeEnabled);
+    connect(m_simpleModeCheck, &QCheckBox::toggled, this, [this](bool checked) {
+        m_blinkReminderCheck->setEnabled(checked);
+    });
+    form->addRow(m_blinkReminderCheck);
 
     const QStringList names = i18n::columnNames(m_uiLanguage);
     const QVector<int> columnOrder = normalizedColumnOrder(m_cfg.columnOrder);

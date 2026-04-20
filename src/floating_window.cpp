@@ -246,6 +246,7 @@ void FloatingWindow::applyStyle() {
         ? QColor(0, 0, 0, 0)
         : m_cfg.bgColor;
     const QColor t = m_cfg.textColor;
+    const QColor g = m_cfg.gridColor;
 
     const QString css = QString(
         "QFrame#panel{"
@@ -256,6 +257,7 @@ void FloatingWindow::applyStyle() {
         "background: transparent;"
         "border: none;"
         "color: rgb(%5,%6,%7);"
+        "gridline-color: rgba(%8,%9,%10,%11);"
         "}"
         "QHeaderView::section{"
         "background: transparent;"
@@ -274,9 +276,14 @@ void FloatingWindow::applyStyle() {
         .arg(b.alpha())
         .arg(t.red())
         .arg(t.green())
-        .arg(t.blue());
+        .arg(t.blue())
+        .arg(g.red())
+        .arg(g.green())
+        .arg(g.blue())
+        .arg(g.alpha());
 
     m_panel->setStyleSheet(css);
+    m_table->setShowGrid(m_cfg.showGrid);
     m_table->horizontalHeader()->setVisible(m_cfg.showHeader);
 
 #ifdef WIN32

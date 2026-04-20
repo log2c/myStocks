@@ -106,6 +106,8 @@ AppConfig ConfigManager::loadConfig() {
         "general/debugIgnoreTradingTime",
         cfg.debugIgnoreTradingTime
     ).toBool();
+    cfg.simpleModeEnabled = s.value("ui/simpleModeEnabled", cfg.simpleModeEnabled).toBool();
+    cfg.blinkReminderEnabled = s.value("ui/blinkReminderEnabled", cfg.blinkReminderEnabled).toBool();
     cfg.logEnabled = s.value("log/enabled", cfg.logEnabled).toBool();
     cfg.logLevel = app_logging::normalizeLogLevel(
         s.value("log/level", cfg.logLevel).toString()
@@ -120,6 +122,8 @@ AppConfig ConfigManager::loadConfig() {
     ).toInt();
 
     cfg.showHeader = s.value("ui/showHeader", cfg.showHeader).toBool();
+    cfg.showGrid = s.value("ui/showGrid", cfg.showGrid).toBool();
+    cfg.gridColor = s.value("ui/gridColor", cfg.gridColor).value<QColor>();
     cfg.bgColor = s.value("ui/bgColor", cfg.bgColor).value<QColor>();
     cfg.textColor = s.value("ui/textColor", cfg.textColor).value<QColor>();
     cfg.upColor = s.value("ui/upColor", cfg.upColor).value<QColor>();
@@ -219,6 +223,10 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue("log/level", app_logging::normalizeLogLevel(cfg.logLevel));
 
     s.setValue("ui/showHeader", cfg.showHeader);
+    s.setValue("ui/showGrid", cfg.showGrid);
+    s.setValue("ui/gridColor", cfg.gridColor);
+    s.setValue("ui/simpleModeEnabled", cfg.simpleModeEnabled);
+    s.setValue("ui/blinkReminderEnabled", cfg.blinkReminderEnabled);
     s.setValue("ui/bgColor", cfg.bgColor);
     s.setValue("ui/textColor", cfg.textColor);
     s.setValue("ui/upColor", cfg.upColor);
