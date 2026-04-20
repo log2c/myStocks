@@ -379,6 +379,23 @@ QString SettingsDialog::trText(const QString& key) const {
     return i18n::t(key, m_uiLanguage);
 }
 
+void SettingsDialog::updateHotkeyIndicator(const QKeySequence& seq) {
+    if (!m_hotkeyIndicator) {
+        return;
+    }
+
+    if (seq.isEmpty()) {
+        m_hotkeyIndicator->clear();
+        m_hotkeyIndicator->setToolTip(QString());
+        return;
+    }
+
+    // Valid format: has at least one modifier key + a real key → green ✓
+    m_hotkeyIndicator->setText(QStringLiteral("\u2713"));
+    m_hotkeyIndicator->setStyleSheet(QStringLiteral("color: green; font-weight: bold; font-size: 14px;"));
+    m_hotkeyIndicator->setToolTip(trText("hotkey.available"));
+}
+
 void SettingsDialog::paintColorButton(QPushButton* btn, const QColor& c) {
     btn->setText(QString("%1,%2,%3,%4").arg(c.red()).arg(c.green()).arg(c.blue()).arg(c.alpha()));
     const QString fg = (c.lightness() < 128) ? "white" : "black";
@@ -434,13 +451,13 @@ QWidget* SettingsDialog::buildGeneralTab() {
         }
 
         const QKeySequence normalized = normalizedHotkeySequence(sequence);
-        if (normalized == sequence) {
-            return;
+        if (normalized != sequence) {
+            m_normalizingHotkeySequence = true;
+            m_hotkeyEdit->setKeySequence(normalized);
+            m_normalizingHotkeySequence = false;
         }
 
-        m_normalizingHotkeySequence = true;
-        m_hotkeyEdit->setKeySequence(normalized);
-        m_normalizingHotkeySequence = false;
+        updateHotkeyIndicator(normalized);
     });
 
     {
@@ -449,6 +466,26 @@ QWidget* SettingsDialog::buildGeneralTab() {
             m_hotkeyEdit->setKeySequence(initialNormalized);
         }
     }
+
+    m_hotkeyIndicator = new QLabel(w);
+    m_hotkeyIndicator->setMinimumWidth(22);
+    m_hotkeyIndicator->setAlignment(Qt::AlignCenter);
+    updateHotkeyIndicator(normalizedHotkeySequence(m_hotkeyEdit->keySequence()));
+
+    m_hotkeyClearBtn = new QPushButton(QStringLiteral("✕"), w);
+    m_hotkeyClearBtn->setFixedWidth(28);
+    m_hotkeyClearBtn->setToolTip(trText("settings.general.hotkeyClear"));
+    connect(m_hotkeyClearBtn, &QPushButton::clicked, this, [this]() {
+        m_hotkeyEdit->setKeySequence(QKeySequence());
+    });
+
+    QWidget* hotkeyWidget = new QWidget(w);
+    QHBoxLayout* hotkeyLayout = new QHBoxLayout(hotkeyWidget);
+    hotkeyLayout->setContentsMargins(0, 0, 0, 0);
+    hotkeyLayout->setSpacing(6);
+    hotkeyLayout->addWidget(m_hotkeyEdit, 1);
+    hotkeyLayout->addWidget(m_hotkeyIndicator);
+    hotkeyLayout->addWidget(m_hotkeyClearBtn);
 
     m_sourceCombo = new QComboBox(w);
     m_sourceCombo->addItem(trText("settings.source.tencent"), "tencent");
@@ -540,7 +577,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
     m_bgBtn->setEnabled(!transparentModeEnabled);
 
     form->addRow(trText("settings.general.poll"), m_pollSpin);
-    form->addRow(trText("settings.general.hotkey"), m_hotkeyEdit);
+    form->addRow(trText("settings.general.hotkey"), hotkeyWidget);
     form->addRow(trText("settings.general.apiSource"), m_sourceCombo);
     form->addRow(trText("settings.general.token"), m_tokenEdit);
     form->addRow(m_transparentBackgroundCheck);

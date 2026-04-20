@@ -53,6 +53,8 @@ private:
     QWidget* buildStocksTab();
     QWidget* buildAboutTab();
 
+    void updateHotkeyIndicator(const QKeySequence& seq);
+
     void parseSinaSearchResult(const QByteArray& data);
     void doStockSearch(bool forceSearch = false);
 
@@ -66,6 +68,8 @@ private:
 
     QSpinBox* m_pollSpin = nullptr;
     QKeySequenceEdit* m_hotkeyEdit = nullptr;
+    QLabel* m_hotkeyIndicator = nullptr;
+    QPushButton* m_hotkeyClearBtn = nullptr;
     QComboBox* m_sourceCombo = nullptr;
     QLineEdit* m_tokenEdit = nullptr;
     QLineEdit* m_userAgentEdit = nullptr;

@@ -16,7 +16,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QIcon>
-#ifdef WIN32
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
 #include <QHotkey>
 #endif
 #include <QMenu>
@@ -53,10 +53,18 @@ AppController::AppController(QObject* parent)
     m_window = new FloatingWindow(m_model);
     m_window->setGeometry(m_cfg.windowRect);
     m_window->applyConfig(m_cfg);
-    m_window->show();
+    // Window starts hidden; user shows it via tray or hotkey
 
     setupTray();
-#ifdef WIN32
+    if (m_tray) {
+        m_tray->showMessage(
+            i18n::t("app.name", m_resolvedLanguage),
+            i18n::t("app.started", m_resolvedLanguage),
+            QSystemTrayIcon::Information,
+            2500
+        );
+    }
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     setupHotkey();
 #endif
     rebuildProvider();
@@ -236,7 +244,7 @@ void AppController::openSettings() {
     }
 
     setupTray();
-#ifdef WIN32
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     setupHotkey();
 #endif
     rebuildProvider();
@@ -369,7 +377,7 @@ void AppController::updateTrayTooltip() {
     m_tray->setToolTip(m_model->trayTooltipText());
 }
 
-#ifdef WIN32
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
 void AppController::setupHotkey() {
     if (m_hotkey) {
         m_hotkey->setRegistered(false);
@@ -381,7 +389,10 @@ void AppController::setupHotkey() {
         return;
     }
 
-    m_hotkey = new QHotkey(QKeySequence(m_cfg.hotkey), true, this);
+    m_hotkey = new QHotkey(
+        QKeySequence::fromString(m_cfg.hotkey, QKeySequence::PortableText),
+        true, this
+    );
     connect(m_hotkey, &QHotkey::activated, this, [this]() { toggleWindow(); });
 
     if (!m_hotkey->isRegistered() && m_tray) {

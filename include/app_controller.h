@@ -12,7 +12,7 @@
 
 class FloatingWindow;
 class IQuoteProvider;
-#ifdef WIN32
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
 class QHotkey;
 #endif
 class QuoteModel;
@@ -31,7 +31,9 @@ private:
     void refreshQuotes(bool force = false);
     void onProviderError(const QString& message);
     void setupTray();
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     void setupHotkey();
+#endif
     void rebuildProvider();
     int writeApiNamesToDataYaml();
     QHash<QString, QString> currentApiNamesByCode() const;
@@ -55,12 +57,13 @@ private:
 
     QTimer* m_timer = nullptr;
     QSystemTrayIcon* m_tray = nullptr;
-#ifdef WIN32
-    QHotkey* m_hotkey = nullptr;
-#endif
 
     QNetworkAccessManager m_probeNam;
     QDate m_probeDate;
     QDateTime m_probeCheckedAt;
     bool m_probeTradingDay = true;
+
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    QHotkey* m_hotkey = nullptr;
+#endif
 };

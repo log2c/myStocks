@@ -27,7 +27,7 @@ endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
 
-if(WIN32)
+if(WIN32 OR APPLE)
     include(FetchContent)
     FetchContent_Declare(
         QHotkey
@@ -70,6 +70,10 @@ target_link_libraries(MyStocks PRIVATE
     Qt6::Network
 )
 
+if(WIN32 OR APPLE)
+    target_link_libraries(MyStocks PRIVATE QHotkey::QHotkey)
+endif()
+
 if(WIN32)
     # Build as a GUI app so startup does not show a transient console window.
     set_target_properties(MyStocks PROPERTIES WIN32_EXECUTABLE TRUE)
@@ -78,8 +82,6 @@ if(WIN32)
     target_sources(MyStocks PRIVATE
         app_icon.rc
     )
-
-    target_link_libraries(MyStocks PRIVATE QHotkey::QHotkey)
 
     if(MSVC)
         # Use static runtime (/MT) for Release to reduce redistribution footprint.
