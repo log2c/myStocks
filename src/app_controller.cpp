@@ -394,7 +394,7 @@ bool AppController::probeTradingDay(const QDate& bjDate) {
     }
 
     const QByteArray body = reply->readAll();
-    network_logger::logRequestFinish(trace, reply, body.size());
+    network_logger::logRequestFinish(trace, reply, body.size(), body);
 
     const QString errorText = reply->error() == QNetworkReply::NoError ? QString() : reply->errorString();
     reply->deleteLater();

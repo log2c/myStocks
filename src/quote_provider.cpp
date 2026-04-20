@@ -52,6 +52,22 @@ double firstNumberFromObject(const QJsonObject& obj, const QStringList& keys) {
     return qQNaN();
 }
 
+QString firstNonEmptyStringFromObject(const QJsonObject& obj, const QStringList& keys) {
+    for (const QString& key : keys) {
+        const QJsonValue v = obj.value(key);
+        if (!v.isString()) {
+            continue;
+        }
+
+        const QString s = v.toString().trimmed();
+        if (!s.isEmpty()) {
+            return s;
+        }
+    }
+
+    return {};
+}
+
 QString normalizedSymbol(const QString& rawCode) {
     QString raw = rawCode.trimmed().toLower();
     if (raw.isEmpty()) {
@@ -228,7 +244,7 @@ void XTickQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
                 : reply->errorString();
             const QByteArray body = reply->readAll();
 
-            network_logger::logRequestFinish(trace, reply, body.size());
+            network_logger::logRequestFinish(trace, reply, body.size(), body);
 
             reply->deleteLater();
             handleResponse(type, body, err);
@@ -327,7 +343,11 @@ void XTickQuoteProvider::handleResponse(int reqType, const QByteArray& body, con
 
                 QuoteItem q;
                 q.code = stock.code;
-                q.name = stock.name;
+                const QString remoteName = firstNonEmptyStringFromObject(
+                    obj,
+                    {"name", "stockName", "codeName", "cname", "x001", "n"}
+                );
+                q.name = remoteName.isEmpty() ? stock.name : remoteName;
                 q.price = last;
                 q.change = last - pre;
                 q.pct = qFuzzyIsNull(pre) ? 0.0 : (q.change / pre * 100.0);
@@ -390,7 +410,7 @@ void SinaQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
             : reply->errorString();
         const QByteArray body = reply->readAll();
 
-        network_logger::logRequestFinish(trace, reply, body.size());
+        network_logger::logRequestFinish(trace, reply, body.size(), body);
 
         reply->deleteLater();
         handleResponse(body, err);
@@ -455,10 +475,13 @@ void SinaQuoteProvider::handleResponse(const QByteArray& body, const QString& er
         }
 
         const StockItem stock = m_symbolMap.value(symbol, StockItem{symbol, symbol});
+        const QString remoteName = fields.isEmpty()
+            ? QString()
+            : QString::fromLocal8Bit(fields.at(0).trimmed()).trimmed();
 
         QuoteItem q;
         q.code = stock.code;
-        q.name = stock.name;
+        q.name = remoteName.isEmpty() ? stock.name : remoteName;
         q.price = last;
 
         const double preSafe = (std::isnan(pre) || qFuzzyIsNull(pre)) ? last : pre;
@@ -515,7 +538,7 @@ void TencentQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
             : reply->errorString();
         const QByteArray body = reply->readAll();
 
-        network_logger::logRequestFinish(trace, reply, body.size());
+        network_logger::logRequestFinish(trace, reply, body.size(), body);
 
         reply->deleteLater();
         handleResponse(body, err);
@@ -572,10 +595,13 @@ void TencentQuoteProvider::handleResponse(const QByteArray& body, const QString&
         }
 
         const StockItem stock = m_symbolMap.value(symbol, StockItem{symbol, symbol});
+        const QString remoteName = (fields.size() > 1)
+            ? QString::fromLocal8Bit(fields.at(1).trimmed()).trimmed()
+            : QString();
 
         QuoteItem q;
         q.code = stock.code;
-        q.name = stock.name;
+        q.name = remoteName.isEmpty() ? stock.name : remoteName;
         q.price = last;
 
         const double preSafe = (std::isnan(pre) || qFuzzyIsNull(pre)) ? last : pre;
@@ -631,7 +657,7 @@ void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
                 : reply->errorString();
             const QByteArray body = reply->readAll();
 
-            network_logger::logRequestFinish(trace, reply, body.size());
+            network_logger::logRequestFinish(trace, reply, body.size(), body);
 
             reply->deleteLater();
             handleResponse(stock, body, err);

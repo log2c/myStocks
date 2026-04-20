@@ -8,6 +8,26 @@
 namespace {
 
 std::atomic<qint64> g_requestId {1};
+inline constexpr qsizetype kMaxBodyPreviewBytes = 2048;
+
+QString compactBodyPreview(const QByteArray& body) {
+    if (body.isEmpty()) {
+        return "<empty>";
+    }
+
+    const bool truncated = body.size() > kMaxBodyPreviewBytes;
+    const QByteArray previewBytes = truncated ? body.left(kMaxBodyPreviewBytes) : body;
+
+    QString preview = QString::fromUtf8(previewBytes);
+    preview.replace('\r', "\\r");
+    preview.replace('\n', "\\n");
+
+    if (truncated) {
+        preview += QString(" ...(truncated %1 bytes)").arg(body.size() - previewBytes.size());
+    }
+
+    return preview;
+}
 
 } // namespace
 
@@ -48,7 +68,8 @@ RequestTrace logRequestStart(
 void logRequestFinish(
     const RequestTrace& trace,
     const QNetworkReply* reply,
-    qsizetype bodyBytes
+    qsizetype bodyBytes,
+    const QByteArray& body
 ) {
     const qint64 elapsedMs = QDateTime::currentMSecsSinceEpoch() - trace.startedAtMs;
 
@@ -77,6 +98,11 @@ void logRequestFinish(
         .arg(statusText)
         .arg(errorText)
         .arg(bodyBytes);
+
+    qDebug().noquote() << QString("[NET][%1][%2] response=%3")
+        .arg(trace.id)
+        .arg(trace.source)
+        .arg(compactBodyPreview(body));
 }
 
 QString proxyToString(const QNetworkProxy& proxy) {

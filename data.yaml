@@ -2,12 +2,76 @@ ver: 1
 
 # stocks
 stocks:
-  - code: sh000001
-    name: 上证指数
-  - code: sz399001
-    name: 深证成指
-  - code: sz399006
-    name: 创业板指
   - code: sz300438
-    name: 鹏辉能源
+    name: sz300438
+  - code: sz301358
+    name: sz301358
+  - code: sz300274
+    name: sz300274
+  - code: sz002460
+    name: sz002460
+  - code: hkhstech
+    name: hkhstech
+  - code: sz000792
+    name: sz000792
+  - code: sh000001
+    name: sh000001
+  - code: sz399006
+    name: sz399006
+  - code: sh000300
+    name: sh000300
+  - code: sh000016
+    name: sh000016
+  - code: sh000688
+    name: sh000688
+  - code: sh515880
+    name: sh515880
+  - code: hk03690
+    name: hk03690
+  - code: hk00700
+    name: hk00700
+  - code: usr_ixic
+    name: usr_ixic
+  - code: usr_dji
+    name: usr_dji
+  - code: usr_inx
+    name: usr_inx
+  - code: nf_IF0
+    name: nf_IF0
+  - code: nf_IH0
+    name: nf_IH0
+  - code: nf_IC0
+    name: nf_IC0
+  - code: nf_IM0
+    name: nf_IM0
+  - code: hf_OIL
+    name: hf_OIL
+  - code: hf_CHA50CFD
+    name: hf_CHA50CFD
+  - code: sz300394
+    name: sz300394
+  - code: sh588200
+    name: sh588200
+  - code: sh561980
+    name: sh561980
+  - code: sh563380
+    name: sh563380
+  - code: sh516020
+    name: sh516020
+  - code: sh512400
+    name: sh512400
+  - code: sh516160
+    name: sh516160
+  - code: sh603799
+    name: sh603799
+  - code: sz300450
+    name: sz300450
+  - code: sz002050
+    name: sz002050
+  - code: hk01772
+    name: hk01772
+  - code: hk02050
+    name: hk02050
+  - code: sh600673
+    name: sh600673
 

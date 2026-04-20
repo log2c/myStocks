@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QNetworkProxy>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -28,7 +29,8 @@ RequestTrace logRequestStart(
 void logRequestFinish(
     const RequestTrace& trace,
     const QNetworkReply* reply,
-    qsizetype bodyBytes
+    qsizetype bodyBytes,
+    const QByteArray& body
 );
 
 QString proxyToString(const QNetworkProxy& proxy);
