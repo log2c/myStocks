@@ -128,6 +128,7 @@ AppConfig SettingsDialog::config() const {
     out.gridColor = buttonColor(m_gridColorBtn);
     out.simpleModeEnabled = m_simpleModeCheck->isChecked();
     out.blinkReminderEnabled = m_blinkReminderCheck->isChecked();
+    out.trayTooltipEnabled = m_trayTooltipCheck->isChecked();
 
     for (int i = 0; i < ColCount; ++i) {
         out.visibleColumns[i] = false;
@@ -407,6 +408,10 @@ QWidget* SettingsDialog::buildDisplayTab() {
         m_blinkReminderCheck->setEnabled(checked);
     });
     form->addRow(m_blinkReminderCheck);
+
+    m_trayTooltipCheck = new QCheckBox(trText("settings.display.trayTooltip"), w);
+    m_trayTooltipCheck->setChecked(m_cfg.trayTooltipEnabled);
+    form->addRow(m_trayTooltipCheck);
 
     const QStringList names = i18n::columnNames(m_uiLanguage);
     const QVector<int> columnOrder = normalizedColumnOrder(m_cfg.columnOrder);

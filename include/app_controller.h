@@ -41,6 +41,7 @@ private:
     bool isWithinHongKongTradingSession(const QDateTime& bjNow) const;
     bool probeTradingDay(const QDate& bjDate);
     QString probeTradingDateText(const QByteArray& body) const;
+    void updateTrayTooltip();
 
 private:
     AppConfig m_cfg;

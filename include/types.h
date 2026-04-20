@@ -57,6 +57,7 @@ struct AppConfig {
 
     bool simpleModeEnabled = false;
     bool blinkReminderEnabled = false;
+    bool trayTooltipEnabled = false;
 
     bool logEnabled = true;
     QString logLevel = "info";

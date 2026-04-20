@@ -39,6 +39,26 @@ QString indicatorSymbol(const QString& code, double pct) {
     return QStringLiteral("-");
 }
 
+// Returns -3..+3: sign = direction, abs = intensity (1=light, 2=normal, 3=strong)
+int indicatorLevel(const QString& code, double pct) {
+    if (std::isnan(pct)) return 0;
+    const double limitPct = isHighLimitCode(code) ? 10.0 : 9.9;
+    if (pct >= limitPct)        return  3;
+    if (pct >= 3.0)             return  2;
+    if (pct > 0.0)              return  1;
+    if (pct == 0.0)             return  0;
+    if (pct > -3.0)             return -1;
+    if (pct > -limitPct)        return -2;
+    return -3;
+}
+
+// Adjust HSV value of a color by delta, clamped to [0, 255].
+QColor adjustedValue(const QColor& base, int delta) {
+    const QColor h = base.toHsv();
+    const int v = qBound(0, h.value() + delta, 255);
+    return QColor::fromHsv(h.hsvHue(), h.hsvSaturation(), v, h.alpha());
+}
+
 QString withHongKongNamePrefix(const QString& code, const QString& name) {
     if (!isHongKongCode(code)) {
         return name;
@@ -145,24 +165,28 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
 
     if (role == Qt::ForegroundRole) {
         if (index.column() == ColIndicator) {
-            // Blink: alternate between white and normal indicator color
+            // Determine base color from direction
+            const int level = indicatorLevel(q.code, q.pct);
+            QColor base;
+            if (level > 0)      base = m_cfg.upColor;
+            else if (level < 0) base = m_cfg.downColor;
+            else                base = m_cfg.flatColor;
+
+            // Derive intensity: level 1 → dim, level 2 → normal, level 3 → bright
+            const int absLevel = std::abs(level);
+            QColor indicatorColor;
+            if      (absLevel == 1) indicatorColor = adjustedValue(base, -50);
+            else if (absLevel == 3) indicatorColor = adjustedValue(base, +50);
+            else                    indicatorColor = base;
+
+            // Blink: alternate between white and the indicator color
             if (m_blinkCounters.contains(index.row())) {
                 const int count = m_blinkCounters.value(index.row());
                 if (count % 2 == 0) {
                     return QColor(Qt::white);
                 }
             }
-            // Normal indicator color follows up/down/flat logic
-            if (std::isnan(q.pct)) {
-                return m_cfg.textColor;
-            }
-            if (q.pct > 0.0) {
-                return m_cfg.upColor;
-            }
-            if (q.pct < 0.0) {
-                return m_cfg.downColor;
-            }
-            return m_cfg.flatColor;
+            return indicatorColor;
         }
         if (m_cfg.simpleModeEnabled) {
             return m_cfg.textColor;
@@ -243,6 +267,21 @@ void QuoteModel::setConfig(const AppConfig& cfg) {
 void QuoteModel::setLanguage(const QString& language) {
     m_language = i18n::resolveLanguage(language);
     emit headerDataChanged(Qt::Horizontal, 0, ColCount - 1);
+}
+
+QString QuoteModel::trayTooltipText() const {
+    QStringList lines;
+    for (const QuoteItem& q : m_rows) {
+        const QString price = std::isnan(q.price)
+            ? QStringLiteral("--")
+            : QString::number(q.price, 'f', 3);
+        const QString pct = std::isnan(q.pct)
+            ? QStringLiteral("--")
+            : formatSigned(q.pct, 2, true);
+        const QString indicator = indicatorSymbol(q.code, q.pct);
+        lines.append(QString("%1%2-%3(%4)").arg(indicator, q.name, price, pct));
+    }
+    return lines.join('\n');
 }
 
 QString QuoteModel::formatSigned(double value, int precision, bool percent) {

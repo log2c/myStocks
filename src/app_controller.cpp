@@ -214,6 +214,7 @@ void AppController::openSettings() {
     setupHotkey();
 #endif
     rebuildProvider();
+    updateTrayTooltip();
     refreshQuotes(true);
 }
 
@@ -331,6 +332,17 @@ void AppController::setupTray() {
     );
 }
 
+void AppController::updateTrayTooltip() {
+    if (!m_tray) {
+        return;
+    }
+    if (!m_cfg.trayTooltipEnabled) {
+        m_tray->setToolTip(QString());
+        return;
+    }
+    m_tray->setToolTip(m_model->trayTooltipText());
+}
+
 #ifdef WIN32
 void AppController::setupHotkey() {
     if (m_hotkey) {
@@ -397,6 +409,9 @@ void AppController::rebuildProvider() {
     });
 
     connect(m_provider, &IQuoteProvider::quotesReady, m_model, &QuoteModel::updateQuotes);
+    connect(m_provider, &IQuoteProvider::quotesReady, this, [this](const QVector<QuoteItem>&) {
+        updateTrayTooltip();
+    });
     connect(m_provider, &IQuoteProvider::error, this, [this](const QString& msg) {
         onProviderError(msg);
     });

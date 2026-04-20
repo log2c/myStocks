@@ -19,6 +19,7 @@ public:
     void updateQuotes(const QVector<QuoteItem>& quotes);
     void setConfig(const AppConfig& cfg);
     void setLanguage(const QString& language);
+    QString trayTooltipText() const;
 
 private:
     static QString formatSigned(double value, int precision, bool percent);

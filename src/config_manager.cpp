@@ -108,6 +108,7 @@ AppConfig ConfigManager::loadConfig() {
     ).toBool();
     cfg.simpleModeEnabled = s.value("ui/simpleModeEnabled", cfg.simpleModeEnabled).toBool();
     cfg.blinkReminderEnabled = s.value("ui/blinkReminderEnabled", cfg.blinkReminderEnabled).toBool();
+    cfg.trayTooltipEnabled = s.value("ui/trayTooltipEnabled", cfg.trayTooltipEnabled).toBool();
     cfg.logEnabled = s.value("log/enabled", cfg.logEnabled).toBool();
     cfg.logLevel = app_logging::normalizeLogLevel(
         s.value("log/level", cfg.logLevel).toString()
@@ -227,6 +228,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue("ui/gridColor", cfg.gridColor);
     s.setValue("ui/simpleModeEnabled", cfg.simpleModeEnabled);
     s.setValue("ui/blinkReminderEnabled", cfg.blinkReminderEnabled);
+    s.setValue("ui/trayTooltipEnabled", cfg.trayTooltipEnabled);
     s.setValue("ui/bgColor", cfg.bgColor);
     s.setValue("ui/textColor", cfg.textColor);
     s.setValue("ui/upColor", cfg.upColor);

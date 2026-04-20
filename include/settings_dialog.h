@@ -79,6 +79,7 @@ private:
     QPushButton* m_gridColorBtn = nullptr;
     QCheckBox* m_simpleModeCheck = nullptr;
     QCheckBox* m_blinkReminderCheck = nullptr;
+    QCheckBox* m_trayTooltipCheck = nullptr;
     QListWidget* m_columnList = nullptr;
     QVector<QSpinBox*> m_columnMaxWidthSpins;
     bool m_normalizingHotkeySequence = false;
