@@ -6,6 +6,31 @@
 
 #include <cmath>
 
+namespace {
+
+bool isHongKongCode(const QString& rawCode) {
+    return rawCode.trimmed().toLower().startsWith("hk");
+}
+
+QString withHongKongNamePrefix(const QString& code, const QString& name) {
+    if (!isHongKongCode(code)) {
+        return name;
+    }
+
+    const QString trimmed = name.trimmed();
+    if (trimmed.isEmpty()) {
+        return name;
+    }
+
+    if (trimmed.startsWith("H ")) {
+        return trimmed;
+    }
+
+    return "H " + trimmed;
+}
+
+} // namespace
+
 QuoteModel::QuoteModel(QObject* parent)
     : QAbstractTableModel(parent) {}
 
@@ -50,7 +75,7 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
         case ColCode:
             return q.code;
         case ColName:
-            return q.name;
+            return withHongKongNamePrefix(q.code, q.name);
         case ColPrice:
             return std::isnan(q.price) ? QString("--") : QString::number(q.price, 'f', 3);
         case ColPct:

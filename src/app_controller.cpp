@@ -106,6 +106,10 @@ bool ensureDataYamlExists(const QString& path) {
     return written == content.size();
 }
 
+bool isHongKongCode(const QString& rawCode) {
+    return rawCode.trimmed().toLower().startsWith("hk");
+}
+
 } // namespace
 
 QString AppController::findDataYaml() const {
@@ -241,6 +245,9 @@ void AppController::reloadStocksFromYaml() {
 
     m_stocks = loaded;
     m_apiNamesByCode.clear();
+    m_probeDate = QDate();
+    m_probeCheckedAt = QDateTime();
+    m_probeTradingDay = true;
 
     if (m_model) {
         m_model->setStocks(m_stocks);
@@ -655,7 +662,20 @@ bool AppController::shouldPollNow() {
     return m_probeTradingDay;
 }
 
+bool AppController::hasHongKongStocks() const {
+    for (const StockItem& stock : m_stocks) {
+        if (isHongKongCode(stock.code)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool AppController::isWithinTradingSession(const QDateTime& bjNow) const {
+    if (hasHongKongStocks()) {
+        return isWithinHongKongTradingSession(bjNow);
+    }
+
     if (!bjNow.isValid()) {
         return true;
     }
@@ -670,17 +690,38 @@ bool AppController::isWithinTradingSession(const QDateTime& bjNow) const {
     return morning || afternoon;
 }
 
+bool AppController::isWithinHongKongTradingSession(const QDateTime& bjNow) const {
+    if (!bjNow.isValid()) {
+        return true;
+    }
+
+    if (bjNow.date().dayOfWeek() > 5) {
+        return false;
+    }
+
+    const QTime t = bjNow.time();
+    const bool morning = (t >= QTime(9, 30) && t < QTime(12, 0));
+    const bool afternoon = (t >= QTime(13, 0) && t < QTime(16, 0));
+    return morning || afternoon;
+}
+
 bool AppController::probeTradingDay(const QDate& bjDate) {
+    const bool useHongKongProbe = hasHongKongStocks();
+
     const QNetworkProxy proxy = network_utils::proxyFromConfig(m_cfg);
     m_probeNam.setProxy(proxy);
 
-    QNetworkRequest req(QUrl("https://qt.gtimg.cn/q=sh000001"));
+    const QUrl probeUrl = useHongKongProbe
+        ? QUrl("https://qt.gtimg.cn/q=hk00700")
+        : QUrl("https://qt.gtimg.cn/q=sh000001");
+
+    QNetworkRequest req(probeUrl);
     req.setRawHeader("User-Agent", network_utils::effectiveUserAgent(m_cfg).toUtf8());
-    req.setRawHeader("Referer", "https://gu.qq.com");
+    req.setRawHeader("Referer", useHongKongProbe ? "https://gu.qq.com/hk/" : "https://gu.qq.com");
     req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
 
     const network_logger::RequestTrace trace = network_logger::logRequestStart(
-        "market-probe",
+        useHongKongProbe ? "market-probe-hk" : "market-probe",
         "GET",
         req,
         proxy
@@ -731,10 +772,21 @@ bool AppController::probeTradingDay(const QDate& bjDate) {
 
 QString AppController::probeTradingDateText(const QByteArray& body) const {
     const QString text = QString::fromLatin1(body);
-    const QRegularExpression re("(20\\d{6})\\d{6}");
-    const QRegularExpressionMatch match = re.match(text);
-    if (!match.hasMatch()) {
-        return {};
+    {
+        const QRegularExpression compactRe("(20\\d{2})(\\d{2})(\\d{2})\\d{6}");
+        const QRegularExpressionMatch match = compactRe.match(text);
+        if (match.hasMatch()) {
+            return match.captured(1) + match.captured(2) + match.captured(3);
+        }
     }
-    return match.captured(1);
+
+    {
+        const QRegularExpression dashedRe("(20\\d{2})-(\\d{2})-(\\d{2})");
+        const QRegularExpressionMatch match = dashedRe.match(text);
+        if (match.hasMatch()) {
+            return match.captured(1) + match.captured(2) + match.captured(3);
+        }
+    }
+
+    return {};
 }
