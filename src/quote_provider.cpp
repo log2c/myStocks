@@ -136,17 +136,7 @@ QString decodeMarketName(const QByteArray& raw) {
     return QString::fromLatin1(raw);
 }
 
-QString normalizedSymbol(const QString& rawCode) {
-    QString raw = rawCode.trimmed().toLower();
-    if (raw.isEmpty()) {
-        return {};
-    }
-
-    QString prefix;
-    if (raw.startsWith("sh") || raw.startsWith("sz")) {
-        prefix = raw.left(2);
-    }
-
+QString digitsOnly(const QString& raw) {
     QString digits;
     digits.reserve(raw.size());
     for (QChar ch : raw) {
@@ -154,6 +144,36 @@ QString normalizedSymbol(const QString& rawCode) {
             digits.append(ch);
         }
     }
+    return digits;
+}
+
+QString normalizedSymbol(const QString& rawCode) {
+    QString raw = rawCode.trimmed().toLower();
+    if (raw.isEmpty()) {
+        return {};
+    }
+
+    if (raw.startsWith("hk")) {
+        QString hkDigits = digitsOnly(raw);
+        if (hkDigits.isEmpty()) {
+            const QString suffix = raw.mid(2).toUpper();
+            if (suffix.isEmpty()) {
+                return {};
+            }
+            return "hk" + suffix;
+        }
+        if (hkDigits.size() > 5) {
+            hkDigits = hkDigits.right(5);
+        }
+        return "hk" + hkDigits.rightJustified(5, '0');
+    }
+
+    QString prefix;
+    if (raw.startsWith("sh") || raw.startsWith("sz")) {
+        prefix = raw.left(2);
+    }
+
+    QString digits = digitsOnly(raw);
 
     if (digits.isEmpty()) {
         return {};
@@ -486,7 +506,11 @@ void SinaQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
 }
 
 QString SinaQuoteProvider::toCnSymbol(const QString& rawCode) {
-    return normalizedSymbol(rawCode);
+    const QString symbol = normalizedSymbol(rawCode);
+    if (symbol.startsWith("hk")) {
+        return "rt_" + symbol;
+    }
+    return symbol;
 }
 
 double SinaQuoteProvider::parseFieldNumber(const QList<QByteArray>& fields, int index) {
@@ -738,6 +762,18 @@ void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
 }
 
 QString EastMoneyQuoteProvider::toSecId(const QString& rawCode) {
+    const QString raw = rawCode.trimmed().toLower();
+    if (raw.startsWith("hk")) {
+        QString hkDigits = digitsOnly(raw);
+        if (hkDigits.isEmpty()) {
+            return {};
+        }
+        if (hkDigits.size() > 5) {
+            hkDigits = hkDigits.right(5);
+        }
+        return "116." + hkDigits.rightJustified(5, '0');
+    }
+
     const QString symbol = normalizedSymbol(rawCode);
     if (symbol.size() != 8) {
         return {};
