@@ -21,6 +21,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPixmap>
+#include <QSet>
 #include <QStringConverter>
 #include <QTableWidget>
 #include <QTabWidget>
@@ -260,6 +261,37 @@ QKeySequence normalizedHotkeySequence(const QKeySequence& sequence) {
     }
 
     return sequence;
+}
+
+QStringList normalizeSinaCodesForMarket(const QString& rawCode, const QString& marketFilter) {
+    const QString code = rawCode.trimmed().toLower();
+    if (code.isEmpty()) {
+        return {};
+    }
+
+    if (marketFilter == QLatin1String("a")) {
+        if (code.startsWith(QLatin1String("sh")) || code.startsWith(QLatin1String("sz"))) {
+            return {code};
+        }
+        return {};
+    }
+
+    if (marketFilter == QLatin1String("hk")) {
+        if (code.startsWith(QLatin1String("hk"))) {
+            return {code};
+        }
+        return {};
+    }
+
+    if (marketFilter == QLatin1String("etf")) {
+        if (!code.startsWith(QLatin1String("of")) || code.size() <= 2) {
+            return {};
+        }
+        const QString suffix = code.mid(2);
+        return {QStringLiteral("sz") + suffix, QStringLiteral("sh") + suffix};
+    }
+
+    return {};
 }
 
 } // namespace
@@ -799,12 +831,9 @@ QWidget* SettingsDialog::buildStocksTab() {
     searchLayout->setSpacing(6);
 
     m_stockMarketCombo = new QComboBox(searchRow);
-    m_stockMarketCombo->addItem(trText("settings.stocks.market1"), QStringLiteral("1"));
-    m_stockMarketCombo->addItem(trText("settings.stocks.market2"), QStringLiteral("2"));
-    m_stockMarketCombo->addItem(trText("settings.stocks.market3"), QStringLiteral("3"));
-    m_stockMarketCombo->addItem(trText("settings.stocks.market4"), QStringLiteral("4"));
-    m_stockMarketCombo->addItem(trText("settings.stocks.market5"), QStringLiteral("5"));
-    m_stockMarketCombo->addItem(trText("settings.stocks.market6"), QString());
+    m_stockMarketCombo->addItem(trText("settings.stocks.market1"), QStringLiteral("a"));
+    m_stockMarketCombo->addItem(trText("settings.stocks.market2"), QStringLiteral("hk"));
+    m_stockMarketCombo->addItem(trText("settings.stocks.market6"), QStringLiteral("etf"));
 
     m_stockSearchEdit = new QLineEdit(searchRow);
     m_stockSearchEdit->setPlaceholderText(trText("settings.stocks.searchPlaceholder"));
@@ -1059,19 +1088,19 @@ void SettingsDialog::parseSinaSearchResult(const QByteArray& data) {
 
     qInfo() << "[StockSearch] parseSinaSearchResult response:" << response.left(300);
 
-    // Response format: var suggestvalue="name,type,short,name,pinyin,fullcode,...|..."
-    const int startQuote = response.indexOf(QLatin1Char('"'));
-    const int endQuote = response.lastIndexOf(QLatin1Char('"'));
-    if (startQuote < 0 || endQuote <= startQuote) {
-        qInfo() << "[StockSearch] No quoted content found in response";
-        m_stockSuggestList->clear();
-        m_stockSuggestList->hide();
-        return;
+    QString content = response.trimmed();
+    const QString prefix = QStringLiteral("var suggestvalue=\"");
+    const QString suffix = QStringLiteral("\";");
+    if (content.startsWith(prefix)) {
+        content.remove(0, prefix.size());
     }
+    if (content.endsWith(suffix)) {
+        content.chop(suffix.size());
+    }
+    content = content.trimmed();
 
-    const QString content = response.mid(startQuote + 1, endQuote - startQuote - 1).trimmed();
     if (content.isEmpty()) {
-        qInfo() << "[StockSearch] Quoted content is empty";
+        qInfo() << "[StockSearch] Empty parsed content";
         m_stockSuggestList->clear();
         m_stockSuggestList->hide();
         return;
@@ -1080,45 +1109,36 @@ void SettingsDialog::parseSinaSearchResult(const QByteArray& data) {
     qInfo() << "[StockSearch] Parsed content:" << content.left(300);
 
     const QStringList entries = content.split(QLatin1Char(';'), Qt::SkipEmptyParts);
-
-    // When market type is empty (ETF mode), only keep type=203 entries
-    const bool etfModeOnly = m_stockMarketCombo->currentData().toString().isEmpty();
+    const QString marketFilter = m_stockMarketCombo
+        ? m_stockMarketCombo->currentData().toString().trimmed().toLower()
+        : QStringLiteral("a");
+    QSet<QString> addedCodes;
 
     m_stockSuggestList->clear();
 
     for (const QString& entry : entries) {
         const QStringList fields = entry.split(QLatin1Char(','));
         qInfo() << "[StockSearch] entry fields count:" << fields.size() << fields;
-        if (fields.size() < 4) {
+        if (fields.isEmpty()) {
             continue;
         }
-        const QString typeStr = fields.at(1).trimmed();
 
-        // ETF (type=203): name,type,shortcode,fullcode,...  → [0]=name, [3]=fullcode
-        // Others (type=1/2/3/4/5): fullcode,type,shortcode,fullcode,name,...  → [0]=fullcode, [4]=name
-        QString fullCode, name;
-        if (typeStr == QLatin1String("203")) {
-            fullCode = fields.at(3).trimmed();
-            name     = fields.at(0).trimmed();
-        } else {
-            if (etfModeOnly) {
-                continue;  // ETF mode: skip non-ETF entries
-            }
-            if (fields.size() < 5) {
+        const QString rawCode = fields.at(0).trimmed();
+        const QString name = (fields.size() > 4) ? fields.at(4).trimmed() : QString();
+        const QStringList normalizedCodes = normalizeSinaCodesForMarket(rawCode, marketFilter);
+        for (const QString& code : normalizedCodes) {
+            if (addedCodes.contains(code)) {
                 continue;
             }
-            fullCode = fields.at(0).trimmed();
-            name     = fields.at(4).trimmed();
-        }
+            addedCodes.insert(code);
 
-        if (fullCode.isEmpty()) {
-            continue;
+            const QString displayText = name.isEmpty()
+                ? code
+                : (code + QStringLiteral(" - ") + name);
+            QListWidgetItem* item = new QListWidgetItem(displayText, m_stockSuggestList);
+            item->setData(Qt::UserRole, code);
+            item->setData(Qt::UserRole + 1, name);
         }
-
-        const QString displayText = fullCode + QStringLiteral(" - ") + name;
-        QListWidgetItem* item = new QListWidgetItem(displayText, m_stockSuggestList);
-        item->setData(Qt::UserRole, fullCode);
-        item->setData(Qt::UserRole + 1, name);
     }
 
     qInfo() << "[StockSearch] suggestion count:" << m_stockSuggestList->count();
@@ -1162,13 +1182,10 @@ void SettingsDialog::doStockSearch(bool forceSearch) {
         m_stockSearchReply = nullptr;
     }
 
-    const QString marketType = m_stockMarketCombo->currentData().toString();
     const QUrl url(
-        QStringLiteral("http://suggest3.sinajs.cn/suggest/type=")
-        + marketType
-        + QStringLiteral("&key=")
+        QStringLiteral("http://suggest3.sinajs.cn/suggest/type=2&key=")
         + QString::fromUtf8(QUrl::toPercentEncoding(keyword))
-        + QStringLiteral("&name=myStocksApp")
+        + QStringLiteral("&name=suggestvalue")
     );
 
     qInfo() << "[StockSearch] GET" << url.toString();
