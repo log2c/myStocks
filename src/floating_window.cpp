@@ -45,7 +45,7 @@ QVector<int> normalizedColumnOrder(const QVector<int>& order) {
 FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
     : QWidget(parent)
     , m_model(model) {
-    Qt::WindowFlags flags = Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint;
+    Qt::WindowFlags flags = Qt::FramelessWindowHint;
 #ifdef WIN32
     // Qt::Tool suppresses the taskbar entry on Windows.
     flags |= Qt::Tool;
@@ -53,6 +53,11 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
     // Use a normal top-level window on non-Windows to avoid tool-window stacking quirks.
     flags |= Qt::Window;
 #endif
+    if (m_cfg.floatingWindowAlwaysOnTop) {
+        flags |= Qt::WindowStaysOnTopHint;
+    } else {
+        flags |= Qt::WindowStaysOnBottomHint;
+    }
     setWindowFlags(flags);
     setAttribute(Qt::WA_TranslucentBackground, true);
 
@@ -146,7 +151,7 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
         if (mouseEvent->button() == Qt::LeftButton) {
             m_dragging = false;
             releaseMouse();
-            enforceTopMost(false);
+            enforceWindowLevel(false);
             return true;
         }
         break;
@@ -161,6 +166,23 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
 void FloatingWindow::applyConfig(const AppConfig& cfg) {
     m_cfg = cfg;
 
+    const bool topFlagChanged =
+        windowFlags().testFlag(Qt::WindowStaysOnTopHint) != m_cfg.floatingWindowAlwaysOnTop;
+    const bool bottomFlagChanged =
+        windowFlags().testFlag(Qt::WindowStaysOnBottomHint) == m_cfg.floatingWindowAlwaysOnTop;
+    const QRect oldGeometry = geometry();
+    const bool wasVisible = isVisible();
+    if (topFlagChanged) {
+        setWindowFlag(Qt::WindowStaysOnTopHint, m_cfg.floatingWindowAlwaysOnTop);
+    }
+    if (bottomFlagChanged) {
+        setWindowFlag(Qt::WindowStaysOnBottomHint, !m_cfg.floatingWindowAlwaysOnTop);
+    }
+    if (wasVisible && (topFlagChanged || bottomFlagChanged)) {
+        show();
+        setGeometry(oldGeometry);
+    }
+
     const double effectiveOpacity = m_cfg.transparentBackgroundEnabled
         ? static_cast<double>(qBound(0, m_cfg.transparentBackgroundOpacity, 100)) / 100.0
         : qBound(0.0, m_cfg.opacity, 1.0);
@@ -170,8 +192,7 @@ void FloatingWindow::applyConfig(const AppConfig& cfg) {
     applyColumns();
 
     if (isVisible()) {
-        // Re-assert top-most after style/geometry changes.
-        enforceTopMost(false);
+        enforceWindowLevel(false);
     }
 }
 
@@ -196,7 +217,7 @@ void FloatingWindow::mouseReleaseEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton) {
         m_dragging = false;
         releaseMouse();
-        enforceTopMost(false);
+        enforceWindowLevel(false);
     }
     QWidget::mouseReleaseEvent(event);
 }
@@ -204,40 +225,59 @@ void FloatingWindow::mouseReleaseEvent(QMouseEvent* event) {
 void FloatingWindow::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
 
-    enforceTopMost(true);
+    enforceWindowLevel(true);
 }
 
-void FloatingWindow::enforceTopMost(bool activate) {
+void FloatingWindow::enforceWindowLevel(bool activate) {
     if (!isVisible()) {
         return;
     }
 
-    if (!windowFlags().testFlag(Qt::WindowStaysOnTopHint)) {
-        const QRect oldGeometry = geometry();
-        setWindowFlag(Qt::WindowStaysOnTopHint, true);
-        show();
-        setGeometry(oldGeometry);
-    }
-
-    raise();
+    const bool alwaysOnTop = m_cfg.floatingWindowAlwaysOnTop;
 
 #ifdef WIN32
     const HWND hwnd = reinterpret_cast<HWND>(winId());
     if (hwnd) {
-        SetWindowPos(
-            hwnd,
-            HWND_TOPMOST,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING
-        );
+        if (alwaysOnTop) {
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING
+            );
+        } else {
+            SetWindowPos(
+                hwnd,
+                HWND_NOTOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING
+            );
+            SetWindowPos(
+                hwnd,
+                HWND_BOTTOM,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING
+            );
+        }
     }
 #endif
 
-    if (activate) {
-        activateWindow();
+    if (alwaysOnTop) {
+        raise();
+        if (activate) {
+            activateWindow();
+        }
+    } else {
+        lower();
     }
 }
 

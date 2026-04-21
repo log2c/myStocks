@@ -23,7 +23,7 @@ protected:
     void showEvent(QShowEvent* event) override;
 
 private:
-    void enforceTopMost(bool activate = false);
+    void enforceWindowLevel(bool activate = false);
     void applyStyle();
     void applyColumns();
     void adjustWindowSize();

@@ -156,8 +156,10 @@ void AppController::toggleWindow() {
         m_window->hide();
     } else {
         m_window->show();
-        m_window->raise();
-        m_window->activateWindow();
+        if (m_cfg.floatingWindowAlwaysOnTop) {
+            m_window->raise();
+            m_window->activateWindow();
+        }
     }
 }
 
@@ -235,8 +237,10 @@ void AppController::openSettings() {
     m_window->applyConfig(m_cfg);
     if (wasVisible) {
         m_window->show();
-        m_window->raise();
-        m_window->activateWindow();
+        if (m_cfg.floatingWindowAlwaysOnTop) {
+            m_window->raise();
+            m_window->activateWindow();
+        }
     }
 
     if (m_timer) {
@@ -294,7 +298,7 @@ void AppController::reloadStocksFromYaml() {
         m_provider->fetchQuotes(m_stocks);
     }
 
-    if (m_window && m_window->isVisible()) {
+    if (m_window && m_window->isVisible() && m_cfg.floatingWindowAlwaysOnTop) {
         m_window->raise();
     }
 

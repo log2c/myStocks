@@ -343,6 +343,7 @@ AppConfig SettingsDialog::config() const {
     out.showHeader = m_showHeaderCheck->isChecked();
     out.showGrid = m_showGridCheck->isChecked();
     out.gridColor = buttonColor(m_gridColorBtn);
+    out.floatingWindowAlwaysOnTop = m_floatingTopMostCheck->isChecked();
     out.simpleModeEnabled = m_simpleModeCheck->isChecked();
     out.blinkReminderEnabled = m_blinkReminderCheck->isChecked();
     out.trayTooltipEnabled = m_trayTooltipCheck->isChecked();
@@ -636,6 +637,10 @@ QWidget* SettingsDialog::buildNetworkTab() {
 QWidget* SettingsDialog::buildDisplayTab() {
     QWidget* w = new QWidget(this);
     QFormLayout* form = new QFormLayout(w);
+
+    m_floatingTopMostCheck = new QCheckBox(trText("settings.display.alwaysOnTop"), w);
+    m_floatingTopMostCheck->setChecked(m_cfg.floatingWindowAlwaysOnTop);
+    form->addRow(m_floatingTopMostCheck);
 
     m_showHeaderCheck = new QCheckBox(trText("settings.display.showHeader"), w);
     m_showHeaderCheck->setChecked(m_cfg.showHeader);

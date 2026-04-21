@@ -98,6 +98,7 @@ private:
     QCheckBox* m_showHeaderCheck = nullptr;
     QCheckBox* m_showGridCheck = nullptr;
     QPushButton* m_gridColorBtn = nullptr;
+    QCheckBox* m_floatingTopMostCheck = nullptr;
     QCheckBox* m_simpleModeCheck = nullptr;
     QCheckBox* m_blinkReminderCheck = nullptr;
     QCheckBox* m_trayTooltipCheck = nullptr;

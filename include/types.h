@@ -58,6 +58,7 @@ struct AppConfig {
     bool simpleModeEnabled = false;
     bool blinkReminderEnabled = false;
     bool trayTooltipEnabled = false;
+    bool floatingWindowAlwaysOnTop = true;
 
     bool logEnabled = true;
     QString logLevel = "info";
