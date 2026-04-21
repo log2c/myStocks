@@ -3,6 +3,7 @@
 #include "app_logging.h"
 #include "config_manager.h"
 #include "i18n.h"
+#include "network_logger.h"
 #include "network_utils.h"
 
 #include <QAbstractItemView>
@@ -15,6 +16,8 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QKeyEvent>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QMessageBox>
 #include <QNetworkAccessManager>
@@ -293,6 +296,40 @@ QStringList normalizeSinaCodesForMarket(const QString& rawCode, const QString& m
     return {};
 }
 
+QString xtickResponseMessage(const QJsonObject& obj) {
+    const QStringList keys {
+        QStringLiteral("message"),
+        QStringLiteral("msg"),
+        QStringLiteral("error"),
+        QStringLiteral("err"),
+    };
+
+    for (const QString& key : keys) {
+        const QString message = obj.value(key).toString().trimmed();
+        if (!message.isEmpty()) {
+            return message;
+        }
+    }
+
+    return {};
+}
+
+bool isTokenClearlyInvalid(const QString& message) {
+    const QString msg = message.trimmed();
+    if (msg.isEmpty()) {
+        return false;
+    }
+
+    return msg.contains(QStringLiteral("请带Token访问"), Qt::CaseInsensitive)
+        || msg.contains(QStringLiteral("登录后可获取"), Qt::CaseInsensitive)
+        || msg.contains(QStringLiteral("token"), Qt::CaseInsensitive);
+}
+
+bool isTokenQuotaExceeded(const QString& message) {
+    const QString msg = message.trimmed();
+    return msg.contains(QStringLiteral("超出最大请求次数"), Qt::CaseInsensitive);
+}
+
 } // namespace
 
 SettingsDialog::SettingsDialog(
@@ -533,6 +570,150 @@ QWidget* SettingsDialog::buildGeneralTab() {
     m_tokenEdit = new QLineEdit(m_cfg.xtickToken, w);
     m_tokenEdit->setPlaceholderText(trText("settings.general.token"));
 
+    m_tokenCheckBtn = new QPushButton(trText("settings.general.tokenCheck"), w);
+
+    m_tokenRowWidget = new QWidget(w);
+    QHBoxLayout* tokenLayout = new QHBoxLayout(m_tokenRowWidget);
+    tokenLayout->setContentsMargins(0, 0, 0, 0);
+    tokenLayout->setSpacing(6);
+    tokenLayout->addWidget(m_tokenEdit, 1);
+    tokenLayout->addWidget(m_tokenCheckBtn);
+
+    if (!m_tokenCheckNam) {
+        m_tokenCheckNam = new QNetworkAccessManager(this);
+    }
+
+    connect(m_tokenCheckBtn, &QPushButton::clicked, this, [this]() {
+        if (!m_tokenEdit || !m_tokenCheckBtn || !m_tokenCheckNam) {
+            return;
+        }
+
+        const QString token = m_tokenEdit->text().trimmed();
+        if (token.isEmpty()) {
+            QMessageBox::warning(
+                this,
+                trText("app.name"),
+                trText("settings.general.tokenEmpty")
+            );
+            return;
+        }
+
+        if (m_tokenCheckReply) {
+            m_tokenCheckReply->abort();
+            m_tokenCheckReply->deleteLater();
+            m_tokenCheckReply = nullptr;
+        }
+
+        const AppConfig currentCfg = config();
+        m_tokenCheckNam->setProxy(network_utils::proxyFromConfig(currentCfg));
+
+        QUrl url(QStringLiteral("http://api.xtick.top/doc/order/time"));
+        QUrlQuery query;
+        query.addQueryItem(QStringLiteral("type"), QStringLiteral("10"));
+        query.addQueryItem(QStringLiteral("code"), QStringLiteral("000001"));
+        query.addQueryItem(QStringLiteral("period"), QStringLiteral("lv1"));
+        query.addQueryItem(QStringLiteral("token"), token);
+        url.setQuery(query);
+
+        QNetworkRequest req(url);
+        req.setRawHeader("User-Agent", network_utils::effectiveUserAgent(currentCfg).toUtf8());
+        req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
+
+        m_tokenCheckBtn->setEnabled(false);
+        m_tokenCheckBtn->setText(trText("settings.general.tokenChecking"));
+
+        m_tokenCheckReply = m_tokenCheckNam->get(req);
+        connect(m_tokenCheckReply, &QNetworkReply::finished, this, [this]() {
+            if (!m_tokenCheckReply) {
+                return;
+            }
+
+            QNetworkReply* reply = m_tokenCheckReply;
+            m_tokenCheckReply = nullptr;
+
+            const QByteArray body = reply->readAll();
+            const QString netError = (reply->error() == QNetworkReply::NoError)
+                ? QString()
+                : reply->errorString();
+            reply->deleteLater();
+
+            m_tokenCheckBtn->setEnabled(true);
+            m_tokenCheckBtn->setText(trText("settings.general.tokenCheck"));
+
+            if (!netError.isEmpty()) {
+                QMessageBox::warning(
+                    this,
+                    trText("app.name"),
+                    trText("settings.general.tokenCheckFailedFmt").arg(netError)
+                );
+                return;
+            }
+
+            QJsonParseError parseError;
+            const QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
+            if (parseError.error != QJsonParseError::NoError) {
+                QMessageBox::warning(
+                    this,
+                    trText("app.name"),
+                    trText("settings.general.tokenCheckFailedFmt")
+                        .arg(QStringLiteral("json parse error: ") + parseError.errorString())
+                );
+                return;
+            }
+
+            QString message;
+            bool tokenLooksValid = false;
+            bool quotaExceeded = false;
+
+            if (doc.isArray()) {
+                tokenLooksValid = true;
+            } else if (doc.isObject()) {
+                const QJsonObject obj = doc.object();
+                message = xtickResponseMessage(obj);
+
+                const int code = obj.value(QStringLiteral("code")).toInt(0);
+                if (obj.contains(QStringLiteral("lastPrice"))
+                    || obj.contains(QStringLiteral("price"))
+                    || obj.contains(QStringLiteral("close"))
+                    || obj.value(QStringLiteral("data")).isArray()
+                    || obj.value(QStringLiteral("result")).isArray()) {
+                    tokenLooksValid = true;
+                } else if (code == 0) {
+                    tokenLooksValid = true;
+                } else if (isTokenQuotaExceeded(message)) {
+                    tokenLooksValid = true;
+                    quotaExceeded = true;
+                } else if (isTokenClearlyInvalid(message)) {
+                    tokenLooksValid = false;
+                } else if (!message.isEmpty()) {
+                    tokenLooksValid = false;
+                }
+            } else {
+                message = QString::fromUtf8(body).trimmed();
+            }
+
+            if (tokenLooksValid) {
+                const QString resultMessage = quotaExceeded
+                    ? trText("settings.general.tokenValidWithQuota")
+                    : trText("settings.general.tokenValid");
+                QMessageBox::information(this, trText("app.name"), resultMessage);
+                return;
+            }
+
+            const QString detail = message.isEmpty()
+                ? QString::fromUtf8(body).trimmed()
+                : message;
+            const QString fallback = trText("settings.general.tokenInvalid");
+            QMessageBox::warning(
+                this,
+                trText("app.name"),
+                trText("settings.general.tokenCheckFailedFmt").arg(
+                    detail.isEmpty() ? fallback : detail
+                )
+            );
+        });
+    });
+
     m_transparentBackgroundCheck = new QCheckBox(
         trText("settings.general.transparentBackground"),
         w
@@ -611,7 +792,31 @@ QWidget* SettingsDialog::buildGeneralTab() {
     form->addRow(trText("settings.general.poll"), m_pollSpin);
     form->addRow(trText("settings.general.hotkey"), hotkeyWidget);
     form->addRow(trText("settings.general.apiSource"), m_sourceCombo);
-    form->addRow(trText("settings.general.token"), m_tokenEdit);
+    form->addRow(trText("settings.general.token"), m_tokenRowWidget);
+    m_tokenRowLabel = form->labelForField(m_tokenRowWidget);
+
+    const auto syncTokenRowVisibility = [this]() {
+        const bool showToken = m_sourceCombo
+            && m_sourceCombo->currentData().toString() == QLatin1String("xtick");
+
+        if (m_tokenRowWidget) {
+            m_tokenRowWidget->setVisible(showToken);
+        }
+        if (m_tokenRowLabel) {
+            m_tokenRowLabel->setVisible(showToken);
+        }
+    };
+
+    connect(
+        m_sourceCombo,
+        qOverload<int>(&QComboBox::currentIndexChanged),
+        this,
+        [syncTokenRowVisibility](int) {
+            syncTokenRowVisibility();
+        }
+    );
+    syncTokenRowVisibility();
+
     form->addRow(m_transparentBackgroundCheck);
     form->addRow(trText("settings.general.transparentOpacity"), transparentOpacityWidget);
     form->addRow(trText("settings.general.language"), m_languageCombo);

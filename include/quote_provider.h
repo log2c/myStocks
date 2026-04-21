@@ -61,6 +61,7 @@ private:
 
     int m_pendingRequests = 0;
     QStringList m_errors;
+    QString m_lastError;
 
     QHash<QString, StockItem> m_reqMap;
     QHash<QString, StockItem> m_codeFallback;

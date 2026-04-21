@@ -27,6 +27,66 @@
 
 namespace {
 
+bool isDigitsOnly(const QString& text) {
+    if (text.isEmpty()) {
+        return false;
+    }
+
+    for (QChar ch : text) {
+        if (!ch.isDigit()) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool isLikelyEtfCode(const QString& code, const QString& marketPrefix) {
+    if (code.size() != 6 || !isDigitsOnly(code)) {
+        return false;
+    }
+
+    if (marketPrefix == QStringLiteral("sh")) {
+        return code.startsWith(QLatin1Char('5'));
+    }
+
+    if (marketPrefix == QStringLiteral("sz")) {
+        return code.startsWith(QStringLiteral("15"))
+            || code.startsWith(QStringLiteral("16"));
+    }
+
+    return false;
+}
+
+bool isXTickQuoteObject(const QJsonObject& obj) {
+    if (!obj.contains(QStringLiteral("code"))) {
+        return false;
+    }
+
+    return obj.contains(QStringLiteral("lastPrice"))
+        || obj.contains(QStringLiteral("price"))
+        || obj.contains(QStringLiteral("close"))
+        || obj.contains(QStringLiteral("x003"));
+}
+
+QString xtickResponseMessage(const QJsonObject& obj) {
+    const QStringList keys {
+        QStringLiteral("message"),
+        QStringLiteral("msg"),
+        QStringLiteral("error"),
+        QStringLiteral("err"),
+    };
+
+    for (const QString& key : keys) {
+        const QString message = obj.value(key).toString().trimmed();
+        if (!message.isEmpty()) {
+            return message;
+        }
+    }
+
+    return {};
+}
+
 QJsonArray extractArray(const QJsonDocument& doc) {
     if (doc.isArray()) {
         return doc.array();
@@ -37,8 +97,17 @@ QJsonArray extractArray(const QJsonDocument& doc) {
         if (obj.value("data").isArray()) {
             return obj.value("data").toArray();
         }
+        if (obj.value("data").isObject()) {
+            return QJsonArray {obj.value("data").toObject()};
+        }
         if (obj.value("result").isArray()) {
             return obj.value("result").toArray();
+        }
+        if (obj.value("result").isObject()) {
+            return QJsonArray {obj.value("result").toObject()};
+        }
+        if (isXTickQuoteObject(obj)) {
+            return QJsonArray {obj};
         }
     }
 
@@ -281,7 +350,11 @@ void XTickQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
     m_nam.setProxy(m_proxy);
 
     if (m_token.trimmed().isEmpty()) {
-        emit error(i18n::t("provider.xtick.token.empty", m_language));
+        const QString message = i18n::t("provider.xtick.token.empty", m_language);
+        if (message != m_lastError) {
+            emit error(message);
+            m_lastError = message;
+        }
         return;
     }
 
@@ -294,17 +367,22 @@ void XTickQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
     QHash<int, QSet<QString>> grouped;
 
     for (const StockItem& s : stocks) {
+        const int type = inferType(s.code);
+        if (type < 0) {
+            continue;
+        }
+
         const QString code = normalizeCode(s.code);
         if (code.isEmpty()) {
             continue;
         }
 
-        const int type = inferType(s.code);
+        const QString key = makeKey(type, code);
         grouped[type].insert(code);
-        m_reqMap.insert(makeKey(type, code), s);
+        m_reqMap.insert(key, s);
 
-        if (!m_codeFallback.contains(code)) {
-            m_codeFallback.insert(code, s);
+        if (!m_codeFallback.contains(key)) {
+            m_codeFallback.insert(key, s);
         }
     }
 
@@ -355,29 +433,77 @@ void XTickQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
 }
 
 QString XTickQuoteProvider::normalizeCode(const QString& raw) {
-    QString digits;
-    digits.reserve(raw.size());
-
-    for (QChar ch : raw) {
-        if (ch.isDigit()) {
-            digits.append(ch);
-        }
-    }
-
-    if (digits.isEmpty()) {
+    const QString code = raw.trimmed().toLower();
+    if (code.isEmpty()) {
         return {};
     }
-    if (digits.size() > 6) {
-        digits = digits.right(6);
+
+    if (code.startsWith(QStringLiteral("hk"))) {
+        QString digits = digitsOnly(code);
+        if (digits.isEmpty()) {
+            return {};
+        }
+        if (digits.size() > 5) {
+            digits = digits.right(5);
+        }
+        return digits.rightJustified(5, QLatin1Char('0'));
     }
-    return digits.rightJustified(6, '0');
+
+    if (code.startsWith(QStringLiteral("sh"))
+        || code.startsWith(QStringLiteral("sz"))
+        || code.startsWith(QStringLiteral("bj"))) {
+        QString digits = digitsOnly(code);
+        if (digits.isEmpty()) {
+            return {};
+        }
+        if (digits.size() > 6) {
+            digits = digits.right(6);
+        }
+        return digits.rightJustified(6, QLatin1Char('0'));
+    }
+
+    if (code.size() == 6 && isDigitsOnly(code)) {
+        return code;
+    }
+
+    return {};
 }
 
 int XTickQuoteProvider::inferType(const QString& rawCode) {
-    const QString code = rawCode.trimmed().toLower();
-    if (code.startsWith("sz399") || code.startsWith("sh000")) {
+    const QString raw = rawCode.trimmed().toLower();
+    const QString code = normalizeCode(raw);
+
+    if (code.isEmpty()) {
+        return -1;
+    }
+
+    if (raw.startsWith(QStringLiteral("hk"))) {
+        return 3;
+    }
+
+    QString marketPrefix;
+    if (raw.startsWith(QStringLiteral("sh"))
+        || raw.startsWith(QStringLiteral("sz"))
+        || raw.startsWith(QStringLiteral("bj"))) {
+        marketPrefix = raw.left(2);
+    }
+
+    if (marketPrefix == QStringLiteral("sh")
+        && (code.startsWith(QStringLiteral("000")) || code.startsWith(QStringLiteral("880")))) {
         return 10;
     }
+    if (marketPrefix == QStringLiteral("sz") && code.startsWith(QStringLiteral("399"))) {
+        return 10;
+    }
+
+    if (isLikelyEtfCode(code, marketPrefix)) {
+        return 20;
+    }
+
+    if (marketPrefix.isEmpty() && code.startsWith(QStringLiteral("399"))) {
+        return 10;
+    }
+
     return 1;
 }
 
@@ -396,18 +522,57 @@ void XTickQuoteProvider::handleResponse(int reqType, const QByteArray& body, con
         } else {
             const QJsonArray arr = extractArray(doc);
 
+            if (doc.isObject()) {
+                const QJsonObject root = doc.object();
+                const QString message = xtickResponseMessage(root);
+
+                bool hasStatusCode = false;
+                int statusCode = 0;
+                const QJsonValue codeValue = root.value(QStringLiteral("code"));
+                if (codeValue.isDouble()) {
+                    hasStatusCode = true;
+                    statusCode = codeValue.toInt();
+                } else if (codeValue.isString()) {
+                    bool ok = false;
+                    const int parsed = codeValue.toString().trimmed().toInt(&ok);
+                    if (ok) {
+                        hasStatusCode = true;
+                        statusCode = parsed;
+                    }
+                }
+
+                if (hasStatusCode && statusCode != 0 && !isXTickQuoteObject(root)) {
+                    const QString suffix = message.isEmpty() ? QString() : (QStringLiteral(" msg=") + message);
+                    m_errors << QString("xtick code=%1%2").arg(statusCode).arg(suffix);
+                } else if (arr.isEmpty() && !isXTickQuoteObject(root) && !message.isEmpty()) {
+                    m_errors << QString("xtick: %1").arg(message);
+                }
+            }
+
             for (const QJsonValue& v : arr) {
                 if (!v.isObject()) {
                     continue;
                 }
 
                 const QJsonObject obj = v.toObject();
-                QString normCode = normalizeCode(obj.value("code").toString());
+                QString normCode;
+                if (reqType == 3) {
+                    QString hkDigits = digitsOnly(obj.value("code").toString());
+                    if (!hkDigits.isEmpty()) {
+                        if (hkDigits.size() > 5) {
+                            hkDigits = hkDigits.right(5);
+                        }
+                        normCode = hkDigits.rightJustified(5, QLatin1Char('0'));
+                    }
+                } else {
+                    normCode = normalizeCode(obj.value("code").toString());
+                }
 
                 if (normCode.isEmpty() && obj.value("code").isDouble()) {
+                    const int width = (reqType == 3) ? 5 : 6;
                     normCode = QString("%1").arg(
                         static_cast<int>(obj.value("code").toDouble()),
-                        6,
+                        width,
                         10,
                         QChar('0')
                     );
@@ -424,8 +589,8 @@ void XTickQuoteProvider::handleResponse(int reqType, const QByteArray& body, con
                 if (m_reqMap.contains(key)) {
                     stock = m_reqMap.value(key);
                     found = true;
-                } else if (m_codeFallback.contains(normCode)) {
-                    stock = m_codeFallback.value(normCode);
+                } else if (m_codeFallback.contains(key)) {
+                    stock = m_codeFallback.value(key);
                     found = true;
                 }
 
@@ -462,7 +627,13 @@ void XTickQuoteProvider::handleResponse(int reqType, const QByteArray& body, con
     --m_pendingRequests;
     if (m_pendingRequests <= 0) {
         if (m_buffer.isEmpty() && !m_errors.isEmpty()) {
-            emit error(m_errors.join(" | "));
+            const QString message = m_errors.join(" | ");
+            if (message != m_lastError) {
+                emit error(message);
+                m_lastError = message;
+            }
+        } else {
+            m_lastError.clear();
         }
         emit quotesReady(toVector(m_buffer));
     }
