@@ -30,6 +30,7 @@
 #include <QTabWidget>
 #include <QTimer>
 #include <QUrl>
+#include <QUrlQuery>
 #include <QVBoxLayout>
 
 #include <functional>
