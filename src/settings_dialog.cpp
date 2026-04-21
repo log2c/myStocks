@@ -287,8 +287,7 @@ QStringList normalizeSinaCodesForMarket(const QString& rawCode, const QString& m
         if (!code.startsWith(QLatin1String("of")) || code.size() <= 2) {
             return {};
         }
-        const QString suffix = code.mid(2);
-        return {QStringLiteral("sz") + suffix, QStringLiteral("sh") + suffix};
+        return {code};
     }
 
     return {};
