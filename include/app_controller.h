@@ -50,6 +50,8 @@ private:
     QString m_resolvedLanguage;
     QVector<StockItem> m_stocks;
     QHash<QString, QString> m_apiNamesByCode;
+    QString m_lastTrayErrorMessage;
+    QDateTime m_lastTrayErrorAt;
 
     QuoteModel* m_model = nullptr;
     FloatingWindow* m_window = nullptr;

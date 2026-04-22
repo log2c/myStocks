@@ -599,6 +599,8 @@ QWidget* SettingsDialog::buildGeneralTab() {
             return;
         }
 
+        qInfo() << "[TokenCheck] start tokenLength=" << token.size();
+
         if (m_tokenCheckReply) {
             m_tokenCheckReply->abort();
             m_tokenCheckReply->deleteLater();
@@ -620,11 +622,19 @@ QWidget* SettingsDialog::buildGeneralTab() {
         req.setRawHeader("User-Agent", network_utils::effectiveUserAgent(currentCfg).toUtf8());
         req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
 
+        const QNetworkProxy proxy = network_utils::proxyFromConfig(currentCfg);
+        const network_logger::RequestTrace trace = network_logger::logRequestStart(
+            "xtick-token-check",
+            "GET",
+            req,
+            proxy
+        );
+
         m_tokenCheckBtn->setEnabled(false);
         m_tokenCheckBtn->setText(trText("settings.general.tokenChecking"));
 
         m_tokenCheckReply = m_tokenCheckNam->get(req);
-        connect(m_tokenCheckReply, &QNetworkReply::finished, this, [this]() {
+        connect(m_tokenCheckReply, &QNetworkReply::finished, this, [this, trace]() {
             if (!m_tokenCheckReply) {
                 return;
             }
@@ -636,6 +646,9 @@ QWidget* SettingsDialog::buildGeneralTab() {
             const QString netError = (reply->error() == QNetworkReply::NoError)
                 ? QString()
                 : reply->errorString();
+
+            network_logger::logRequestFinish(trace, reply, body.size(), body);
+
             reply->deleteLater();
 
             m_tokenCheckBtn->setEnabled(true);
@@ -697,6 +710,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
                 const QString resultMessage = quotaExceeded
                     ? trText("settings.general.tokenValidWithQuota")
                     : trText("settings.general.tokenValid");
+                qInfo() << "[TokenCheck] valid token result quotaExceeded=" << quotaExceeded;
                 QMessageBox::information(this, trText("app.name"), resultMessage);
                 return;
             }
@@ -712,6 +726,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
                     detail.isEmpty() ? fallback : detail
                 )
             );
+            qWarning() << "[TokenCheck] invalid token detail=" << (detail.isEmpty() ? fallback : detail);
         });
     });
 
@@ -1227,20 +1242,26 @@ QWidget* SettingsDialog::buildStocksTab() {
     // Save button: write current table to data.yaml
     connect(saveBtn, &QPushButton::clicked, this, [this]() {
         if (m_dataYamlPath.isEmpty()) {
+            qWarning() << "[StocksTab] save failed: empty yaml path.";
             QMessageBox::warning(this, trText("app.name"), trText("settings.stocks.saveFail"));
             return;
         }
         const QVector<StockItem> stocks =
             static_cast<StockTableWidget*>(m_stockTable)->stocks();
+        qInfo() << "[StocksTab] save requested path=" << m_dataYamlPath << "count=" << stocks.size();
         if (ConfigManager::saveStocksToYaml(m_dataYamlPath, stocks)) {
+            qInfo() << "[StocksTab] save success path=" << m_dataYamlPath;
             QMessageBox::information(this, trText("app.name"), trText("settings.stocks.saveOk"));
         } else {
+            qWarning() << "[StocksTab] save failed path=" << m_dataYamlPath;
             QMessageBox::warning(this, trText("app.name"), trText("settings.stocks.saveFail"));
         }
     });
 
     // Reset button: reload from data.yaml and repopulate
     connect(resetBtn, &QPushButton::clicked, this, [this]() {
+        qInfo() << "[StocksTab] reset requested path=" << m_dataYamlPath;
+
         // Clear search state
         m_stockSearchEdit->clear();
         m_stockSuggestList->clear();
@@ -1259,6 +1280,8 @@ QWidget* SettingsDialog::buildStocksTab() {
         if (!m_dataYamlPath.isEmpty()) {
             loaded = ConfigManager::loadStocksFromYaml(m_dataYamlPath);
         }
+
+        qInfo() << "[StocksTab] reset loaded count=" << loaded.size();
 
         // Rebuild table
         StockTableWidget* tbl = static_cast<StockTableWidget*>(m_stockTable);
@@ -1401,9 +1424,17 @@ void SettingsDialog::doStockSearch(bool forceSearch) {
         network_utils::effectiveUserAgent(m_cfg)
     );
     req.setRawHeader("Referer", "https://finance.sina.com.cn");
+    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
+
+    const network_logger::RequestTrace trace = network_logger::logRequestStart(
+        "sina-stock-search",
+        "GET",
+        req,
+        m_stockSearchNam->proxy()
+    );
 
     m_stockSearchReply = m_stockSearchNam->get(req);
-    connect(m_stockSearchReply, &QNetworkReply::finished, this, [this]() {
+    connect(m_stockSearchReply, &QNetworkReply::finished, this, [this, trace]() {
         if (!m_stockSearchReply) {
             return;
         }
@@ -1412,6 +1443,9 @@ void SettingsDialog::doStockSearch(bool forceSearch) {
         ).toInt();
         const QNetworkReply::NetworkError netErr = m_stockSearchReply->error();
         const QByteArray data = m_stockSearchReply->readAll();
+
+        network_logger::logRequestFinish(trace, m_stockSearchReply, data.size(), data);
+
         m_stockSearchReply->deleteLater();
         m_stockSearchReply = nullptr;
 

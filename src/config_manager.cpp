@@ -36,12 +36,31 @@ QVector<int> normalizedColumnOrder(const QVector<int>& order) {
     return out;
 }
 
+QString settingsStatusToString(QSettings::Status status) {
+    switch (status) {
+    case QSettings::NoError:
+        return QStringLiteral("no-error");
+    case QSettings::AccessError:
+        return QStringLiteral("access-error");
+    case QSettings::FormatError:
+        return QStringLiteral("format-error");
+    }
+    return QStringLiteral("unknown");
+}
+
 } // namespace
 
 QVector<StockItem> ConfigManager::loadStocksFromYaml(const QString& filePath) {
     QVector<StockItem> out;
+    if (filePath.trimmed().isEmpty()) {
+        qWarning() << "ConfigManager::loadStocksFromYaml path is empty.";
+        return out;
+    }
+
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        qWarning() << "ConfigManager::loadStocksFromYaml failed to open"
+                   << filePath << file.errorString();
         return out;
     }
 
@@ -82,13 +101,20 @@ QVector<StockItem> ConfigManager::loadStocksFromYaml(const QString& filePath) {
         out.push_back({curCode, curName.isEmpty() ? curCode : curName});
     }
 
+    qInfo() << "ConfigManager::loadStocksFromYaml loaded"
+            << out.size() << "stocks from" << filePath;
+
     return out;
 }
 
 bool ConfigManager::saveStocksToYaml(const QString& filePath, const QVector<StockItem>& stocks) {
     if (filePath.isEmpty()) {
+        qWarning() << "ConfigManager::saveStocksToYaml path is empty.";
         return false;
     }
+
+    qInfo() << "ConfigManager::saveStocksToYaml begin path=" << filePath
+            << "count=" << stocks.size();
 
     QString content;
     content += QStringLiteral("ver: 1\n\n");
@@ -101,14 +127,27 @@ bool ConfigManager::saveStocksToYaml(const QString& filePath, const QVector<Stoc
 
     QSaveFile file(filePath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        qWarning() << "ConfigManager::saveStocksToYaml open failed"
+                   << filePath << file.errorString();
         return false;
     }
     const QByteArray bytes = content.toUtf8();
     if (file.write(bytes) != bytes.size()) {
+        qWarning() << "ConfigManager::saveStocksToYaml write failed"
+                   << filePath << file.errorString();
         file.cancelWriting();
         return false;
     }
-    return file.commit();
+    const bool committed = file.commit();
+    if (!committed) {
+        qWarning() << "ConfigManager::saveStocksToYaml commit failed"
+                   << filePath << file.errorString();
+        return false;
+    }
+
+    qInfo() << "ConfigManager::saveStocksToYaml success path=" << filePath
+            << "count=" << stocks.size();
+    return true;
 }
 
 AppConfig ConfigManager::loadConfig() {
@@ -220,11 +259,28 @@ AppConfig ConfigManager::loadConfig() {
 
     cfg.transparentBackgroundOpacity = qBound(0, cfg.transparentBackgroundOpacity, 100);
 
+        qInfo() << "ConfigManager::loadConfig"
+            << "apiSource=" << cfg.apiSource
+            << "pollMs=" << cfg.pollMs
+            << "language=" << cfg.language
+            << "logEnabled=" << cfg.logEnabled
+            << "logLevel=" << cfg.logLevel
+            << "proxyType=" << cfg.proxyType
+            << "proxyHostSet=" << !cfg.proxyHost.trimmed().isEmpty()
+            << "proxyPort=" << cfg.proxyPort;
+
     return cfg;
 }
 
 void ConfigManager::saveConfig(const AppConfig& cfg) {
     QSettings s("myStocks", "myStocks");
+
+        qInfo() << "ConfigManager::saveConfig begin"
+            << "apiSource=" << cfg.apiSource
+            << "pollMs=" << cfg.pollMs
+            << "language=" << cfg.language
+            << "logEnabled=" << cfg.logEnabled
+            << "logLevel=" << cfg.logLevel;
 
     s.setValue("general/pollMs", cfg.pollMs);
     s.setValue("general/opacity", cfg.opacity);
@@ -293,4 +349,11 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue("ui/columnOrder", orderValues);
 
     s.sync();
+    const QSettings::Status status = s.status();
+    if (status != QSettings::NoError) {
+        qWarning() << "ConfigManager::saveConfig sync status=" << settingsStatusToString(status);
+        return;
+    }
+
+    qInfo() << "ConfigManager::saveConfig success";
 }

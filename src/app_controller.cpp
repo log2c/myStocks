@@ -36,6 +36,13 @@ AppController::AppController(QObject* parent)
     app_logging::setLogConfig(m_cfg.logEnabled, m_cfg.logLevel);
     m_resolvedLanguage = i18n::resolveLanguage(m_cfg.language);
 
+    qInfo() << "AppController init"
+            << "apiSource=" << m_cfg.apiSource
+            << "pollMs=" << m_cfg.pollMs
+            << "language=" << m_resolvedLanguage
+            << "logEnabled=" << m_cfg.logEnabled
+            << "logLevel=" << m_cfg.logLevel;
+
     m_stocks = ConfigManager::loadStocksFromYaml(findDataYaml());
     if (m_stocks.isEmpty()) {
         m_stocks = {
@@ -43,7 +50,9 @@ AppController::AppController(QObject* parent)
             {"sz399001", "SZSE Component"},
             {"sz399006", "ChiNext"}
         };
+        qInfo() << "Stock list is empty; fallback defaults loaded count=" << m_stocks.size();
     }
+    qInfo() << "Initial stock count=" << m_stocks.size();
 
     m_model = new QuoteModel(this);
     m_model->setLanguage(m_resolvedLanguage);
@@ -75,7 +84,7 @@ AppController::AppController(QObject* parent)
     m_timer->start();
 
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() {
-        qInfo() << "Application aboutToQuit.";
+        qInfo() << "Application aboutToQuit. Persisting runtime config.";
         if (m_window) {
             m_cfg.windowRect = m_window->geometry();
         }
@@ -117,6 +126,13 @@ bool ensureDataYamlExists(const QString& path) {
 
 bool isHongKongCode(const QString& rawCode) {
     return rawCode.trimmed().toLower().startsWith("hk");
+}
+
+bool isBenignCanceledError(const QString& message) {
+    const QString lower = message.trimmed().toLower();
+    return lower.contains("operation canceled")
+        || lower.contains("operation cancelled")
+        || lower.contains("operation cancled");
 }
 
 } // namespace
@@ -164,6 +180,8 @@ void AppController::toggleWindow() {
 }
 
 void AppController::openSettings() {
+    qInfo() << "Open settings dialog.";
+
     AppConfig updatedCfg = m_cfg;
     bool accepted = false;
     {
@@ -205,11 +223,19 @@ void AppController::openSettings() {
     }
 
     if (!accepted) {
+        qInfo() << "Settings dialog canceled by user.";
         if (m_provider) {
             m_provider->fetchQuotes(m_stocks);
         }
         return;
     }
+
+    qInfo() << "Settings accepted"
+            << "apiSource:" << m_cfg.apiSource << "->" << updatedCfg.apiSource
+            << "pollMs:" << m_cfg.pollMs << "->" << updatedCfg.pollMs
+            << "language:" << m_cfg.language << "->" << updatedCfg.language
+            << "logEnabled:" << m_cfg.logEnabled << "->" << updatedCfg.logEnabled
+            << "logLevel:" << m_cfg.logLevel << "->" << updatedCfg.logLevel;
 
     m_cfg = updatedCfg;
     m_resolvedLanguage = i18n::resolveLanguage(m_cfg.language);
@@ -227,6 +253,7 @@ void AppController::openSettings() {
 
     ConfigManager::saveConfig(m_cfg);
     app_logging::setLogConfig(m_cfg.logEnabled, m_cfg.logLevel);
+    qInfo() << "Settings persisted and log config applied.";
 
     m_model->setLanguage(m_resolvedLanguage);
     m_model->setConfig(m_cfg);
@@ -257,8 +284,11 @@ void AppController::openSettings() {
 }
 
 void AppController::reloadStocksFromYaml() {
+    qInfo() << "Manual reload from data.yaml requested.";
+
     const QString dataPath = findDataYaml();
     if (dataPath.isEmpty()) {
+        qWarning() << "Reload stocks failed: data.yaml path not found.";
         if (m_tray) {
             m_tray->showMessage(
                 i18n::t("app.name", m_resolvedLanguage),
@@ -272,6 +302,7 @@ void AppController::reloadStocksFromYaml() {
 
     const QVector<StockItem> loaded = ConfigManager::loadStocksFromYaml(dataPath);
     if (loaded.isEmpty()) {
+        qWarning() << "Reload stocks failed: no valid stocks in" << dataPath;
         if (m_tray) {
             m_tray->showMessage(
                 i18n::t("app.name", m_resolvedLanguage),
@@ -284,6 +315,7 @@ void AppController::reloadStocksFromYaml() {
     }
 
     m_stocks = loaded;
+    qInfo() << "Reload stocks success count=" << m_stocks.size() << "path=" << dataPath;
     m_apiNamesByCode.clear();
     m_probeDate = QDate();
     m_probeCheckedAt = QDateTime();
@@ -325,8 +357,36 @@ void AppController::refreshQuotes(bool force) {
 }
 
 void AppController::onProviderError(const QString& message) {
+    const QString text = message.trimmed();
+    if (text.isEmpty()) {
+        return;
+    }
+
+    if (isBenignCanceledError(text)) {
+        qInfo() << "Suppress benign network canceled error in tray:" << text;
+        return;
+    }
+
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    if (m_lastTrayErrorAt.isValid()) {
+        // Global cooldown: avoid rapid-fire tray spam when provider/network is unstable.
+        if (m_lastTrayErrorAt.msecsTo(now) < 15000) {
+            qInfo() << "Suppress tray error due cooldown:" << text;
+            return;
+        }
+
+        // Same error cooldown: don't repeat identical warnings too frequently.
+        if (text == m_lastTrayErrorMessage && m_lastTrayErrorAt.msecsTo(now) < 180000) {
+            qInfo() << "Suppress duplicate tray error:" << text;
+            return;
+        }
+    }
+
+    m_lastTrayErrorMessage = text;
+    m_lastTrayErrorAt = now;
+
     if (m_tray) {
-        m_tray->showMessage(i18n::t("app.name", m_resolvedLanguage), message, QSystemTrayIcon::Warning, 2500);
+        m_tray->showMessage(i18n::t("app.name", m_resolvedLanguage), text, QSystemTrayIcon::Warning, 2500);
     }
 }
 
@@ -428,6 +488,8 @@ void AppController::rebuildProvider() {
     } else {
         m_provider = new MockQuoteProvider(this);
     }
+
+    qInfo() << "Rebuild provider done. source=" << m_cfg.apiSource;
 
     m_provider->setLanguage(m_resolvedLanguage);
     m_provider->applyConfig(m_cfg);

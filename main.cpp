@@ -1,5 +1,7 @@
 #include <QApplication>
+#include <QDateTime>
 #include <QDebug>
+#include <QDir>
 #include <QIcon>
 #include <QSharedMemory>
 
@@ -23,6 +25,12 @@ int main(int argc, char* argv[]) {
         .arg(QApplication::applicationName());
     QSharedMemory singleInstanceGuard(instanceKey);
 
+    qInfo() << "Process bootstrap"
+            << "pid=" << QCoreApplication::applicationPid()
+            << "time=" << QDateTime::currentDateTime().toString(Qt::ISODate)
+            << "cwd=" << QDir::currentPath()
+            << "args=" << QCoreApplication::arguments();
+
     bool lockAcquired = singleInstanceGuard.create(1);
     if (!lockAcquired && singleInstanceGuard.error() == QSharedMemory::AlreadyExists) {
         // Try to recover once from stale shared-memory segments.
@@ -42,9 +50,16 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    qInfo() << "Single-instance lock acquired with key" << instanceKey;
+
     const AppConfig cfg = ConfigManager::loadConfig();
     app_logging::initFileLogger(cfg);
-    qInfo() << "Application startup.";
+    qInfo() << "Application startup"
+            << "apiSource=" << cfg.apiSource
+            << "pollMs=" << cfg.pollMs
+            << "language=" << cfg.language
+            << "logEnabled=" << cfg.logEnabled
+            << "logLevel=" << cfg.logLevel;
 
     AppController controller;
     const int exitCode = app.exec();
