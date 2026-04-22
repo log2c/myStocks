@@ -241,9 +241,9 @@ const QSet<QString>& predefinedIndexAliases() {
         QStringLiteral("hscei"),
         QStringLiteral("hsci"),
         QStringLiteral("100.hsi"),
-        QStringLiteral("100.hstech"),
-        QStringLiteral("100.hscei"),
-        QStringLiteral("100.hsci"),
+        QStringLiteral("124.hstech"),
+        QStringLiteral("124.hscei"),
+        QStringLiteral("124.hsci"),
 
         // Digits-only aliases from docs/api examples except 000001 (ambiguous with stock).
         QStringLiteral("399001"),
