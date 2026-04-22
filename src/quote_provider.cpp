@@ -279,6 +279,23 @@ QString normalizedSymbol(const QString& rawCode) {
     return prefix + digits;
 }
 
+QString normalizedSectorCode(const QString& rawCode) {
+    QString raw = rawCode.trimmed();
+    if (raw.isEmpty()) {
+        return {};
+    }
+
+    if (raw.startsWith(QStringLiteral("90."), Qt::CaseInsensitive)) {
+        raw = raw.mid(3);
+    }
+
+    if (raw.startsWith(QStringLiteral("bk"), Qt::CaseInsensitive)) {
+        return raw.toUpper();
+    }
+
+    return {};
+}
+
 QVector<QuoteItem> toVector(const QHash<QString, QuoteItem>& buffer) {
     QVector<QuoteItem> out;
     out.reserve(buffer.size());
@@ -949,6 +966,11 @@ void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
 }
 
 QString EastMoneyQuoteProvider::toSecId(const QString& rawCode) {
+    const QString sector = normalizedSectorCode(rawCode);
+    if (!sector.isEmpty()) {
+        return "90." + sector;
+    }
+
     const QString raw = rawCode.trimmed().toLower();
     if (raw.startsWith("hk")) {
         QString hkDigits = digitsOnly(raw);

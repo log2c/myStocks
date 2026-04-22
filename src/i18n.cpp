@@ -23,6 +23,7 @@ const TranslationMap& translations() {
                 {"settings.tab.display", "Display"},
                 {"settings.tab.other", "Other"},
                 {"settings.tab.about", "About"},
+                {"settings.tab.indexSector", "Index/Sector"},
                 {"settings.about.version", "Version"},
                 {"settings.about.github", "GitHub"},
                 {"settings.general.poll", "Poll interval (ms)"},
@@ -120,7 +121,16 @@ const TranslationMap& translations() {
                 {"settings.stocks.moveTop", "Top"},
                 {"settings.stocks.moveUp", "Up"},
                 {"settings.stocks.moveDown", "Down"},
-                {"settings.stocks.moveBottom", "Bottom"}
+                {"settings.stocks.moveBottom", "Bottom"},
+                {"settings.indexSector.indexGroup", "Index"},
+                {"settings.indexSector.indexHint", "Check to select, drag to reorder selected index display order."},
+                {"settings.indexSector.indexDisplayFmt", "%1 (%2)"},
+                {"settings.indexSector.sectorGroup", "Sector"},
+                {"settings.indexSector.sectorHint", "Search, add, delete, and reorder sectors. They are shown after indexes."},
+                {"settings.indexSector.sectorSearchPlaceholder", "Type 2+ chars to search sector"},
+                {"settings.indexSector.sectorDuplicate", "Sector already exists in the list."},
+                {"settings.indexSector.sectorDelConfirm", "Remove '%1' from the sector list?"},
+                {"settings.indexSector.ignoreYamlIndexFmt", "Ignored index codes in data.yaml: %1"}
             }
         },
         {
@@ -137,6 +147,7 @@ const TranslationMap& translations() {
                 {"settings.tab.display", "显示"},
                 {"settings.tab.other", "其它"},
                 {"settings.tab.about", "关于"},
+                {"settings.tab.indexSector", "指数/板块"},
                 {"settings.about.version", "版本"},
                 {"settings.about.github", "GitHub 主页"},
                 {"settings.general.poll", "轮询间隔 (毫秒)"},
@@ -234,7 +245,16 @@ const TranslationMap& translations() {
                 {"settings.stocks.moveTop", "置顶"},
                 {"settings.stocks.moveUp", "上移"},
                 {"settings.stocks.moveDown", "下移"},
-                {"settings.stocks.moveBottom", "置底"}
+                {"settings.stocks.moveBottom", "置底"},
+                {"settings.indexSector.indexGroup", "指数"},
+                {"settings.indexSector.indexHint", "勾选即可显示，拖动可调整显示顺序。悬浮窗会将指数显示在最上方。"},
+                {"settings.indexSector.indexDisplayFmt", "%1 (%2)"},
+                {"settings.indexSector.sectorGroup", "板块"},
+                {"settings.indexSector.sectorHint", "可搜索、添加、删除、排序板块，悬浮窗会显示在指数之后。"},
+                {"settings.indexSector.sectorSearchPlaceholder", "输入2个以上字符搜索板块"},
+                {"settings.indexSector.sectorDuplicate", "该板块已在列表中。"},
+                {"settings.indexSector.sectorDelConfirm", "确认从板块列表移除 '%1'？"},
+                {"settings.indexSector.ignoreYamlIndexFmt", "已忽略 data.yaml 中的指数代码：%1"}
             }
         }
     };

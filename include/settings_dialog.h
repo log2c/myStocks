@@ -27,6 +27,8 @@ public:
     explicit SettingsDialog(
         const AppConfig& cfg,
         const QVector<StockItem>& stocks,
+        const QVector<StockItem>& indexes,
+        const QVector<StockItem>& sectors,
         const QHash<QString, QString>& apiNamesByCode,
         const QString& dataYamlPath,
         std::function<void()> onWriteStockNames,
@@ -34,6 +36,8 @@ public:
     );
 
     AppConfig config() const;
+    QVector<StockItem> selectedIndexes() const;
+    QVector<StockItem> selectedSectors() const;
 
 private:
     QString trText(const QString& key) const;
@@ -51,16 +55,21 @@ private:
     QWidget* buildDisplayTab();
     QWidget* buildOtherTab();
     QWidget* buildStocksTab();
+    QWidget* buildIndexSectorTab();
     QWidget* buildAboutTab();
 
     void updateHotkeyIndicator(const QKeySequence& seq);
 
     void parseSinaSearchResult(const QByteArray& data);
     void doStockSearch(bool forceSearch = false);
+    void parseSectorSuggestResult(const QByteArray& data);
+    void doSectorSearch(bool forceSearch = false);
 
 private:
     AppConfig m_cfg;
     QVector<StockItem> m_stocks;
+    QVector<StockItem> m_indexes;
+    QVector<StockItem> m_sectors;
     QHash<QString, QString> m_apiNamesByCode;
     QString m_dataYamlPath;
     std::function<void()> m_onWriteStockNames;
@@ -120,4 +129,14 @@ private:
     QNetworkReply* m_stockSearchReply = nullptr;
     QListWidget* m_stockSuggestList = nullptr;
     QTableWidget* m_stockTable = nullptr;
+
+    // Index / sector tab
+    QListWidget* m_indexList = nullptr;
+    QLineEdit* m_sectorSearchEdit = nullptr;
+    QPushButton* m_sectorSearchBtn = nullptr;
+    QTimer* m_sectorSearchDebounce = nullptr;
+    QNetworkAccessManager* m_sectorSearchNam = nullptr;
+    QNetworkReply* m_sectorSearchReply = nullptr;
+    QListWidget* m_sectorSuggestList = nullptr;
+    QTableWidget* m_sectorTable = nullptr;
 };

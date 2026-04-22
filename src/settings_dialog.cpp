@@ -13,9 +13,11 @@
 #include <QDir>
 #include <QDropEvent>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QKeyEvent>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
@@ -37,6 +39,85 @@
 #include <utility>
 
 namespace {
+
+struct IndexPreset {
+    QString code;
+    QString name;
+    QString note;
+};
+
+const QVector<IndexPreset>& indexPresets() {
+    static const QVector<IndexPreset> presets {
+        {QStringLiteral("sh000001"), QStringLiteral("上证指数（上证综指）"), QStringLiteral("沪市主板整体")},
+        {QStringLiteral("sz399001"), QStringLiteral("深证成指"), QStringLiteral("深市主板 + 创业板核心 500 只")},
+        {QStringLiteral("sh000300"), QStringLiteral("沪深300"), QStringLiteral("两市大盘核心资产")},
+        {QStringLiteral("sh000016"), QStringLiteral("上证50"), QStringLiteral("沪市超大盘龙头")},
+        {QStringLiteral("sh000905"), QStringLiteral("中证500"), QStringLiteral("中盘成长代表")},
+        {QStringLiteral("sh000852"), QStringLiteral("中证1000"), QStringLiteral("小盘成长")},
+        {QStringLiteral("sz399006"), QStringLiteral("创业板指"), QStringLiteral("创业板整体（新能源、医药为主）")},
+        {QStringLiteral("sz399673"), QStringLiteral("创业板50"), QStringLiteral("创业板龙头 50 只")},
+        {QStringLiteral("sh000688"), QStringLiteral("科创50（科创板指）"), QStringLiteral("科创板硬科技龙头 50 只")},
+        {QStringLiteral("sh931643"), QStringLiteral("科创创业50（双创50）"), QStringLiteral("科创板 + 创业板龙头 50 只")},
+        {QStringLiteral("sz399431"), QStringLiteral("中证银行指数"), QStringLiteral("银行板块")},
+        {QStringLiteral("sz399975"), QStringLiteral("中证券商指数"), QStringLiteral("证券 / 券商板块")},
+        {QStringLiteral("sh000808"), QStringLiteral("中证医药生物"), QStringLiteral("医药全板块")},
+        {QStringLiteral("sh000932"), QStringLiteral("中证消费指数"), QStringLiteral("主要消费（食品饮料、家电等）")},
+        {QStringLiteral("sz399808"), QStringLiteral("中证新能源指数"), QStringLiteral("光伏、锂电、风电等")},
+        {QStringLiteral("sh980017"), QStringLiteral("中证半导体指数"), QStringLiteral("芯片 / 半导体")},
+    };
+
+    return presets;
+}
+
+QString watchCodeKey(const QString& code) {
+    return code.trimmed().toLower();
+}
+
+QString normalizeSectorCode(const QString& rawCode) {
+    QString code = rawCode.trimmed();
+    if (code.isEmpty()) {
+        return {};
+    }
+
+    if (code.startsWith(QStringLiteral("90."), Qt::CaseInsensitive)) {
+        code = code.mid(3);
+    }
+
+    if (code.startsWith(QStringLiteral("bk"), Qt::CaseInsensitive)) {
+        return code.toUpper();
+    }
+
+    return {};
+}
+
+const QSet<QString>& predefinedIndexAliases() {
+    static QSet<QString> aliases;
+    if (!aliases.isEmpty()) {
+        return aliases;
+    }
+
+    for (const IndexPreset& preset : indexPresets()) {
+        aliases.insert(watchCodeKey(preset.code));
+        const QString code = preset.code.size() > 2 ? preset.code.mid(2) : preset.code;
+        if (!code.isEmpty() && code != QStringLiteral("000001")) {
+            aliases.insert(watchCodeKey(code));
+        }
+    }
+
+    // Additional aliases from requirement table.
+    aliases.insert(QStringLiteral("sz399300"));
+    aliases.insert(QStringLiteral("sh932133"));
+
+    return aliases;
+}
+
+bool isPredefinedIndexCode(const QString& rawCode) {
+    const QString code = watchCodeKey(rawCode);
+    if (code.isEmpty()) {
+        return false;
+    }
+    return predefinedIndexAliases().contains(code);
+}
 
 class StockTableWidget : public QTableWidget {
 public:
@@ -336,6 +417,8 @@ bool isTokenQuotaExceeded(const QString& message) {
 SettingsDialog::SettingsDialog(
     const AppConfig& cfg,
     const QVector<StockItem>& stocks,
+    const QVector<StockItem>& indexes,
+    const QVector<StockItem>& sectors,
     const QHash<QString, QString>& apiNamesByCode,
     const QString& dataYamlPath,
     std::function<void()> onWriteStockNames,
@@ -344,6 +427,8 @@ SettingsDialog::SettingsDialog(
     : QDialog(parent)
     , m_cfg(cfg)
     , m_stocks(stocks)
+    , m_indexes(indexes)
+    , m_sectors(sectors)
     , m_apiNamesByCode(apiNamesByCode)
     , m_dataYamlPath(dataYamlPath)
     , m_onWriteStockNames(std::move(onWriteStockNames))
@@ -358,6 +443,7 @@ SettingsDialog::SettingsDialog(
     tabs->addTab(buildNetworkTab(), trText("settings.tab.network"));
     tabs->addTab(buildDisplayTab(), trText("settings.tab.display"));
     tabs->addTab(buildStocksTab(), trText("settings.tab.stocks"));
+    tabs->addTab(buildIndexSectorTab(), trText("settings.tab.indexSector"));
     tabs->addTab(buildOtherTab(), trText("settings.tab.other"));
     tabs->addTab(buildAboutTab(), trText("settings.tab.about"));
     root->addWidget(tabs);
@@ -440,6 +526,67 @@ AppConfig SettingsDialog::config() const {
 
     for (int i = 0; i < ColCount; ++i) {
         out.columnMaxWidths[i] = m_columnMaxWidthSpins[i]->value();
+    }
+
+    return out;
+}
+
+QVector<StockItem> SettingsDialog::selectedIndexes() const {
+    if (!m_indexList) {
+        return m_indexes;
+    }
+
+    QVector<StockItem> out;
+    out.reserve(m_indexList->count());
+
+    QSet<QString> seen;
+    for (int row = 0; row < m_indexList->count(); ++row) {
+        const QListWidgetItem* item = m_indexList->item(row);
+        if (!item || item->checkState() != Qt::Checked) {
+            continue;
+        }
+
+        const QString code = item->data(Qt::UserRole).toString().trimmed();
+        const QString name = item->data(Qt::UserRole + 1).toString().trimmed();
+        if (code.isEmpty()) {
+            continue;
+        }
+
+        const QString key = watchCodeKey(code);
+        if (seen.contains(key)) {
+            continue;
+        }
+        seen.insert(key);
+
+        out.push_back({code, name});
+    }
+
+    return out;
+}
+
+QVector<StockItem> SettingsDialog::selectedSectors() const {
+    if (!m_sectorTable) {
+        return m_sectors;
+    }
+
+    QVector<StockItem> out;
+    QSet<QString> seen;
+
+    const QVector<StockItem> sectors = static_cast<StockTableWidget*>(m_sectorTable)->stocks();
+    for (const StockItem& sector : sectors) {
+        const QString code = normalizeSectorCode(sector.code);
+        if (code.isEmpty()) {
+            continue;
+        }
+
+        const QString key = watchCodeKey(code);
+        if (seen.contains(key)) {
+            continue;
+        }
+        seen.insert(key);
+
+        const QString name = sector.name.trimmed();
+        out.push_back({code, name.isEmpty() ? code : name});
     }
 
     return out;
@@ -1283,15 +1430,416 @@ QWidget* SettingsDialog::buildStocksTab() {
 
         qInfo() << "[StocksTab] reset loaded count=" << loaded.size();
 
+        QStringList ignoredIndexes;
+
         // Rebuild table
         StockTableWidget* tbl = static_cast<StockTableWidget*>(m_stockTable);
         tbl->setRowCount(0);
         for (const StockItem& s : loaded) {
+            if (isPredefinedIndexCode(s.code)) {
+                ignoredIndexes.push_back(s.code);
+                continue;
+            }
             tbl->addStockRow(s.code, s.name);
+        }
+
+        ignoredIndexes.removeDuplicates();
+        if (!ignoredIndexes.isEmpty()) {
+            QMessageBox::information(
+                this,
+                trText("app.name"),
+                trText("settings.indexSector.ignoreYamlIndexFmt")
+                    .arg(ignoredIndexes.join(QStringLiteral(", ")))
+            );
         }
     });
 
     return w;
+}
+
+QWidget* SettingsDialog::buildIndexSectorTab() {
+    QWidget* w = new QWidget(this);
+    QVBoxLayout* root = new QVBoxLayout(w);
+    root->setSpacing(8);
+    root->setContentsMargins(8, 8, 8, 8);
+
+    // --- Index section ---
+    QGroupBox* indexGroup = new QGroupBox(trText("settings.indexSector.indexGroup"), w);
+    QVBoxLayout* indexLayout = new QVBoxLayout(indexGroup);
+    indexLayout->setContentsMargins(8, 8, 8, 8);
+    indexLayout->setSpacing(6);
+
+    QLabel* indexHint = new QLabel(trText("settings.indexSector.indexHint"), indexGroup);
+    indexHint->setWordWrap(true);
+
+    m_indexList = new QListWidget(indexGroup);
+    m_indexList->setDragDropMode(QAbstractItemView::InternalMove);
+    m_indexList->setDefaultDropAction(Qt::MoveAction);
+    m_indexList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_indexList->setDragEnabled(true);
+    m_indexList->setAcceptDrops(true);
+    m_indexList->setDropIndicatorShown(true);
+    m_indexList->setMinimumHeight(170);
+
+    QSet<QString> checkedKeys;
+    QStringList orderedKeys;
+    for (const StockItem& selected : m_indexes) {
+        const QString key = watchCodeKey(selected.code);
+        if (key.isEmpty()) {
+            continue;
+        }
+        checkedKeys.insert(key);
+        orderedKeys.push_back(key);
+    }
+
+    QHash<QString, IndexPreset> presetByKey;
+    for (const IndexPreset& preset : indexPresets()) {
+        const QString key = watchCodeKey(preset.code);
+        presetByKey.insert(key, preset);
+        if (!orderedKeys.contains(key)) {
+            orderedKeys.push_back(key);
+        }
+    }
+
+    for (const QString& key : orderedKeys) {
+        if (!presetByKey.contains(key)) {
+            continue;
+        }
+
+        const IndexPreset preset = presetByKey.value(key);
+        QListWidgetItem* item = new QListWidgetItem(
+            trText("settings.indexSector.indexDisplayFmt").arg(preset.name, preset.code),
+            m_indexList
+        );
+        item->setData(Qt::UserRole, preset.code);
+        item->setData(Qt::UserRole + 1, preset.name);
+        item->setToolTip(preset.note);
+        item->setFlags(
+            item->flags()
+            | Qt::ItemIsSelectable
+            | Qt::ItemIsEnabled
+            | Qt::ItemIsDragEnabled
+            | Qt::ItemIsUserCheckable
+        );
+        item->setCheckState(checkedKeys.contains(key) ? Qt::Checked : Qt::Unchecked);
+    }
+
+    indexLayout->addWidget(indexHint);
+    indexLayout->addWidget(m_indexList, 1);
+    root->addWidget(indexGroup, 1);
+
+    // --- Sector section ---
+    QGroupBox* sectorGroup = new QGroupBox(trText("settings.indexSector.sectorGroup"), w);
+    QVBoxLayout* sectorLayout = new QVBoxLayout(sectorGroup);
+    sectorLayout->setContentsMargins(8, 8, 8, 8);
+    sectorLayout->setSpacing(6);
+
+    QLabel* sectorHint = new QLabel(trText("settings.indexSector.sectorHint"), sectorGroup);
+    sectorHint->setWordWrap(true);
+    sectorLayout->addWidget(sectorHint);
+
+    QWidget* searchRow = new QWidget(sectorGroup);
+    QHBoxLayout* searchLayout = new QHBoxLayout(searchRow);
+    searchLayout->setContentsMargins(0, 0, 0, 0);
+    searchLayout->setSpacing(6);
+
+    m_sectorSearchEdit = new QLineEdit(searchRow);
+    m_sectorSearchEdit->setPlaceholderText(trText("settings.indexSector.sectorSearchPlaceholder"));
+    m_sectorSearchBtn = new QPushButton(trText("settings.stocks.search"), searchRow);
+
+    searchLayout->addWidget(m_sectorSearchEdit, 1);
+    searchLayout->addWidget(m_sectorSearchBtn);
+    sectorLayout->addWidget(searchRow);
+
+    m_sectorSuggestList = new QListWidget(this);
+    m_sectorSuggestList->setMaximumHeight(180);
+    m_sectorSuggestList->setFrameShape(QFrame::StyledPanel);
+    m_sectorSuggestList->hide();
+
+    StockTableWidget* table = new StockTableWidget(sectorGroup);
+    table->setHorizontalHeaderLabels({
+        trText("settings.stocks.colSeq"),
+        trText("settings.stocks.colCode"),
+        trText("settings.stocks.colName"),
+        trText("settings.stocks.colDel")
+    });
+    table->setMinimumHeight(180);
+
+    for (const StockItem& sector : m_sectors) {
+        const QString code = normalizeSectorCode(sector.code);
+        if (code.isEmpty() || table->containsCode(code)) {
+            continue;
+        }
+        table->addStockRow(code, sector.name);
+    }
+
+    m_sectorTable = table;
+    table->setConfirmDelete([this](const QString& display) -> bool {
+        const int ret = QMessageBox::question(
+            this,
+            trText("app.name"),
+            trText("settings.indexSector.sectorDelConfirm").arg(display),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No
+        );
+        return ret == QMessageBox::Yes;
+    });
+
+    QWidget* tableArea = new QWidget(sectorGroup);
+    QHBoxLayout* tableAreaLayout = new QHBoxLayout(tableArea);
+    tableAreaLayout->setContentsMargins(0, 0, 0, 0);
+    tableAreaLayout->setSpacing(4);
+    tableAreaLayout->addWidget(m_sectorTable, 1);
+
+    QWidget* orderBtnCol = new QWidget(tableArea);
+    QVBoxLayout* orderBtnLayout = new QVBoxLayout(orderBtnCol);
+    orderBtnLayout->setContentsMargins(0, 0, 0, 0);
+    orderBtnLayout->setSpacing(4);
+
+    auto makeOrderBtn = [&](const QString& label) -> QPushButton* {
+        QPushButton* btn = new QPushButton(label, orderBtnCol);
+        btn->setFixedWidth(60);
+        return btn;
+    };
+
+    QPushButton* btnTop = makeOrderBtn(trText("settings.stocks.moveTop"));
+    QPushButton* btnUp = makeOrderBtn(trText("settings.stocks.moveUp"));
+    QPushButton* btnDown = makeOrderBtn(trText("settings.stocks.moveDown"));
+    QPushButton* btnBottom = makeOrderBtn(trText("settings.stocks.moveBottom"));
+
+    orderBtnLayout->addStretch();
+    orderBtnLayout->addWidget(btnTop);
+    orderBtnLayout->addWidget(btnUp);
+    orderBtnLayout->addWidget(btnDown);
+    orderBtnLayout->addWidget(btnBottom);
+    orderBtnLayout->addStretch();
+
+    tableAreaLayout->addWidget(orderBtnCol);
+    sectorLayout->addWidget(tableArea, 1);
+    root->addWidget(sectorGroup, 1);
+
+    m_sectorSearchNam = new QNetworkAccessManager(this);
+    m_sectorSearchNam->setProxy(network_utils::proxyFromConfig(m_cfg));
+
+    m_sectorSearchDebounce = new QTimer(this);
+    m_sectorSearchDebounce->setSingleShot(true);
+    m_sectorSearchDebounce->setInterval(400);
+
+    auto currentTableRow = [this]() -> int {
+        return m_sectorTable ? m_sectorTable->currentRow() : -1;
+    };
+    connect(btnTop, &QPushButton::clicked, this, [this, currentTableRow]() {
+        const int newRow = static_cast<StockTableWidget*>(m_sectorTable)->moveRowTop(currentTableRow());
+        m_sectorTable->setCurrentCell(newRow, 0);
+    });
+    connect(btnUp, &QPushButton::clicked, this, [this, currentTableRow]() {
+        const int newRow = static_cast<StockTableWidget*>(m_sectorTable)->moveRowUp(currentTableRow());
+        m_sectorTable->setCurrentCell(newRow, 0);
+    });
+    connect(btnDown, &QPushButton::clicked, this, [this, currentTableRow]() {
+        const int newRow = static_cast<StockTableWidget*>(m_sectorTable)->moveRowDown(currentTableRow());
+        m_sectorTable->setCurrentCell(newRow, 0);
+    });
+    connect(btnBottom, &QPushButton::clicked, this, [this, currentTableRow]() {
+        const int newRow = static_cast<StockTableWidget*>(m_sectorTable)->moveRowBottom(currentTableRow());
+        m_sectorTable->setCurrentCell(newRow, 0);
+    });
+
+    connect(m_sectorSearchEdit, &QLineEdit::textEdited, this, [this](const QString& rawText) {
+        QString text = rawText;
+        text.remove(QLatin1Char(' '));
+        if (text != rawText) {
+            m_sectorSearchEdit->setText(text);
+        }
+
+        if (text.length() < 2) {
+            m_sectorSearchDebounce->stop();
+            if (m_sectorSearchReply) {
+                m_sectorSearchReply->abort();
+                m_sectorSearchReply->deleteLater();
+                m_sectorSearchReply = nullptr;
+            }
+            m_sectorSuggestList->clear();
+            m_sectorSuggestList->hide();
+            return;
+        }
+
+        m_sectorSearchDebounce->start();
+    });
+
+    connect(m_sectorSearchBtn, &QPushButton::clicked, this, [this]() {
+        if (m_sectorSearchDebounce) {
+            m_sectorSearchDebounce->stop();
+        }
+        doSectorSearch(true);
+    });
+
+    connect(m_sectorSearchDebounce, &QTimer::timeout, this, [this]() {
+        doSectorSearch();
+    });
+
+    connect(m_sectorSuggestList, &QListWidget::itemClicked, this, [this](QListWidgetItem* listItem) {
+        if (!listItem) {
+            return;
+        }
+
+        const QString code = normalizeSectorCode(listItem->data(Qt::UserRole).toString());
+        const QString name = listItem->data(Qt::UserRole + 1).toString().trimmed();
+        if (code.isEmpty()) {
+            return;
+        }
+
+        StockTableWidget* tbl = static_cast<StockTableWidget*>(m_sectorTable);
+        if (tbl->containsCode(code)) {
+            QMessageBox::information(
+                this,
+                trText("app.name"),
+                trText("settings.indexSector.sectorDuplicate")
+            );
+        } else {
+            tbl->addStockRow(code, name);
+        }
+
+        m_sectorSuggestList->clear();
+        m_sectorSuggestList->hide();
+        m_sectorSearchEdit->clear();
+    });
+
+    return w;
+}
+
+void SettingsDialog::parseSectorSuggestResult(const QByteArray& data) {
+    if (!m_sectorSuggestList || !m_sectorSearchEdit || !m_sectorSearchBtn) {
+        return;
+    }
+
+    if (data.isEmpty()) {
+        m_sectorSuggestList->clear();
+        m_sectorSuggestList->hide();
+        return;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        qWarning() << "[SectorSearch] parse failed:" << parseError.errorString();
+        m_sectorSuggestList->clear();
+        m_sectorSuggestList->hide();
+        return;
+    }
+
+    const QJsonObject root = doc.object();
+    const QJsonObject tableObj = root.value(QStringLiteral("QuotationCodeTable")).toObject();
+    const QJsonArray items = tableObj.value(QStringLiteral("Data")).toArray();
+
+    m_sectorSuggestList->clear();
+
+    QSet<QString> addedCodes;
+    for (const QJsonValue& value : items) {
+        if (!value.isObject()) {
+            continue;
+        }
+
+        const QJsonObject obj = value.toObject();
+        const QString code = normalizeSectorCode(obj.value(QStringLiteral("Code")).toString());
+        const QString name = obj.value(QStringLiteral("Name")).toString().trimmed();
+        if (code.isEmpty()) {
+            continue;
+        }
+
+        const QString key = watchCodeKey(code);
+        if (addedCodes.contains(key)) {
+            continue;
+        }
+        addedCodes.insert(key);
+
+        const QString displayText = name.isEmpty()
+            ? code
+            : (code + QStringLiteral(" - ") + name);
+        QListWidgetItem* item = new QListWidgetItem(displayText, m_sectorSuggestList);
+        item->setData(Qt::UserRole, code);
+        item->setData(Qt::UserRole + 1, name);
+    }
+
+    if (m_sectorSuggestList->count() > 0) {
+        const QPoint topLeft = m_sectorSearchEdit->mapTo(this,
+            QPoint(0, m_sectorSearchEdit->height() + 2));
+        const int w = m_sectorSearchEdit->width() + 6 + m_sectorSearchBtn->width();
+        const int itemH = m_sectorSuggestList->sizeHintForRow(0);
+        const int h = qMin(m_sectorSuggestList->count() * (itemH > 0 ? itemH : 22) + 6, 180);
+        m_sectorSuggestList->setGeometry(topLeft.x(), topLeft.y(), w, h);
+        m_sectorSuggestList->raise();
+        m_sectorSuggestList->setVisible(true);
+    } else {
+        m_sectorSuggestList->setVisible(false);
+    }
+}
+
+void SettingsDialog::doSectorSearch(bool forceSearch) {
+    if (!m_sectorSearchEdit || !m_sectorSearchNam) {
+        return;
+    }
+
+    const QString keyword = m_sectorSearchEdit->text().trimmed();
+    if (!forceSearch && keyword.length() < 2) {
+        return;
+    }
+    if (keyword.isEmpty()) {
+        return;
+    }
+
+    if (m_sectorSearchReply) {
+        m_sectorSearchReply->abort();
+        m_sectorSearchReply->deleteLater();
+        m_sectorSearchReply = nullptr;
+    }
+
+    QUrl url(QStringLiteral("https://searchapi.eastmoney.com/api/suggest/get"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("input"), keyword);
+    query.addQueryItem(QStringLiteral("type"), QStringLiteral("14"));
+    url.setQuery(query);
+
+    qInfo() << "[SectorSearch] GET" << url.toString();
+
+    QNetworkRequest req(url);
+    req.setHeader(
+        QNetworkRequest::UserAgentHeader,
+        network_utils::effectiveUserAgent(m_cfg)
+    );
+    req.setRawHeader("Referer", "https://quote.eastmoney.com");
+    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
+
+    const network_logger::RequestTrace trace = network_logger::logRequestStart(
+        "eastmoney-sector-search",
+        "GET",
+        req,
+        m_sectorSearchNam->proxy()
+    );
+
+    m_sectorSearchReply = m_sectorSearchNam->get(req);
+    connect(m_sectorSearchReply, &QNetworkReply::finished, this, [this, trace]() {
+        if (!m_sectorSearchReply) {
+            return;
+        }
+
+        const QNetworkReply::NetworkError netErr = m_sectorSearchReply->error();
+        const QByteArray data = m_sectorSearchReply->readAll();
+
+        network_logger::logRequestFinish(trace, m_sectorSearchReply, data.size(), data);
+
+        m_sectorSearchReply->deleteLater();
+        m_sectorSearchReply = nullptr;
+
+        if (netErr != QNetworkReply::NoError) {
+            qWarning() << "[SectorSearch] network error" << netErr;
+            m_sectorSuggestList->clear();
+            m_sectorSuggestList->hide();
+            return;
+        }
+
+        parseSectorSuggestResult(data);
+    });
 }
 
 void SettingsDialog::parseSinaSearchResult(const QByteArray& data) {
