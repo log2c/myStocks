@@ -1740,7 +1740,12 @@ void SettingsDialog::parseSectorSuggestResult(const QByteArray& data) {
             continue;
         }
 
+        static const QString kSectorSecurityType = QStringLiteral("9");
+
         const QJsonObject obj = value.toObject();
+        if (obj.value(QStringLiteral("SecurityType")).toString() != kSectorSecurityType) {
+            continue;
+        }
         const QString code = normalizeSectorCode(obj.value(QStringLiteral("Code")).toString());
         const QString name = obj.value(QStringLiteral("Name")).toString().trimmed();
         if (code.isEmpty()) {
@@ -1794,10 +1799,13 @@ void SettingsDialog::doSectorSearch(bool forceSearch) {
         m_sectorSearchReply = nullptr;
     }
 
+    static constexpr int kSectorSearchCount = 10;
+
     QUrl url(QStringLiteral("https://searchapi.eastmoney.com/api/suggest/get"));
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("input"), keyword);
     query.addQueryItem(QStringLiteral("type"), QStringLiteral("14"));
+    query.addQueryItem(QStringLiteral("count"), QString::number(kSectorSearchCount));
     url.setQuery(query);
 
     qInfo() << "[SectorSearch] GET" << url.toString();
