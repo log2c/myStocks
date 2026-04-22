@@ -296,6 +296,16 @@ QString normalizedSectorCode(const QString& rawCode) {
     return {};
 }
 
+const QSet<QString>& hongKongIndexSymbols() {
+    static const QSet<QString> symbols {
+        QStringLiteral("hsi"),
+        QStringLiteral("hstech"),
+        QStringLiteral("hscei"),
+        QStringLiteral("hsci"),
+    };
+    return symbols;
+}
+
 QVector<QuoteItem> toVector(const QHash<QString, QuoteItem>& buffer) {
     QVector<QuoteItem> out;
     out.reserve(buffer.size());
@@ -1024,16 +1034,72 @@ QString EastMoneyQuoteProvider::toSecId(const QString& rawCode) {
         return "90." + sector;
     }
 
-    const QString raw = rawCode.trimmed().toLower();
-    if (raw.startsWith("hk")) {
-        QString hkDigits = digitsOnly(raw);
+    const QString raw = rawCode.trimmed();
+    if (raw.isEmpty()) {
+        return {};
+    }
+
+    const QString lower = raw.toLower();
+
+    // Accept direct secid-like inputs.
+    const int dot = lower.indexOf('.');
+    if (dot > 0 && dot < lower.size() - 1) {
+        const QString market = lower.left(dot);
+        const QString symbolPart = raw.mid(dot + 1).trimmed();
+
+        if (market == QStringLiteral("90")) {
+            const QString directSector = normalizedSectorCode(symbolPart);
+            if (!directSector.isEmpty()) {
+                return QStringLiteral("90.") + directSector;
+            }
+        }
+
+        if (market == QStringLiteral("116")) {
+            QString hkDigits = digitsOnly(symbolPart);
+            if (hkDigits.isEmpty()) {
+                return {};
+            }
+            if (hkDigits.size() > 5) {
+                hkDigits = hkDigits.right(5);
+            }
+            return QStringLiteral("116.") + hkDigits.rightJustified(5, '0');
+        }
+
+        if (market == QStringLiteral("100") || market == QStringLiteral("128")) {
+            const QString symbol = symbolPart.toUpper();
+            if (!symbol.isEmpty()) {
+                return market + QStringLiteral(".") + symbol;
+            }
+        }
+    }
+
+    if (hongKongIndexSymbols().contains(lower)) {
+        return QStringLiteral("100.") + raw.toUpper();
+    }
+
+    if (lower.endsWith(QStringLiteral(".hk"))) {
+        QString hkDigits = digitsOnly(lower);
+        if (hkDigits.size() > 5) {
+            hkDigits = hkDigits.right(5);
+        }
+        if (!hkDigits.isEmpty()) {
+            return QStringLiteral("116.") + hkDigits.rightJustified(5, '0');
+        }
+    }
+
+    if (lower.startsWith("hk")) {
+        QString hkDigits = digitsOnly(lower);
         if (hkDigits.isEmpty()) {
             return {};
         }
         if (hkDigits.size() > 5) {
             hkDigits = hkDigits.right(5);
         }
-        return "116." + hkDigits.rightJustified(5, '0');
+        return QStringLiteral("116.") + hkDigits.rightJustified(5, '0');
+    }
+
+    if (lower.size() == 5 && isDigitsOnly(lower)) {
+        return QStringLiteral("116.") + lower;
     }
 
     const QString symbol = normalizedSymbol(rawCode);

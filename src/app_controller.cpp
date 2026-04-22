@@ -150,7 +150,47 @@ bool ensureDataYamlExists(const QString& path) {
 }
 
 bool isHongKongCode(const QString& rawCode) {
-    return rawCode.trimmed().toLower().startsWith("hk");
+    const QString code = rawCode.trimmed().toLower();
+    if (code.isEmpty()) {
+        return false;
+    }
+
+    if (code.startsWith("hk")
+        || code.startsWith(QStringLiteral("116."))
+        || code.startsWith(QStringLiteral("128."))) {
+        return true;
+    }
+
+    static const QSet<QString> hkIndexCodes {
+        QStringLiteral("hsi"),
+        QStringLiteral("hstech"),
+        QStringLiteral("hscei"),
+        QStringLiteral("hsci"),
+        QStringLiteral("100.hsi"),
+        QStringLiteral("100.hstech"),
+        QStringLiteral("100.hscei"),
+        QStringLiteral("100.hsci"),
+    };
+
+    if (hkIndexCodes.contains(code)) {
+        return true;
+    }
+
+    if (code.startsWith(QStringLiteral("100."))
+        && hkIndexCodes.contains(code.mid(4))) {
+        return true;
+    }
+
+    if (code.size() == 5) {
+        for (QChar ch : code) {
+            if (!ch.isDigit()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    return false;
 }
 
 bool isBenignCanceledError(const QString& message) {
@@ -196,6 +236,14 @@ const QSet<QString>& predefinedIndexAliases() {
         QStringLiteral("sz399808"),
         QStringLiteral("sh980017"),
         QStringLiteral("sz980017"),
+        QStringLiteral("hsi"),
+        QStringLiteral("hstech"),
+        QStringLiteral("hscei"),
+        QStringLiteral("hsci"),
+        QStringLiteral("100.hsi"),
+        QStringLiteral("100.hstech"),
+        QStringLiteral("100.hscei"),
+        QStringLiteral("100.hsci"),
 
         // Digits-only aliases from docs/api examples except 000001 (ambiguous with stock).
         QStringLiteral("399001"),
