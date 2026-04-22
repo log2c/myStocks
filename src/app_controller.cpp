@@ -164,12 +164,8 @@ bool isHongKongCode(const QString& rawCode) {
     static const QSet<QString> hkIndexCodes {
         QStringLiteral("hsi"),
         QStringLiteral("hstech"),
-        QStringLiteral("hscei"),
-        QStringLiteral("hsci"),
         QStringLiteral("100.hsi"),
-        QStringLiteral("100.hstech"),
-        QStringLiteral("100.hscei"),
-        QStringLiteral("100.hsci"),
+        QStringLiteral("124.hstech"),
     };
 
     if (hkIndexCodes.contains(code)) {
@@ -177,6 +173,10 @@ bool isHongKongCode(const QString& rawCode) {
     }
 
     if (code.startsWith(QStringLiteral("100."))
+        && hkIndexCodes.contains(code.mid(4))) {
+        return true;
+    }
+    if (code.startsWith(QStringLiteral("124."))
         && hkIndexCodes.contains(code.mid(4))) {
         return true;
     }
@@ -238,12 +238,8 @@ const QSet<QString>& predefinedIndexAliases() {
         QStringLiteral("sz980017"),
         QStringLiteral("hsi"),
         QStringLiteral("hstech"),
-        QStringLiteral("hscei"),
-        QStringLiteral("hsci"),
         QStringLiteral("100.hsi"),
         QStringLiteral("124.hstech"),
-        QStringLiteral("124.hscei"),
-        QStringLiteral("124.hsci"),
 
         // Digits-only aliases from docs/api examples except 000001 (ambiguous with stock).
         QStringLiteral("399001"),
@@ -304,6 +300,27 @@ QString normalizeSectorCode(const QString& rawCode) {
 
     if (code.startsWith(QStringLiteral("bk"), Qt::CaseInsensitive)) {
         return code.toUpper();
+    }
+
+    return {};
+}
+
+QString normalizeHongKongIndexCode(const QString& rawCode) {
+    const QString code = rawCode.trimmed().toLower();
+    if (code.isEmpty()) {
+        return {};
+    }
+
+    if (code == QStringLiteral("hsi")
+        || code == QStringLiteral("100.hsi")
+        || code == QStringLiteral("124.hsi")) {
+        return QStringLiteral("100.HSI");
+    }
+
+    if (code == QStringLiteral("hstech")
+        || code == QStringLiteral("124.hstech")
+        || code == QStringLiteral("100.hstech")) {
+        return QStringLiteral("124.HSTECH");
     }
 
     return {};
@@ -716,11 +733,19 @@ void AppController::refreshQuotes(bool force) {
         QVector<StockItem> allItems;
         allItems.reserve(merged.size());
         for (const StockItem& item : merged) {
-            if (isSectorCode(item.code)) {
-                allItems.push_back({normalizeSectorCode(item.code), item.name});
-            } else {
-                allItems.push_back(item);
+            const QString sectorCode = normalizeSectorCode(item.code);
+            if (!sectorCode.isEmpty()) {
+                allItems.push_back({sectorCode, item.name});
+                continue;
             }
+
+            const QString hkIndexCode = normalizeHongKongIndexCode(item.code);
+            if (!hkIndexCode.isEmpty()) {
+                allItems.push_back({hkIndexCode, item.name});
+                continue;
+            }
+
+            allItems.push_back(item);
         }
 
         if (m_provider && !allItems.isEmpty()) {
@@ -735,11 +760,20 @@ void AppController::refreshQuotes(bool force) {
     sectorItems.reserve(merged.size());
 
     for (const StockItem& item : merged) {
-        if (isSectorCode(item.code)) {
-            sectorItems.push_back({normalizeSectorCode(item.code), item.name});
-        } else {
-            marketItems.push_back(item);
+        const QString sectorCode = normalizeSectorCode(item.code);
+        if (!sectorCode.isEmpty()) {
+            sectorItems.push_back({sectorCode, item.name});
+            continue;
         }
+
+        const QString hkIndexCode = normalizeHongKongIndexCode(item.code);
+        if (!hkIndexCode.isEmpty()) {
+            // Hang Seng family indexes should be fetched with EastMoney sector batch.
+            sectorItems.push_back({hkIndexCode, item.name});
+            continue;
+        }
+
+        marketItems.push_back(item);
     }
 
     if (m_provider && !marketItems.isEmpty()) {

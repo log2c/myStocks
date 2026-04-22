@@ -296,14 +296,25 @@ QString normalizedSectorCode(const QString& rawCode) {
     return {};
 }
 
-const QSet<QString>& hongKongIndexSymbols() {
-    static const QSet<QString> symbols {
-        QStringLiteral("hsi"),
-        QStringLiteral("hstech"),
-        QStringLiteral("hscei"),
-        QStringLiteral("hsci"),
-    };
-    return symbols;
+QString normalizeHongKongIndexSecId(const QString& rawCode) {
+    const QString code = rawCode.trimmed().toLower();
+    if (code.isEmpty()) {
+        return {};
+    }
+
+    if (code == QStringLiteral("hsi")
+        || code == QStringLiteral("100.hsi")
+        || code == QStringLiteral("124.hsi")) {
+        return QStringLiteral("100.HSI");
+    }
+
+    if (code == QStringLiteral("hstech")
+        || code == QStringLiteral("124.hstech")
+        || code == QStringLiteral("100.hstech")) {
+        return QStringLiteral("124.HSTECH");
+    }
+
+    return {};
 }
 
 QVector<QuoteItem> toVector(const QHash<QString, QuoteItem>& buffer) {
@@ -1065,7 +1076,14 @@ QString EastMoneyQuoteProvider::toSecId(const QString& rawCode) {
             return QStringLiteral("116.") + hkDigits.rightJustified(5, '0');
         }
 
-        if (market == QStringLiteral("100") || market == QStringLiteral("128")) {
+        if (market == QStringLiteral("100")
+            || market == QStringLiteral("124")
+            || market == QStringLiteral("128")) {
+            const QString hkIndexSecId = normalizeHongKongIndexSecId(market + QStringLiteral(".") + symbolPart);
+            if (!hkIndexSecId.isEmpty()) {
+                return hkIndexSecId;
+            }
+
             const QString symbol = symbolPart.toUpper();
             if (!symbol.isEmpty()) {
                 return market + QStringLiteral(".") + symbol;
@@ -1073,8 +1091,9 @@ QString EastMoneyQuoteProvider::toSecId(const QString& rawCode) {
         }
     }
 
-    if (hongKongIndexSymbols().contains(lower)) {
-        return QStringLiteral("100.") + raw.toUpper();
+    const QString hkIndexSecId = normalizeHongKongIndexSecId(lower);
+    if (!hkIndexSecId.isEmpty()) {
+        return hkIndexSecId;
     }
 
     if (lower.endsWith(QStringLiteral(".hk"))) {

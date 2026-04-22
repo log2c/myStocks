@@ -64,11 +64,11 @@ QVector<StockItem> ConfigManager::loadStocksFromYaml(const QString& filePath) {
         return out;
     }
 
-#ifdef DEBUG_MODE
-    const QByteArray content = file.readAll();
-    file.seek(0); // Reset to beginning for parsing
-    qDebug() << "Debug mode: data.yaml content:\n" << QString::fromUtf8(content);
-#endif
+// #ifdef DEBUG_MODE
+//     const QByteArray content = file.readAll();
+//     file.seek(0); // Reset to beginning for parsing
+//     qDebug() << "Debug mode: data.yaml content:\n" << QString::fromUtf8(content);
+// #endif
 
     QString curCode;
     QString curName;

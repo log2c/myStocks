@@ -64,10 +64,8 @@ const QVector<IndexPreset>& indexPresets() {
         {QStringLiteral("sh000932"), QStringLiteral("中证消费指数"), QStringLiteral("主要消费（食品饮料、家电等）")},
         {QStringLiteral("sz399808"), QStringLiteral("中证新能源指数"), QStringLiteral("光伏、锂电、风电等")},
         {QStringLiteral("sh980017"), QStringLiteral("中证半导体指数"), QStringLiteral("芯片 / 半导体")},
-        {QStringLiteral("HSI"), QStringLiteral("恒生指数"), QStringLiteral("港股大盘基准指数")},
-        {QStringLiteral("HSTECH"), QStringLiteral("恒生科技指数"), QStringLiteral("港股科技龙头指数")},
-        {QStringLiteral("HSCEI"), QStringLiteral("恒生中国企业指数"), QStringLiteral("H股核心成分指数")},
-        {QStringLiteral("HSCI"), QStringLiteral("恒生综合指数"), QStringLiteral("港股综合市场指数")},
+        {QStringLiteral("100.HSI"), QStringLiteral("恒生指数"), QStringLiteral("港股大盘基准指数")},
+        {QStringLiteral("124.HSTECH"), QStringLiteral("恒生科技指数"), QStringLiteral("港股科技龙头指数")},
     };
 
     return presets;
@@ -118,10 +116,10 @@ const QSet<QString>& predefinedIndexAliases() {
     // Additional aliases from requirement table.
     aliases.insert(QStringLiteral("sz399300"));
     aliases.insert(QStringLiteral("sh932133"));
+    aliases.insert(QStringLiteral("hsi"));
+    aliases.insert(QStringLiteral("hstech"));
     aliases.insert(QStringLiteral("100.hsi"));
-    aliases.insert(QStringLiteral("100.hstech"));
-    aliases.insert(QStringLiteral("100.hscei"));
-    aliases.insert(QStringLiteral("100.hsci"));
+    aliases.insert(QStringLiteral("124.hstech"));
 
     return aliases;
 }
