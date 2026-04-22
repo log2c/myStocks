@@ -5,6 +5,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
+#include <QDoubleSpinBox>
 #include <QHash>
 #include <QKeySequenceEdit>
 #include <QLabel>
@@ -116,6 +117,8 @@ private:
     QCheckBox* m_simpleModeCheck = nullptr;
     QCheckBox* m_blinkReminderCheck = nullptr;
     QCheckBox* m_trayTooltipCheck = nullptr;
+    QCheckBox* m_hoverReadingCheck = nullptr;
+    QDoubleSpinBox* m_hoverReadingDelaySpin = nullptr;
     QListWidget* m_columnList = nullptr;
     QVector<QSpinBox*> m_columnMaxWidthSpins;
     bool m_normalizingHotkeySequence = false;

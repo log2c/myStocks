@@ -515,6 +515,8 @@ AppConfig SettingsDialog::config() const {
     out.simpleModeEnabled = m_simpleModeCheck->isChecked();
     out.blinkReminderEnabled = m_blinkReminderCheck->isChecked();
     out.trayTooltipEnabled = m_trayTooltipCheck->isChecked();
+    out.hoverReadingEnabled = m_hoverReadingCheck->isChecked();
+    out.hoverReadingDelaySecs = m_hoverReadingDelaySpin->value();
 
     for (int i = 0; i < ColCount; ++i) {
         out.visibleColumns[i] = false;
@@ -1083,6 +1085,29 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_trayTooltipCheck = new QCheckBox(trText("settings.display.trayTooltip"), w);
     m_trayTooltipCheck->setChecked(m_cfg.trayTooltipEnabled);
     form->addRow(m_trayTooltipCheck);
+
+    m_hoverReadingCheck = new QCheckBox(trText("settings.display.hoverReading"), w);
+    m_hoverReadingCheck->setChecked(m_cfg.hoverReadingEnabled);
+    m_hoverReadingDelaySpin = new QDoubleSpinBox(w);
+    m_hoverReadingDelaySpin->setRange(0.1, 60.0);
+    m_hoverReadingDelaySpin->setSingleStep(0.1);
+    m_hoverReadingDelaySpin->setDecimals(1);
+    m_hoverReadingDelaySpin->setSuffix(trText("settings.display.hoverReadingDelaySuffix"));
+    m_hoverReadingDelaySpin->setValue(qBound(0.1, m_cfg.hoverReadingDelaySecs, 60.0));
+    m_hoverReadingDelaySpin->setEnabled(m_cfg.hoverReadingEnabled);
+    connect(m_hoverReadingCheck, &QCheckBox::toggled, this, [this](bool checked) {
+        m_hoverReadingDelaySpin->setEnabled(checked);
+    });
+    {
+        QWidget* hoverReadingWidget = new QWidget(w);
+        QHBoxLayout* hoverReadingLayout = new QHBoxLayout(hoverReadingWidget);
+        hoverReadingLayout->setContentsMargins(0, 0, 0, 0);
+        hoverReadingLayout->setSpacing(8);
+        hoverReadingLayout->addWidget(m_hoverReadingCheck);
+        hoverReadingLayout->addStretch(1);
+        hoverReadingLayout->addWidget(m_hoverReadingDelaySpin);
+        form->addRow(hoverReadingWidget);
+    }
 
     const QStringList names = i18n::columnNames(m_uiLanguage);
     const QVector<int> columnOrder = normalizedColumnOrder(m_cfg.columnOrder);

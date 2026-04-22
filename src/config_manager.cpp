@@ -192,6 +192,9 @@ AppConfig ConfigManager::loadConfig() {
         cfg.transparentBackgroundOpacity
     ).toInt();
 
+    cfg.hoverReadingEnabled = s.value("ui/hoverReadingEnabled", cfg.hoverReadingEnabled).toBool();
+    cfg.hoverReadingDelaySecs = s.value("ui/hoverReadingDelaySecs", cfg.hoverReadingDelaySecs).toDouble();
+
     cfg.showHeader = s.value("ui/showHeader", cfg.showHeader).toBool();
     cfg.showGrid = s.value("ui/showGrid", cfg.showGrid).toBool();
     cfg.gridColor = s.value("ui/gridColor", cfg.gridColor).value<QColor>();
@@ -258,6 +261,7 @@ AppConfig ConfigManager::loadConfig() {
     }
 
     cfg.transparentBackgroundOpacity = qBound(0, cfg.transparentBackgroundOpacity, 100);
+    cfg.hoverReadingDelaySecs = qBound(0.1, cfg.hoverReadingDelaySecs, 60.0);
 
         qInfo() << "ConfigManager::loadConfig"
             << "apiSource=" << cfg.apiSource
@@ -327,6 +331,8 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         "ui/transparentBackgroundOpacity",
         qBound(0, cfg.transparentBackgroundOpacity, 100)
     );
+    s.setValue("ui/hoverReadingEnabled", cfg.hoverReadingEnabled);
+    s.setValue("ui/hoverReadingDelaySecs", qBound(0.1, cfg.hoverReadingDelaySecs, 60.0));
     s.setValue("ui/windowRect", cfg.windowRect);
 
     for (int i = 0; i < ColCount; ++i) {
