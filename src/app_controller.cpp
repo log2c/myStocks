@@ -661,6 +661,26 @@ void AppController::refreshQuotes(bool force) {
     }
 
     const QVector<StockItem> merged = mergedWatchItems();
+
+    // EastMoney source now supports mixed batch quotes (index + sector + stock)
+    // via ulist endpoint, so avoid splitting into separate requests.
+    if (m_cfg.apiSource == QStringLiteral("eastmoney")) {
+        QVector<StockItem> allItems;
+        allItems.reserve(merged.size());
+        for (const StockItem& item : merged) {
+            if (isSectorCode(item.code)) {
+                allItems.push_back({normalizeSectorCode(item.code), item.name});
+            } else {
+                allItems.push_back(item);
+            }
+        }
+
+        if (m_provider && !allItems.isEmpty()) {
+            m_provider->fetchQuotes(allItems);
+        }
+        return;
+    }
+
     QVector<StockItem> marketItems;
     QVector<StockItem> sectorItems;
     marketItems.reserve(merged.size());
@@ -827,9 +847,12 @@ void AppController::rebuildProvider() {
 
     // Sector(BKxxxx) quotes are always fetched from EastMoney so they can work
     // even when the primary provider is Tencent/Sina/XTick.
-    m_sectorProvider = new EastMoneyQuoteProvider(this);
-    m_sectorProvider->setLanguage(m_resolvedLanguage);
-    m_sectorProvider->applyConfig(m_cfg);
+    // When primary source is EastMoney, m_provider already fetches everything in batch.
+    if (m_cfg.apiSource != "eastmoney") {
+        m_sectorProvider = new EastMoneyQuoteProvider(this);
+        m_sectorProvider->setLanguage(m_resolvedLanguage);
+        m_sectorProvider->applyConfig(m_cfg);
+    }
 
     m_apiNamesByCode.clear();
     const QString sourceAtConnect = m_cfg.apiSource;
@@ -856,23 +879,25 @@ void AppController::rebuildProvider() {
         onProviderError(msg);
     });
 
-    connect(m_sectorProvider, &IQuoteProvider::quotesReady, this, [this](const QVector<QuoteItem>& quotes) {
-        for (const QuoteItem& q : quotes) {
-            const QString code = q.code.trimmed();
-            const QString name = q.name.trimmed();
-            if (code.isEmpty() || name.isEmpty()) {
-                continue;
+    if (m_sectorProvider) {
+        connect(m_sectorProvider, &IQuoteProvider::quotesReady, this, [this](const QVector<QuoteItem>& quotes) {
+            for (const QuoteItem& q : quotes) {
+                const QString code = q.code.trimmed();
+                const QString name = q.name.trimmed();
+                if (code.isEmpty() || name.isEmpty()) {
+                    continue;
+                }
+                m_apiNamesByCode.insert(code, name);
             }
-            m_apiNamesByCode.insert(code, name);
-        }
-    });
-    connect(m_sectorProvider, &IQuoteProvider::quotesReady, m_model, &QuoteModel::updateQuotes);
-    connect(m_sectorProvider, &IQuoteProvider::quotesReady, this, [this](const QVector<QuoteItem>&) {
-        updateTrayTooltip();
-    });
-    connect(m_sectorProvider, &IQuoteProvider::error, this, [this](const QString& msg) {
-        onProviderError(msg);
-    });
+        });
+        connect(m_sectorProvider, &IQuoteProvider::quotesReady, m_model, &QuoteModel::updateQuotes);
+        connect(m_sectorProvider, &IQuoteProvider::quotesReady, this, [this](const QVector<QuoteItem>&) {
+            updateTrayTooltip();
+        });
+        connect(m_sectorProvider, &IQuoteProvider::error, this, [this](const QString& msg) {
+            onProviderError(msg);
+        });
+    }
 }
 
 QHash<QString, QString> AppController::currentApiNamesByCode() const {

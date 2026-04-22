@@ -305,6 +305,44 @@ QVector<QuoteItem> toVector(const QHash<QString, QuoteItem>& buffer) {
     return out;
 }
 
+QString secIdKey(const QString& secId) {
+    return secId.trimmed().toLower();
+}
+
+QString secIdKeyFromDiffItem(const QJsonObject& item) {
+    const QString symbol = item.value(QStringLiteral("f12")).toString().trimmed();
+    if (symbol.isEmpty()) {
+        return {};
+    }
+
+    QString market;
+    const QJsonValue marketValue = item.value(QStringLiteral("f13"));
+    if (marketValue.isString()) {
+        market = marketValue.toString().trimmed();
+    } else if (marketValue.isDouble()) {
+        market = QString::number(static_cast<int>(marketValue.toDouble()));
+    }
+
+    if (market.isEmpty()) {
+        return {};
+    }
+
+    return secIdKey(market + QStringLiteral(".") + symbol);
+}
+
+double chooseRawOrDiv100(double raw, double threshold, double reference) {
+    const double direct = raw;
+    const double scaled = raw / 100.0;
+
+    if (std::isfinite(reference)) {
+        const double directDistance = std::fabs(direct - reference);
+        const double scaledDistance = std::fabs(scaled - reference);
+        return (scaledDistance + 1e-9 < directDistance) ? scaled : direct;
+    }
+
+    return (std::fabs(raw) > threshold) ? scaled : direct;
+}
+
 } // namespace
 
 IQuoteProvider::IQuoteProvider(QObject* parent)
@@ -917,52 +955,67 @@ void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
     m_errors.clear();
     m_buffer.clear();
 
+    QStringList secIds;
+    secIds.reserve(stocks.size());
+
+    QHash<QString, StockItem> requestMap;
+    requestMap.reserve(stocks.size());
+
     for (const StockItem& stock : stocks) {
         const QString secId = toSecId(stock.code);
         if (secId.isEmpty()) {
             continue;
         }
 
-        QUrl url("https://push2.eastmoney.com/api/qt/stock/get");
-        QUrlQuery query;
-        query.addQueryItem("secid", secId);
-        query.addQueryItem("fields", "f57,f58,f43,f60,f170");
-        query.addQueryItem("ut", "fa5fd1943c7b386f172d6893dbfba10b");
-        query.addQueryItem("invt", "2");
-        query.addQueryItem("fltt", "2");
-        url.setQuery(query);
+        const QString key = secIdKey(secId);
+        if (requestMap.contains(key)) {
+            continue;
+        }
 
-        QNetworkRequest req(url);
-        req.setRawHeader("User-Agent", m_userAgent.toUtf8());
-        req.setRawHeader("Referer", "https://quote.eastmoney.com/");
-        req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
-
-        const network_logger::RequestTrace trace = network_logger::logRequestStart(
-            "eastmoney",
-            "GET",
-            req,
-            m_proxy
-        );
-
-        QNetworkReply* reply = m_nam.get(req);
-        ++m_pendingRequests;
-
-        connect(reply, &QNetworkReply::finished, this, [this, reply, stock, trace]() {
-            const QString err = (reply->error() == QNetworkReply::NoError)
-                ? QString()
-                : reply->errorString();
-            const QByteArray body = reply->readAll();
-
-            network_logger::logRequestFinish(trace, reply, body.size(), body);
-
-            reply->deleteLater();
-            handleResponse(stock, body, err);
-        });
+        requestMap.insert(key, stock);
+        secIds.push_back(secId);
     }
 
-    if (m_pendingRequests == 0) {
+    if (secIds.isEmpty()) {
         emit quotesReady({});
+        return;
     }
+
+    QUrl url("https://push2.eastmoney.com/api/qt/ulist.np/get");
+    QUrlQuery query;
+    query.addQueryItem("secids", secIds.join(','));
+    query.addQueryItem("fields", "f12,f13,f14,f2,f3,f4,f18");
+    query.addQueryItem("ut", "fa5fd1943c7b386f172d6893dbfba10b");
+    query.addQueryItem("invt", "2");
+    query.addQueryItem("fltt", "2");
+    url.setQuery(query);
+
+    QNetworkRequest req(url);
+    req.setRawHeader("User-Agent", m_userAgent.toUtf8());
+    req.setRawHeader("Referer", "https://quote.eastmoney.com/");
+    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
+
+    const network_logger::RequestTrace trace = network_logger::logRequestStart(
+        "eastmoney",
+        "GET",
+        req,
+        m_proxy
+    );
+
+    QNetworkReply* reply = m_nam.get(req);
+    ++m_pendingRequests;
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, requestMap, trace]() {
+        const QString err = (reply->error() == QNetworkReply::NoError)
+            ? QString()
+            : reply->errorString();
+        const QByteArray body = reply->readAll();
+
+        network_logger::logRequestFinish(trace, reply, body.size(), body);
+
+        reply->deleteLater();
+        handleResponse(requestMap, body, err);
+    });
 }
 
 QString EastMoneyQuoteProvider::toSecId(const QString& rawCode) {
@@ -997,38 +1050,68 @@ double EastMoneyQuoteProvider::firstNumber(const QJsonObject& obj, const QString
 }
 
 void EastMoneyQuoteProvider::handleResponse(
-    const StockItem& stock,
+    const QHash<QString, StockItem>& requestMap,
     const QByteArray& body,
     const QString& errorText
 ) {
     if (!errorText.isEmpty()) {
-        m_errors << QString("%1: %2").arg(stock.code, errorText);
+        m_errors << QString("eastmoney request failed: %1").arg(errorText);
     } else {
         QJsonParseError pe;
         const QJsonDocument doc = QJsonDocument::fromJson(body, &pe);
         if (pe.error != QJsonParseError::NoError) {
-            m_errors << QString("%1: json parse error: %2").arg(stock.code, pe.errorString());
+            m_errors << QString("eastmoney json parse error: %1").arg(pe.errorString());
         } else if (!doc.isObject()) {
-            m_errors << QString("%1: invalid eastmoney payload").arg(stock.code);
+            m_errors << QStringLiteral("eastmoney invalid payload");
         } else {
             const QJsonObject root = doc.object();
             const int rc = root.value("rc").toInt(0);
-            if (rc != 0) {
+            if (root.contains("rc") && rc != 0) {
                 const QString rcMsg = firstNonEmptyStringFromObject(root, {"msg", "message"});
                 const QString suffix = rcMsg.isEmpty() ? QString() : (" msg=" + rcMsg);
-                m_errors << QString("%1: eastmoney rc=%2%3").arg(stock.code).arg(rc).arg(suffix);
+                m_errors << QString("eastmoney rc=%1%2").arg(rc).arg(suffix);
             } else if (!root.value("data").isObject()) {
-                m_errors << QString("%1: eastmoney data missing").arg(stock.code);
+                m_errors << QStringLiteral("eastmoney data missing");
             } else {
                 const QJsonObject data = root.value("data").toObject();
+                const QJsonArray diff = data.value("diff").toArray();
 
-                const double lastRaw = firstNumber(data, {"f43"});
-                double preRaw = firstNumber(data, {"f60"});
-                const double pctRaw = firstNumber(data, {"f170"});
+                for (const QJsonValue& rowValue : diff) {
+                    if (!rowValue.isObject()) {
+                        continue;
+                    }
 
-                if (std::isnan(lastRaw)) {
-                    m_errors << QString("%1: eastmoney missing field f43").arg(stock.code);
-                } else {
+                    const QJsonObject row = rowValue.toObject();
+                    const QString secKey = secIdKeyFromDiffItem(row);
+                    StockItem stock = requestMap.value(secKey);
+
+                    if (stock.code.trimmed().isEmpty()) {
+                        const QString rowCode = row.value(QStringLiteral("f12")).toString().trimmed();
+                        if (!rowCode.isEmpty()) {
+                            const QString rowCodeLower = rowCode.toLower();
+                            for (auto it = requestMap.constBegin(); it != requestMap.constEnd(); ++it) {
+                                if (it.key().endsWith(QStringLiteral(".") + rowCodeLower)) {
+                                    stock = it.value();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if (stock.code.trimmed().isEmpty()) {
+                        continue;
+                    }
+
+                    const double lastRaw = firstNumber(row, {"f2", "f43"});
+                    double preRaw = firstNumber(row, {"f18", "f60"});
+                    const double pctRaw = firstNumber(row, {"f3", "f170"});
+                    const double changeRaw = firstNumber(row, {"f4", "f169"});
+
+                    if (std::isnan(lastRaw)) {
+                        m_errors << QString("%1: eastmoney missing price field").arg(stock.code);
+                        continue;
+                    }
+
                     if (std::isnan(preRaw) || qFuzzyIsNull(preRaw)) {
                         preRaw = lastRaw;
                     }
@@ -1038,25 +1121,31 @@ void EastMoneyQuoteProvider::handleResponse(
 
                     if (std::isnan(last) || std::isnan(pre)) {
                         m_errors << QString("%1: eastmoney invalid price fields").arg(stock.code);
-                    } else {
-                        QuoteItem q;
-                        q.code = stock.code;
-                        const QString remoteName = data.value("f58").toString().trimmed();
-                        q.name = remoteName;
-
-                        q.price = last;
-                        q.change = last - pre;
-                        // Use f170 (server-computed change %) when available;
-                        // f170 is already in percent (e.g. 2.35 means +2.35%),
-                        // scaled by 100 like other EastMoney numeric fields.
-                        if (!std::isnan(pctRaw)) {
-                            q.pct = pctRaw / 100.0;
-                        } else {
-                            q.pct = qFuzzyIsNull(pre) ? 0.0 : (q.change / pre * 100.0);
-                        }
-
-                        m_buffer.insert(q.code, q);
+                        continue;
                     }
+
+                    const double derivedChange = last - pre;
+                    const double derivedPct = qFuzzyIsNull(pre)
+                        ? 0.0
+                        : (derivedChange / pre * 100.0);
+
+                    QuoteItem q;
+                    q.code = stock.code;
+                    const QString remoteName = firstNonEmptyStringFromObject(row, {"f14", "f58"});
+                    q.name = remoteName.isEmpty() ? stock.name : remoteName;
+                    q.price = last;
+                    q.change = std::isnan(changeRaw)
+                        ? derivedChange
+                        : chooseRawOrDiv100(changeRaw, 30.0, derivedChange);
+                    q.pct = std::isnan(pctRaw)
+                        ? derivedPct
+                        : chooseRawOrDiv100(pctRaw, 30.0, derivedPct);
+
+                    m_buffer.insert(q.code, q);
+                }
+
+                if (diff.isEmpty() && m_buffer.isEmpty()) {
+                    m_errors << QStringLiteral("eastmoney diff missing or empty");
                 }
             }
         }
