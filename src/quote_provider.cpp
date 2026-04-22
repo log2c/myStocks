@@ -926,7 +926,7 @@ void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
         QUrl url("https://push2.eastmoney.com/api/qt/stock/get");
         QUrlQuery query;
         query.addQueryItem("secid", secId);
-        query.addQueryItem("fields", "f57,f58,f43,f60");
+        query.addQueryItem("fields", "f57,f58,f43,f60,f170");
         query.addQueryItem("ut", "fa5fd1943c7b386f172d6893dbfba10b");
         query.addQueryItem("invt", "2");
         query.addQueryItem("fltt", "2");
@@ -1024,6 +1024,7 @@ void EastMoneyQuoteProvider::handleResponse(
 
                 const double lastRaw = firstNumber(data, {"f43"});
                 double preRaw = firstNumber(data, {"f60"});
+                const double pctRaw = firstNumber(data, {"f170"});
 
                 if (std::isnan(lastRaw)) {
                     m_errors << QString("%1: eastmoney missing field f43").arg(stock.code);
@@ -1045,7 +1046,14 @@ void EastMoneyQuoteProvider::handleResponse(
 
                         q.price = last;
                         q.change = last - pre;
-                        q.pct = qFuzzyIsNull(pre) ? 0.0 : (q.change / pre * 100.0);
+                        // Use f170 (server-computed change %) when available;
+                        // f170 is already in percent (e.g. 2.35 means +2.35%),
+                        // scaled by 100 like other EastMoney numeric fields.
+                        if (!std::isnan(pctRaw)) {
+                            q.pct = pctRaw / 100.0;
+                        } else {
+                            q.pct = qFuzzyIsNull(pre) ? 0.0 : (q.change / pre * 100.0);
+                        }
 
                         m_buffer.insert(q.code, q);
                     }
