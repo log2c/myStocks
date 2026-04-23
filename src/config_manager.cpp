@@ -60,6 +60,31 @@ QString settingsStatusToString(QSettings::Status status) {
     return QStringLiteral("unknown");
 }
 
+QString stableConfigKey(const QString& leafKey) {
+    return QStringLiteral("cfg/") + leafKey;
+}
+
+QString legacyConfigKey(const QString& leafKey) {
+    return QStringLiteral("general/") + leafKey;
+}
+
+QVariant readConfigValue(
+    const QSettings& settings,
+    const QString& leafKey,
+    const QVariant& defaultValue = QVariant()
+) {
+    const QVariant stableValue = settings.value(stableConfigKey(leafKey));
+    if (stableValue.isValid()) {
+        return stableValue;
+    }
+
+    return settings.value(legacyConfigKey(leafKey), defaultValue);
+}
+
+void writeConfigValue(QSettings& settings, const QString& leafKey, const QVariant& value) {
+    settings.setValue(stableConfigKey(leafKey), value);
+}
+
 bool shouldUseCacheBackedSettings() {
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     return true;
@@ -97,7 +122,6 @@ QString resolvedSettingsCacheDirPath() {
 
 std::unique_ptr<QSettings> createAppSettings() {
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
-    ConfigManager::migrateSettingsToCacheIfNeeded();
     const QString settingsPath = ConfigManager::appSettingsFilePath();
     if (!settingsPath.isEmpty()) {
         return std::make_unique<QSettings>(settingsPath, QSettings::IniFormat);
@@ -126,52 +150,6 @@ QString ConfigManager::appSettingsFilePath() {
     }
 
     return QDir(cacheDir).filePath("settings.ini");
-}
-
-void ConfigManager::migrateSettingsToCacheIfNeeded() {
-    if (!shouldUseCacheBackedSettings()) {
-        return;
-    }
-
-    static bool checked = false;
-    if (checked) {
-        return;
-    }
-    checked = true;
-
-    const QString targetPath = appSettingsFilePath();
-    if (targetPath.isEmpty()) {
-        return;
-    }
-
-    QSettings cacheSettings(targetPath, QSettings::IniFormat);
-    if (!cacheSettings.allKeys().isEmpty()) {
-        return;
-    }
-
-    QSettings legacySettings("myStocks", "myStocks");
-    const QStringList legacyKeys = legacySettings.allKeys();
-    if (legacyKeys.isEmpty()) {
-        return;
-    }
-
-    qInfo() << "ConfigManager migrate settings to cache file"
-            << targetPath
-            << "keys=" << legacyKeys.size();
-
-    for (const QString& key : legacyKeys) {
-        cacheSettings.setValue(key, legacySettings.value(key));
-    }
-
-    cacheSettings.sync();
-    const QSettings::Status status = cacheSettings.status();
-    if (status != QSettings::NoError) {
-        qWarning() << "ConfigManager migrate settings failed status="
-                   << settingsStatusToString(status);
-        return;
-    }
-
-    qInfo() << "ConfigManager migrate settings success path=" << targetPath;
 }
 
 QVector<StockItem> ConfigManager::loadStocksFromYaml(const QString& filePath) {
@@ -279,26 +257,28 @@ AppConfig ConfigManager::loadConfig() {
     std::unique_ptr<QSettings> settings = createAppSettings();
     QSettings& s = *settings;
 
-    cfg.pollMs = s.value("general/pollMs", cfg.pollMs).toInt();
-    cfg.opacity = s.value("general/opacity", cfg.opacity).toDouble();
-    cfg.hotkey = s.value("general/hotkey", cfg.hotkey).toString();
-    cfg.startupShowFloatingWindow = s.value(
-        "general/startupShowFloatingWindow",
+    cfg.pollMs = readConfigValue(s, QStringLiteral("pollMs"), cfg.pollMs).toInt();
+    cfg.opacity = readConfigValue(s, QStringLiteral("opacity"), cfg.opacity).toDouble();
+    cfg.hotkey = readConfigValue(s, QStringLiteral("hotkey"), cfg.hotkey).toString();
+    cfg.startupShowFloatingWindow = readConfigValue(
+        s,
+        QStringLiteral("startupShowFloatingWindow"),
         cfg.startupShowFloatingWindow
     ).toBool();
-    cfg.apiSource = s.value("general/apiSource", cfg.apiSource).toString();
-    cfg.xtickToken = s.value("general/xtickToken", cfg.xtickToken).toString();
+    cfg.apiSource = readConfigValue(s, QStringLiteral("apiSource"), cfg.apiSource).toString();
+    cfg.xtickToken = readConfigValue(s, QStringLiteral("xtickToken"), cfg.xtickToken).toString();
     cfg.language = i18n::normalizeLanguage(
-        s.value("general/language", cfg.language).toString()
+        readConfigValue(s, QStringLiteral("language"), cfg.language).toString()
     );
-    cfg.userAgent = s.value("general/userAgent", cfg.userAgent).toString();
-    cfg.proxyType = s.value("general/proxyType", cfg.proxyType).toString();
-    cfg.proxyHost = s.value("general/proxyHost", cfg.proxyHost).toString();
-    cfg.proxyPort = s.value("general/proxyPort", cfg.proxyPort).toInt();
-    cfg.proxyUser = s.value("general/proxyUser", cfg.proxyUser).toString();
-    cfg.proxyPassword = s.value("general/proxyPassword", cfg.proxyPassword).toString();
-    cfg.debugIgnoreTradingTime = s.value(
-        "general/debugIgnoreTradingTime",
+    cfg.userAgent = readConfigValue(s, QStringLiteral("userAgent"), cfg.userAgent).toString();
+    cfg.proxyType = readConfigValue(s, QStringLiteral("proxyType"), cfg.proxyType).toString();
+    cfg.proxyHost = readConfigValue(s, QStringLiteral("proxyHost"), cfg.proxyHost).toString();
+    cfg.proxyPort = readConfigValue(s, QStringLiteral("proxyPort"), cfg.proxyPort).toInt();
+    cfg.proxyUser = readConfigValue(s, QStringLiteral("proxyUser"), cfg.proxyUser).toString();
+    cfg.proxyPassword = readConfigValue(s, QStringLiteral("proxyPassword"), cfg.proxyPassword).toString();
+    cfg.debugIgnoreTradingTime = readConfigValue(
+        s,
+        QStringLiteral("debugIgnoreTradingTime"),
         cfg.debugIgnoreTradingTime
     ).toBool();
     cfg.simpleModeEnabled = s.value("ui/simpleModeEnabled", cfg.simpleModeEnabled).toBool();
@@ -401,6 +381,7 @@ AppConfig ConfigManager::loadConfig() {
     cfg.hoverReadingUiMode = normalizeHoverReadingUiMode(cfg.hoverReadingUiMode);
 
         qInfo() << "ConfigManager::loadConfig"
+            << "settingsFile=" << s.fileName()
             << "apiSource=" << cfg.apiSource
             << "pollMs=" << cfg.pollMs
             << "language=" << cfg.language
@@ -418,21 +399,27 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     QSettings& s = *settings;
 
         qInfo() << "ConfigManager::saveConfig begin"
+            << "settingsFile=" << s.fileName()
             << "apiSource=" << cfg.apiSource
             << "pollMs=" << cfg.pollMs
             << "language=" << cfg.language
             << "logEnabled=" << cfg.logEnabled
             << "logLevel=" << cfg.logLevel;
 
-    s.setValue("general/pollMs", cfg.pollMs);
-    s.setValue("general/opacity", cfg.opacity);
-    s.setValue("general/hotkey", cfg.hotkey);
-    s.setValue("general/startupShowFloatingWindow", cfg.startupShowFloatingWindow);
-    s.setValue("general/apiSource", cfg.apiSource);
-    s.setValue("general/xtickToken", cfg.xtickToken);
-    s.setValue("general/language", i18n::normalizeLanguage(cfg.language));
-    s.setValue(
-        "general/userAgent",
+    writeConfigValue(s, QStringLiteral("pollMs"), cfg.pollMs);
+    writeConfigValue(s, QStringLiteral("opacity"), cfg.opacity);
+    writeConfigValue(s, QStringLiteral("hotkey"), cfg.hotkey);
+    writeConfigValue(
+        s,
+        QStringLiteral("startupShowFloatingWindow"),
+        cfg.startupShowFloatingWindow
+    );
+    writeConfigValue(s, QStringLiteral("apiSource"), cfg.apiSource);
+    writeConfigValue(s, QStringLiteral("xtickToken"), cfg.xtickToken);
+    writeConfigValue(s, QStringLiteral("language"), i18n::normalizeLanguage(cfg.language));
+    writeConfigValue(
+        s,
+        QStringLiteral("userAgent"),
         cfg.userAgent.trimmed().isEmpty() ? defaultChrome100UserAgent() : cfg.userAgent.trimmed()
     );
 
@@ -443,12 +430,20 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     if (proxyType != "none" && proxyType != "http" && proxyType != "socks5") {
         proxyType = "none";
     }
-    s.setValue("general/proxyType", proxyType);
-    s.setValue("general/proxyHost", cfg.proxyHost.trimmed());
-    s.setValue("general/proxyPort", qBound(0, cfg.proxyPort, 65535));
-    s.setValue("general/proxyUser", cfg.proxyUser);
-    s.setValue("general/proxyPassword", cfg.proxyPassword);
-    s.setValue("general/debugIgnoreTradingTime", cfg.debugIgnoreTradingTime);
+    writeConfigValue(s, QStringLiteral("proxyType"), proxyType);
+    writeConfigValue(s, QStringLiteral("proxyHost"), cfg.proxyHost.trimmed());
+    writeConfigValue(s, QStringLiteral("proxyPort"), qBound(0, cfg.proxyPort, 65535));
+    writeConfigValue(s, QStringLiteral("proxyUser"), cfg.proxyUser);
+    writeConfigValue(s, QStringLiteral("proxyPassword"), cfg.proxyPassword);
+    writeConfigValue(
+        s,
+        QStringLiteral("debugIgnoreTradingTime"),
+        cfg.debugIgnoreTradingTime
+    );
+
+    // Remove legacy keys that map to [%General] in INI and can shadow values across runs.
+    s.remove(QStringLiteral("general"));
+    s.remove(QStringLiteral("General"));
 
     s.setValue("log/enabled", cfg.logEnabled);
     s.setValue("log/level", app_logging::normalizeLogLevel(cfg.logLevel));

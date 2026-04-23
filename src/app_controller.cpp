@@ -486,7 +486,6 @@ QVector<StockItem> AppController::mergedWatchItems() const {
 void AppController::loadExtraWatchItems() {
     std::unique_ptr<QSettings> settings;
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
-    ConfigManager::migrateSettingsToCacheIfNeeded();
     const QString settingsPath = ConfigManager::appSettingsFilePath();
     if (!settingsPath.isEmpty()) {
         settings = std::make_unique<QSettings>(settingsPath, QSettings::IniFormat);
@@ -523,7 +522,6 @@ void AppController::loadExtraWatchItems() {
 void AppController::saveExtraWatchItems() const {
     std::unique_ptr<QSettings> settings;
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
-    ConfigManager::migrateSettingsToCacheIfNeeded();
     const QString settingsPath = ConfigManager::appSettingsFilePath();
     if (!settingsPath.isEmpty()) {
         settings = std::make_unique<QSettings>(settingsPath, QSettings::IniFormat);
