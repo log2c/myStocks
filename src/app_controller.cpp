@@ -1270,7 +1270,8 @@ bool AppController::isWithinTradingSession(const QDateTime& bjNow) const {
     }
 
     const QTime t = bjNow.time();
-    const bool morning = (t >= QTime(9, 30) && t < QTime(11, 30));
+    // Include auction/pre-open window so periodic polling is available before 09:30.
+    const bool morning = (t >= QTime(9, 15) && t < QTime(11, 30));
     const bool afternoon = (t >= QTime(13, 0) && t < QTime(15, 0));
     return morning || afternoon;
 }
@@ -1285,7 +1286,8 @@ bool AppController::isWithinHongKongTradingSession(const QDateTime& bjNow) const
     }
 
     const QTime t = bjNow.time();
-    const bool morning = (t >= QTime(9, 30) && t < QTime(12, 0));
+    // Include pre-opening session so HK watchlists can poll from 09:00.
+    const bool morning = (t >= QTime(9, 0) && t < QTime(12, 0));
     const bool afternoon = (t >= QTime(13, 0) && t < QTime(16, 0));
     return morning || afternoon;
 }
