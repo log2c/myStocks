@@ -567,10 +567,11 @@ void FloatingWindow::applyHoverReadingStyle() {
     const bool lightMode = normalizeHoverReadingUiMode(m_cfg.hoverReadingUiMode)
         == QLatin1String("light");
     const QColor lightGridColor(QStringLiteral("#d4d4d4"));
+    const QColor darkTableBorderColor(QStringLiteral("#2F3338"));
     const QColor hoverGridColor = lightMode ? lightGridColor : theme.border;
     const QColor grid = m_cfg.showGrid ? hoverGridColor : QColor(0, 0, 0, 0);
-    const QColor tableBorder = (m_cfg.showGrid && lightMode)
-        ? hoverGridColor
+    const QColor tableBorder = m_cfg.showGrid
+        ? (lightMode ? hoverGridColor : darkTableBorderColor)
         : QColor(0, 0, 0, 0);
 
     const QString css = QString(
@@ -699,10 +700,11 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
     const bool lightMode = normalizeHoverReadingUiMode(m_cfg.hoverReadingUiMode)
         == QLatin1String("light");
     const QColor lightGridColor(QStringLiteral("#d4d4d4"));
+    const QColor darkTableBorderColor(QStringLiteral("#2F3338"));
     const QColor hoverGridColor = lightMode ? lightGridColor : theme.border;
     const QColor hoverGrid = m_cfg.showGrid ? hoverGridColor : QColor(0, 0, 0, 0);
-    const QColor hoverTableBorder = (m_cfg.showGrid && lightMode)
-        ? hoverGridColor
+    const QColor hoverTableBorder = m_cfg.showGrid
+        ? (lightMode ? hoverGridColor : darkTableBorderColor)
         : QColor(0, 0, 0, 0);
 
     const QColor bg = mixColor(normalBg, theme.background, progress);
