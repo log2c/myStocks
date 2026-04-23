@@ -326,6 +326,10 @@ AppConfig ConfigManager::loadConfig() {
     cfg.hoverReadingUiMode = normalizeHoverReadingUiMode(
         s.value("ui/hoverReadingUiMode", cfg.hoverReadingUiMode).toString()
     );
+    cfg.hoverReadingTransparentBackgroundEnabled = s.value(
+        "ui/hoverReadingTransparentBackgroundEnabled",
+        cfg.hoverReadingTransparentBackgroundEnabled
+    ).toBool();
 
     cfg.showHeader = s.value("ui/showHeader", cfg.showHeader).toBool();
     cfg.showGrid = s.value("ui/showGrid", cfg.showGrid).toBool();
@@ -469,6 +473,10 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue("ui/hoverReadingEnabled", cfg.hoverReadingEnabled);
     s.setValue("ui/hoverReadingDelaySecs", qBound(0.1, cfg.hoverReadingDelaySecs, 60.0));
     s.setValue("ui/hoverReadingUiMode", normalizeHoverReadingUiMode(cfg.hoverReadingUiMode));
+    s.setValue(
+        "ui/hoverReadingTransparentBackgroundEnabled",
+        cfg.hoverReadingTransparentBackgroundEnabled
+    );
     s.setValue("ui/windowRect", cfg.windowRect);
 
     for (int i = 0; i < ColCount; ++i) {

@@ -68,8 +68,60 @@ QString normalizeHoverReadingUiMode(const QString& rawMode) {
     return QStringLiteral("dark");
 }
 
-HoverReadingTheme hoverReadingThemeForMode(const QString& rawMode) {
+HoverReadingTheme hoverReadingThemeForMode(const QString& rawMode, bool transparentBackgroundEnabled) {
     const QString mode = normalizeHoverReadingUiMode(rawMode);
+    if (transparentBackgroundEnabled) {
+#if defined(Q_OS_MACOS)
+        if (mode == QLatin1String("light")) {
+            return {
+                QColor(255, 255, 255, 184),
+                QColor(255, 255, 255, 184),
+                QColor(255, 255, 255, 89),
+                QColor(QStringLiteral("#1F1F1F")),
+            };
+        }
+
+        return {
+            QColor(30, 30, 30, 184),
+            QColor(30, 30, 30, 184),
+            QColor(255, 255, 255, 20),
+            QColor(QStringLiteral("#E6E6E6")),
+        };
+#elif defined(Q_OS_WIN)
+        if (mode == QLatin1String("light")) {
+            return {
+                QColor(255, 255, 255, 217),
+                QColor(255, 255, 255, 217),
+                QColor(0, 0, 0, 20),
+                QColor(QStringLiteral("#1F1F1F")),
+            };
+        }
+
+        return {
+            QColor(32, 32, 32, 204),
+            QColor(32, 32, 32, 204),
+            QColor(255, 255, 255, 15),
+            QColor(QStringLiteral("#E6E6E6")),
+        };
+#else
+        if (mode == QLatin1String("light")) {
+            return {
+                QColor(255, 255, 255, 217),
+                QColor(255, 255, 255, 217),
+                QColor(0, 0, 0, 20),
+                QColor(QStringLiteral("#1F1F1F")),
+            };
+        }
+
+        return {
+            QColor(32, 32, 32, 204),
+            QColor(32, 32, 32, 204),
+            QColor(255, 255, 255, 15),
+            QColor(QStringLiteral("#E6E6E6")),
+        };
+#endif
+    }
+
     if (mode == QLatin1String("light")) {
         return {
             QColor(QStringLiteral("#FFFFFF")),
@@ -506,12 +558,19 @@ void FloatingWindow::applyStyle() {
 }
 
 void FloatingWindow::applyHoverReadingStyle() {
-    const HoverReadingTheme theme = hoverReadingThemeForMode(m_cfg.hoverReadingUiMode);
+    const bool transparentBg = m_cfg.hoverReadingEnabled
+        && m_cfg.hoverReadingTransparentBackgroundEnabled;
+    const HoverReadingTheme theme = hoverReadingThemeForMode(
+        m_cfg.hoverReadingUiMode,
+        transparentBg
+    );
     const bool lightMode = normalizeHoverReadingUiMode(m_cfg.hoverReadingUiMode)
         == QLatin1String("light");
-    const QColor grid = m_cfg.showGrid ? theme.border : QColor(0, 0, 0, 0);
+    const QColor lightGridColor(QStringLiteral("#d4d4d4"));
+    const QColor hoverGridColor = lightMode ? lightGridColor : theme.border;
+    const QColor grid = m_cfg.showGrid ? hoverGridColor : QColor(0, 0, 0, 0);
     const QColor tableBorder = (m_cfg.showGrid && lightMode)
-        ? theme.border
+        ? hoverGridColor
         : QColor(0, 0, 0, 0);
 
     const QString css = QString(
@@ -631,12 +690,19 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
     const QColor normalTableBg(0, 0, 0, 0);
     const QColor normalTableBorder(0, 0, 0, 0);
 
-    const HoverReadingTheme theme = hoverReadingThemeForMode(m_cfg.hoverReadingUiMode);
+    const bool transparentBg = m_cfg.hoverReadingEnabled
+        && m_cfg.hoverReadingTransparentBackgroundEnabled;
+    const HoverReadingTheme theme = hoverReadingThemeForMode(
+        m_cfg.hoverReadingUiMode,
+        transparentBg
+    );
     const bool lightMode = normalizeHoverReadingUiMode(m_cfg.hoverReadingUiMode)
         == QLatin1String("light");
-    const QColor hoverGrid = m_cfg.showGrid ? theme.border : QColor(0, 0, 0, 0);
+    const QColor lightGridColor(QStringLiteral("#d4d4d4"));
+    const QColor hoverGridColor = lightMode ? lightGridColor : theme.border;
+    const QColor hoverGrid = m_cfg.showGrid ? hoverGridColor : QColor(0, 0, 0, 0);
     const QColor hoverTableBorder = (m_cfg.showGrid && lightMode)
-        ? theme.border
+        ? hoverGridColor
         : QColor(0, 0, 0, 0);
 
     const QColor bg = mixColor(normalBg, theme.background, progress);

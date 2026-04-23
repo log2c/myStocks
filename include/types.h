@@ -107,6 +107,7 @@ struct AppConfig {
     bool hoverReadingEnabled = true;
     double hoverReadingDelaySecs = 1.0;
     QString hoverReadingUiMode = "dark";
+    bool hoverReadingTransparentBackgroundEnabled = true;
 
     QMap<int, int> columnWidths;
     QRect windowRect = QRect(120, 120, 760, 280);

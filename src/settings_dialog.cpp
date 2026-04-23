@@ -529,6 +529,9 @@ AppConfig SettingsDialog::config() const {
     out.hoverReadingUiMode = normalizeHoverReadingUiMode(
         m_hoverReadingModeCombo ? m_hoverReadingModeCombo->currentData().toString() : QString()
     );
+    out.hoverReadingTransparentBackgroundEnabled = m_hoverReadingTransparentBackgroundCheck
+        ? m_hoverReadingTransparentBackgroundCheck->isChecked()
+        : out.hoverReadingTransparentBackgroundEnabled;
 
     for (int i = 0; i < ColCount; ++i) {
         out.visibleColumns[i] = false;
@@ -1129,6 +1132,15 @@ QWidget* SettingsDialog::buildDisplayTab() {
     }
     m_hoverReadingModeCombo->setEnabled(m_cfg.hoverReadingEnabled);
 
+    m_hoverReadingTransparentBackgroundCheck = new QCheckBox(
+        trText("settings.display.hoverReadingTransparentBackground"),
+        w
+    );
+    m_hoverReadingTransparentBackgroundCheck->setChecked(
+        m_cfg.hoverReadingTransparentBackgroundEnabled
+    );
+    m_hoverReadingTransparentBackgroundCheck->setEnabled(m_cfg.hoverReadingEnabled);
+
     QLabel* hoverReadingDelayLabel = new QLabel(trText("settings.display.hoverReadingDelay"), w);
     QLabel* hoverReadingModeLabel = new QLabel(trText("settings.display.hoverReadingMode"), w);
     hoverReadingDelayLabel->setEnabled(m_cfg.hoverReadingEnabled);
@@ -1138,6 +1150,9 @@ QWidget* SettingsDialog::buildDisplayTab() {
         m_hoverReadingDelaySpin->setEnabled(checked);
         if (m_hoverReadingModeCombo) {
             m_hoverReadingModeCombo->setEnabled(checked);
+        }
+        if (m_hoverReadingTransparentBackgroundCheck) {
+            m_hoverReadingTransparentBackgroundCheck->setEnabled(checked);
         }
     });
     connect(m_hoverReadingCheck, &QCheckBox::toggled, hoverReadingDelayLabel, &QLabel::setEnabled);
@@ -1154,6 +1169,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
         hoverReadingLayout->addWidget(m_hoverReadingDelaySpin);
         hoverReadingLayout->addWidget(hoverReadingModeLabel);
         hoverReadingLayout->addWidget(m_hoverReadingModeCombo);
+        hoverReadingLayout->addWidget(m_hoverReadingTransparentBackgroundCheck);
         form->addRow(hoverReadingWidget);
     }
 
