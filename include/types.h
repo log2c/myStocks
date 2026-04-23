@@ -103,8 +103,9 @@ struct AppConfig {
         {ColIndicator, 0}
     };
 
-    bool hoverReadingEnabled = false;
-    double hoverReadingDelaySecs = 2.0;
+    bool hoverReadingEnabled = true;
+    double hoverReadingDelaySecs = 1.0;
+    QString hoverReadingUiMode = "dark";
 
     QMap<int, int> columnWidths;
     QRect windowRect = QRect(120, 120, 760, 280);

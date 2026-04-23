@@ -361,6 +361,14 @@ QKeySequence normalizedHotkeySequence(const QKeySequence& sequence) {
     return sequence;
 }
 
+QString normalizeHoverReadingUiMode(const QString& rawMode) {
+    const QString mode = rawMode.trimmed().toLower();
+    if (mode == QLatin1String("light") || mode == QLatin1String("dark")) {
+        return mode;
+    }
+    return QStringLiteral("dark");
+}
+
 QStringList normalizeSinaCodesForMarket(const QString& rawCode, const QString& marketFilter) {
     const QString code = rawCode.trimmed().toLower();
     if (code.isEmpty()) {
@@ -517,6 +525,9 @@ AppConfig SettingsDialog::config() const {
     out.trayTooltipEnabled = m_trayTooltipCheck->isChecked();
     out.hoverReadingEnabled = m_hoverReadingCheck->isChecked();
     out.hoverReadingDelaySecs = m_hoverReadingDelaySpin->value();
+    out.hoverReadingUiMode = normalizeHoverReadingUiMode(
+        m_hoverReadingModeCombo ? m_hoverReadingModeCombo->currentData().toString() : QString()
+    );
 
     for (int i = 0; i < ColCount; ++i) {
         out.visibleColumns[i] = false;
@@ -1095,9 +1106,35 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_hoverReadingDelaySpin->setSuffix(trText("settings.display.hoverReadingDelaySuffix"));
     m_hoverReadingDelaySpin->setValue(qBound(0.1, m_cfg.hoverReadingDelaySecs, 60.0));
     m_hoverReadingDelaySpin->setEnabled(m_cfg.hoverReadingEnabled);
+
+    m_hoverReadingModeCombo = new QComboBox(w);
+    m_hoverReadingModeCombo->addItem(trText("settings.display.hoverReadingModeLight"), "light");
+    m_hoverReadingModeCombo->addItem(trText("settings.display.hoverReadingModeDark"), "dark");
+    int hoverReadingModeIndex = m_hoverReadingModeCombo->findData(
+        normalizeHoverReadingUiMode(m_cfg.hoverReadingUiMode)
+    );
+    if (hoverReadingModeIndex < 0) {
+        hoverReadingModeIndex = m_hoverReadingModeCombo->findData(QStringLiteral("dark"));
+    }
+    if (hoverReadingModeIndex >= 0) {
+        m_hoverReadingModeCombo->setCurrentIndex(hoverReadingModeIndex);
+    }
+    m_hoverReadingModeCombo->setEnabled(m_cfg.hoverReadingEnabled);
+
+    QLabel* hoverReadingDelayLabel = new QLabel(trText("settings.display.hoverReadingDelay"), w);
+    QLabel* hoverReadingModeLabel = new QLabel(trText("settings.display.hoverReadingMode"), w);
+    hoverReadingDelayLabel->setEnabled(m_cfg.hoverReadingEnabled);
+    hoverReadingModeLabel->setEnabled(m_cfg.hoverReadingEnabled);
+
     connect(m_hoverReadingCheck, &QCheckBox::toggled, this, [this](bool checked) {
         m_hoverReadingDelaySpin->setEnabled(checked);
+        if (m_hoverReadingModeCombo) {
+            m_hoverReadingModeCombo->setEnabled(checked);
+        }
     });
+    connect(m_hoverReadingCheck, &QCheckBox::toggled, hoverReadingDelayLabel, &QLabel::setEnabled);
+    connect(m_hoverReadingCheck, &QCheckBox::toggled, hoverReadingModeLabel, &QLabel::setEnabled);
+
     {
         QWidget* hoverReadingWidget = new QWidget(w);
         QHBoxLayout* hoverReadingLayout = new QHBoxLayout(hoverReadingWidget);
@@ -1105,7 +1142,10 @@ QWidget* SettingsDialog::buildDisplayTab() {
         hoverReadingLayout->setSpacing(8);
         hoverReadingLayout->addWidget(m_hoverReadingCheck);
         hoverReadingLayout->addStretch(1);
+        hoverReadingLayout->addWidget(hoverReadingDelayLabel);
         hoverReadingLayout->addWidget(m_hoverReadingDelaySpin);
+        hoverReadingLayout->addWidget(hoverReadingModeLabel);
+        hoverReadingLayout->addWidget(m_hoverReadingModeCombo);
         form->addRow(hoverReadingWidget);
     }
 

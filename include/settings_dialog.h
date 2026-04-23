@@ -119,6 +119,7 @@ private:
     QCheckBox* m_trayTooltipCheck = nullptr;
     QCheckBox* m_hoverReadingCheck = nullptr;
     QDoubleSpinBox* m_hoverReadingDelaySpin = nullptr;
+    QComboBox* m_hoverReadingModeCombo = nullptr;
     QListWidget* m_columnList = nullptr;
     QVector<QSpinBox*> m_columnMaxWidthSpins;
     bool m_normalizingHotkeySequence = false;

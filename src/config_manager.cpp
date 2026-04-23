@@ -40,6 +40,14 @@ QVector<int> normalizedColumnOrder(const QVector<int>& order) {
     return out;
 }
 
+QString normalizeHoverReadingUiMode(const QString& rawMode) {
+    const QString mode = rawMode.trimmed().toLower();
+    if (mode == QLatin1String("light") || mode == QLatin1String("dark")) {
+        return mode;
+    }
+    return QStringLiteral("dark");
+}
+
 QString settingsStatusToString(QSettings::Status status) {
     switch (status) {
     case QSettings::NoError:
@@ -311,6 +319,9 @@ AppConfig ConfigManager::loadConfig() {
 
     cfg.hoverReadingEnabled = s.value("ui/hoverReadingEnabled", cfg.hoverReadingEnabled).toBool();
     cfg.hoverReadingDelaySecs = s.value("ui/hoverReadingDelaySecs", cfg.hoverReadingDelaySecs).toDouble();
+    cfg.hoverReadingUiMode = normalizeHoverReadingUiMode(
+        s.value("ui/hoverReadingUiMode", cfg.hoverReadingUiMode).toString()
+    );
 
     cfg.showHeader = s.value("ui/showHeader", cfg.showHeader).toBool();
     cfg.showGrid = s.value("ui/showGrid", cfg.showGrid).toBool();
@@ -379,6 +390,7 @@ AppConfig ConfigManager::loadConfig() {
 
     cfg.transparentBackgroundOpacity = qBound(0, cfg.transparentBackgroundOpacity, 100);
     cfg.hoverReadingDelaySecs = qBound(0.1, cfg.hoverReadingDelaySecs, 60.0);
+    cfg.hoverReadingUiMode = normalizeHoverReadingUiMode(cfg.hoverReadingUiMode);
 
         qInfo() << "ConfigManager::loadConfig"
             << "apiSource=" << cfg.apiSource
@@ -451,6 +463,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     );
     s.setValue("ui/hoverReadingEnabled", cfg.hoverReadingEnabled);
     s.setValue("ui/hoverReadingDelaySecs", qBound(0.1, cfg.hoverReadingDelaySecs, 60.0));
+    s.setValue("ui/hoverReadingUiMode", normalizeHoverReadingUiMode(cfg.hoverReadingUiMode));
     s.setValue("ui/windowRect", cfg.windowRect);
 
     for (int i = 0; i < ColCount; ++i) {

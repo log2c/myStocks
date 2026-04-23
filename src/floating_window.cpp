@@ -53,9 +53,45 @@ QColor mixColor(const QColor& from, const QColor& to, qreal t) {
     );
 }
 
-int mixInt(int from, int to, qreal t) {
-    const qreal clamped = qBound(0.0, t, 1.0);
-    return qRound(from + (to - from) * clamped);
+struct HoverReadingTheme {
+    QColor background;
+    QColor surface;
+    QColor border;
+    QColor textPrimary;
+};
+
+QString normalizeHoverReadingUiMode(const QString& rawMode) {
+    const QString mode = rawMode.trimmed().toLower();
+    if (mode == QLatin1String("light") || mode == QLatin1String("dark")) {
+        return mode;
+    }
+    return QStringLiteral("dark");
+}
+
+HoverReadingTheme hoverReadingThemeForMode(const QString& rawMode) {
+    const QString mode = normalizeHoverReadingUiMode(rawMode);
+    if (mode == QLatin1String("light")) {
+        return {
+            QColor(QStringLiteral("#FFFFFF")),
+            QColor(QStringLiteral("#F5F5F5")),
+            QColor(QStringLiteral("#D6D6D6")),
+            QColor(QStringLiteral("#1F1F1F")),
+        };
+    }
+
+    return {
+        QColor(QStringLiteral("#1E1E1E")),
+        QColor(QStringLiteral("#252525")),
+        QColor(QStringLiteral("#3A3A3A")),
+        QColor(QStringLiteral("#E6E6E6")),
+    };
+}
+
+qreal configuredWindowOpacity(const AppConfig& cfg) {
+    const double effectiveOpacity = cfg.transparentBackgroundEnabled
+        ? static_cast<double>(qBound(0, cfg.transparentBackgroundOpacity, 100)) / 100.0
+        : qBound(0.0, cfg.opacity, 1.0);
+    return qBound(0.0, effectiveOpacity, 1.0);
 }
 
 } // namespace
@@ -144,50 +180,84 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
     m_hoverTimer = new QTimer(this);
     m_hoverTimer->setSingleShot(true);
     connect(m_hoverTimer, &QTimer::timeout, this, [this]() {
-        if (m_cfg.hoverReadingEnabled && !m_dragging) {
-            setHoverReadingActive(true, true);
+        if (!m_cfg.hoverReadingEnabled) {
+            return;
         }
+
+        if (!isCursorInsideWindow()) {
+            setHoverReadingActive(false, true);
+            return;
+        }
+
+        if (m_dragging) {
+            m_hoverTimer->start(120);
+            return;
+        }
+
+        setHoverReadingActive(true, true);
     });
 
     m_styleAnimation = new QVariantAnimation(this);
     m_styleAnimation->setDuration(180);
     m_styleAnimation->setEasingCurve(QEasingCurve::InOutCubic);
     connect(m_styleAnimation, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
-        applyInterpolatedStyle(value.toReal(), m_hoverReadingActive);
+        m_hoverReadingProgress = qBound(0.0, value.toReal(), 1.0);
+        applyInterpolatedStyle(m_hoverReadingProgress);
     });
 }
 
-bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
-    auto startHoverReadingTimerIfNeeded = [this]() {
-        if (!m_cfg.hoverReadingEnabled || m_dragging || !m_hoverTimer || m_hoverReadingActive) {
-            return;
-        }
-        const int ms = static_cast<int>(m_cfg.hoverReadingDelaySecs * 1000.0);
-        m_hoverTimer->start(qMax(100, ms));
-    };
+bool FloatingWindow::isCursorInsideWindow() const {
+    return frameGeometry().contains(QCursor::pos());
+}
 
-    auto restoreNormalStyleIfCursorOutsideWindow = [this]() {
-        const QPoint globalPos = QCursor::pos();
-        if (frameGeometry().contains(globalPos)) {
-            return;
-        }
+void FloatingWindow::scheduleHoverReadingTimer() {
+    if (!m_hoverTimer || !m_cfg.hoverReadingEnabled || m_hoverReadingActive || m_dragging) {
+        return;
+    }
+    if (!isCursorInsideWindow()) {
+        return;
+    }
+
+    const int ms = static_cast<int>(qBound(0.1, m_cfg.hoverReadingDelaySecs, 60.0) * 1000.0);
+    m_hoverTimer->start(qMax(100, ms));
+}
+
+void FloatingWindow::updateHoverReadingState(bool animated) {
+    if (!m_cfg.hoverReadingEnabled) {
         if (m_hoverTimer) {
             m_hoverTimer->stop();
         }
-        if (m_hoverReadingActive) {
-            m_hoverReadingActive = false;
-            applyStyle();
-        }
-    };
+        setHoverReadingActive(false, animated);
+        return;
+    }
 
+    if (isCursorInsideWindow()) {
+        if (m_hoverReadingActive) {
+            if (m_hoverTimer) {
+                m_hoverTimer->stop();
+            }
+            return;
+        }
+        scheduleHoverReadingTimer();
+        return;
+    }
+
+    if (m_hoverTimer) {
+        m_hoverTimer->stop();
+    }
+    setHoverReadingActive(false, animated);
+}
+
+bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
     switch (event->type()) {
     case QEvent::Enter:
     case QEvent::HoverEnter:
+    case QEvent::HoverMove:
         if (watched == m_panel
             || watched == m_table
             || watched == m_table->viewport()
             || watched == m_table->horizontalHeader()) {
-            startHoverReadingTimerIfNeeded();
+            updateHoverReadingState(false);
         }
         break;
     case QEvent::Leave:
@@ -196,7 +266,7 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
             || watched == m_table
             || watched == m_table->viewport()
             || watched == m_table->horizontalHeader()) {
-            restoreNormalStyleIfCursorOutsideWindow();
+            updateHoverReadingState(true);
         }
         break;
     case QEvent::MouseButtonPress: {
@@ -213,6 +283,7 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
         auto* mouseEvent = static_cast<QMouseEvent*>(event);
         if (m_dragging && (mouseEvent->buttons() & Qt::LeftButton)) {
             move(mouseEvent->globalPosition().toPoint() - m_dragOffset);
+            updateHoverReadingState(false);
             return true;
         }
         break;
@@ -223,6 +294,7 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
             m_dragging = false;
             releaseMouse();
             enforceWindowLevel(false);
+            updateHoverReadingState(true);
             return true;
         }
         break;
@@ -254,10 +326,7 @@ void FloatingWindow::applyConfig(const AppConfig& cfg) {
         setGeometry(oldGeometry);
     }
 
-    const double effectiveOpacity = m_cfg.transparentBackgroundEnabled
-        ? static_cast<double>(qBound(0, m_cfg.transparentBackgroundOpacity, 100)) / 100.0
-        : qBound(0.0, m_cfg.opacity, 1.0);
-    setWindowOpacity(qBound(0.0, effectiveOpacity, 1.0));
+    setWindowOpacity(configuredWindowOpacity(m_cfg));
 
     // Reset hover reading state when config is reloaded
     if (m_hoverTimer) {
@@ -271,6 +340,7 @@ void FloatingWindow::applyConfig(const AppConfig& cfg) {
     if (isVisible()) {
         enforceWindowLevel(false);
     }
+    updateHoverReadingState(false);
 }
 
 void FloatingWindow::mousePressEvent(QMouseEvent* event) {
@@ -285,6 +355,7 @@ void FloatingWindow::mousePressEvent(QMouseEvent* event) {
 void FloatingWindow::mouseMoveEvent(QMouseEvent* event) {
     if (m_dragging && (event->buttons() & Qt::LeftButton)) {
         move(event->globalPosition().toPoint() - m_dragOffset);
+        updateHoverReadingState(false);
         return;
     }
     QWidget::mouseMoveEvent(event);
@@ -295,6 +366,7 @@ void FloatingWindow::mouseReleaseEvent(QMouseEvent* event) {
         m_dragging = false;
         releaseMouse();
         enforceWindowLevel(false);
+        updateHoverReadingState(true);
     }
     QWidget::mouseReleaseEvent(event);
 }
@@ -303,25 +375,17 @@ void FloatingWindow::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
 
     enforceWindowLevel(true);
+    updateHoverReadingState(false);
 }
 
 void FloatingWindow::enterEvent(QEnterEvent* event) {
     QWidget::enterEvent(event);
-    if (m_cfg.hoverReadingEnabled && !m_dragging && m_hoverTimer && !m_hoverReadingActive) {
-        const int ms = static_cast<int>(m_cfg.hoverReadingDelaySecs * 1000.0);
-        m_hoverTimer->start(qMax(100, ms));
-    }
+    updateHoverReadingState(false);
 }
 
 void FloatingWindow::leaveEvent(QEvent* event) {
     QWidget::leaveEvent(event);
-    if (frameGeometry().contains(QCursor::pos())) {
-        return;
-    }
-    if (m_hoverTimer) {
-        m_hoverTimer->stop();
-    }
-    setHoverReadingActive(false, true);
+    updateHoverReadingState(true);
 }
 
 void FloatingWindow::enforceWindowLevel(bool activate) {
@@ -383,24 +447,26 @@ void FloatingWindow::applyStyle() {
         : m_cfg.bgColor;
     const QColor t = m_cfg.textColor;
     const QColor g = m_cfg.gridColor;
+    const QColor transparentBorder(0, 0, 0, 0);
 
     const QString css = QString(
         "QFrame#panel{"
         "background-color: rgba(%1,%2,%3,%4);"
-        "border-radius: 10px;"
+        "border-radius: 8px;"
+        "border: 1px solid rgba(%5,%6,%7,%8);"
         "}"
         "QTableView{"
         "background: transparent;"
         "border: none;"
-        "color: rgb(%5,%6,%7);"
-        "gridline-color: rgba(%8,%9,%10,%11);"
+        "color: rgb(%9,%10,%11);"
+        "gridline-color: rgba(%12,%13,%14,%15);"
         "}"
         "QHeaderView::section{"
         "background: transparent;"
         "border: none;"
         "padding: 0 4px;"
         "font-weight: 600;"
-        "color: rgb(%5,%6,%7);"
+        "color: rgb(%9,%10,%11);"
         "}"
         "QAbstractItemView::item{"
         "padding: 0 4px;"
@@ -410,6 +476,10 @@ void FloatingWindow::applyStyle() {
         .arg(b.green())
         .arg(b.blue())
         .arg(b.alpha())
+        .arg(transparentBorder.red())
+        .arg(transparentBorder.green())
+        .arg(transparentBorder.blue())
+        .arg(transparentBorder.alpha())
         .arg(t.red())
         .arg(t.green())
         .arg(t.blue())
@@ -435,77 +505,51 @@ void FloatingWindow::applyStyle() {
 }
 
 void FloatingWindow::applyHoverReadingStyle() {
-    const QColor t = m_cfg.textColor;
-    const QColor g = m_cfg.gridColor;
-
-    // Determine dark/light based on configured background color lightness
-    const bool isDark = m_cfg.bgColor.lightness() < 128;
-
-    QColor bg;
-    QColor border;
-    int radius;
-
-#ifdef Q_OS_MAC
-    // macOS: vibrancy style (design.md)
-    if (isDark) {
-        bg = QColor(30, 30, 30, qRound(0.72 * 255));       // rgba(30,30,30,0.72)
-        border = QColor(255, 255, 255, qRound(0.08 * 255)); // rgba(255,255,255,0.08)
-    } else {
-        bg = QColor(255, 255, 255, qRound(0.72 * 255));     // rgba(255,255,255,0.72)
-        border = QColor(255, 255, 255, qRound(0.35 * 255)); // rgba(255,255,255,0.35)
-    }
-    radius = 16;
-#else
-    // Windows: acrylic style (design.md)
-    if (isDark) {
-        bg = QColor(32, 32, 32, qRound(0.80 * 255));        // rgba(32,32,32,0.80)
-        border = QColor(255, 255, 255, qRound(0.06 * 255)); // rgba(255,255,255,0.06)
-    } else {
-        bg = QColor(255, 255, 255, qRound(0.85 * 255));     // rgba(255,255,255,0.85)
-        border = QColor(0, 0, 0, qRound(0.08 * 255));       // rgba(0,0,0,0.08)
-    }
-    radius = 10;
-#endif
+    const HoverReadingTheme theme = hoverReadingThemeForMode(m_cfg.hoverReadingUiMode);
+    const QColor grid = m_cfg.showGrid ? theme.border : QColor(0, 0, 0, 0);
 
     const QString css = QString(
         "QFrame#panel{"
         "background-color: rgba(%1,%2,%3,%4);"
-        "border-radius: %5px;"
-        "border: 1px solid rgba(%6,%7,%8,%9);"
+        "border-radius: 8px;"
+        "border: 1px solid rgba(%5,%6,%7,%8);"
         "}"
         "QTableView{"
-        "background: transparent;"
+        "background-color: rgba(%1,%2,%3,%4);"
         "border: none;"
-        "color: rgb(%10,%11,%12);"
-        "gridline-color: rgba(%13,%14,%15,%16);"
+        "color: rgb(%9,%10,%11);"
+        "gridline-color: rgba(%12,%13,%14,%15);"
         "}"
         "QHeaderView::section{"
-        "background: transparent;"
+        "background-color: rgba(%16,%17,%18,%19);"
         "border: none;"
         "padding: 0 4px;"
         "font-weight: 600;"
-        "color: rgb(%10,%11,%12);"
+        "color: rgb(%9,%10,%11);"
         "}"
         "QAbstractItemView::item{"
         "padding: 0 4px;"
         "}"
     )
-        .arg(bg.red())
-        .arg(bg.green())
-        .arg(bg.blue())
-        .arg(bg.alpha())
-        .arg(radius)
-        .arg(border.red())
-        .arg(border.green())
-        .arg(border.blue())
-        .arg(border.alpha())
-        .arg(t.red())
-        .arg(t.green())
-        .arg(t.blue())
-        .arg(g.red())
-        .arg(g.green())
-        .arg(g.blue())
-        .arg(g.alpha());
+        .arg(theme.background.red())
+        .arg(theme.background.green())
+        .arg(theme.background.blue())
+        .arg(theme.background.alpha())
+        .arg(theme.border.red())
+        .arg(theme.border.green())
+        .arg(theme.border.blue())
+        .arg(theme.border.alpha())
+        .arg(theme.textPrimary.red())
+        .arg(theme.textPrimary.green())
+        .arg(theme.textPrimary.blue())
+        .arg(grid.red())
+        .arg(grid.green())
+        .arg(grid.blue())
+        .arg(grid.alpha())
+        .arg(theme.surface.red())
+        .arg(theme.surface.green())
+        .arg(theme.surface.blue())
+        .arg(theme.surface.alpha());
 
     m_panel->setStyleSheet(css);
     m_table->setShowGrid(m_cfg.showGrid);
@@ -513,9 +557,9 @@ void FloatingWindow::applyHoverReadingStyle() {
 
 #ifdef WIN32
     QPalette pal = m_table->palette();
-    pal.setColor(QPalette::Base, Qt::transparent);
-    pal.setColor(QPalette::Text, t);
-    pal.setColor(QPalette::WindowText, t);
+    pal.setColor(QPalette::Base, theme.background);
+    pal.setColor(QPalette::Text, theme.textPrimary);
+    pal.setColor(QPalette::WindowText, theme.textPrimary);
     m_table->setPalette(pal);
     m_table->viewport()->setPalette(pal);
     m_table->horizontalHeader()->setPalette(pal);
@@ -523,16 +567,21 @@ void FloatingWindow::applyHoverReadingStyle() {
 }
 
 void FloatingWindow::setHoverReadingActive(bool active, bool animated) {
-    if (m_hoverReadingActive == active && (!m_styleAnimation || m_styleAnimation->state() != QAbstractAnimation::Running)) {
+    if (m_hoverReadingActive == active
+        && (!m_styleAnimation
+            || m_styleAnimation->state() != QAbstractAnimation::Running)) {
         return;
     }
 
     m_hoverReadingActive = active;
+    const qreal target = m_hoverReadingActive ? 1.0 : 0.0;
 
     if (!animated || !m_styleAnimation) {
         if (m_styleAnimation) {
             m_styleAnimation->stop();
         }
+        m_hoverReadingProgress = target;
+        setWindowOpacity(m_hoverReadingActive ? 1.0 : configuredWindowOpacity(m_cfg));
         if (m_hoverReadingActive) {
             applyHoverReadingStyle();
         } else {
@@ -541,76 +590,60 @@ void FloatingWindow::setHoverReadingActive(bool active, bool animated) {
         return;
     }
 
+    const qreal start = m_hoverReadingProgress;
+    if (qAbs(start - target) < 0.0001) {
+        applyInterpolatedStyle(target);
+        return;
+    }
+
     m_styleAnimation->stop();
-    m_styleAnimation->setStartValue(0.0);
-    m_styleAnimation->setEndValue(1.0);
+    m_styleAnimation->setStartValue(start);
+    m_styleAnimation->setEndValue(target);
     m_styleAnimation->start();
 }
 
-void FloatingWindow::applyInterpolatedStyle(qreal progress, bool towardsHoverReading) {
+void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
+    const qreal progress = qBound(0.0, hoverProgress, 1.0);
+    const qreal normalOpacity = configuredWindowOpacity(m_cfg);
+    setWindowOpacity(normalOpacity + (1.0 - normalOpacity) * progress);
+
     const QColor normalBg = m_cfg.transparentBackgroundEnabled
         ? QColor(0, 0, 0, 0)
         : m_cfg.bgColor;
-    const QColor text = m_cfg.textColor;
-    const QColor grid = m_cfg.gridColor;
-
-    const bool isDark = m_cfg.bgColor.lightness() < 128;
-    QColor hoverBg;
-    QColor hoverBorder;
-    int hoverRadius;
-
-#ifdef Q_OS_MAC
-    if (isDark) {
-        hoverBg = QColor(30, 30, 30, qRound(0.72 * 255));
-        hoverBorder = QColor(255, 255, 255, qRound(0.08 * 255));
-    } else {
-        hoverBg = QColor(255, 255, 255, qRound(0.72 * 255));
-        hoverBorder = QColor(255, 255, 255, qRound(0.35 * 255));
-    }
-    hoverRadius = 16;
-#else
-    if (isDark) {
-        hoverBg = QColor(32, 32, 32, qRound(0.80 * 255));
-        hoverBorder = QColor(255, 255, 255, qRound(0.06 * 255));
-    } else {
-        hoverBg = QColor(255, 255, 255, qRound(0.85 * 255));
-        hoverBorder = QColor(0, 0, 0, qRound(0.08 * 255));
-    }
-    hoverRadius = 10;
-#endif
-
-    const int normalRadius = 10;
+    const QColor normalText = m_cfg.textColor;
+    const QColor normalGrid = m_cfg.gridColor;
     const QColor normalBorder(0, 0, 0, 0);
+    const QColor normalHeaderBg(0, 0, 0, 0);
+    const QColor normalTableBg(0, 0, 0, 0);
 
-    const QColor fromBg = towardsHoverReading ? normalBg : hoverBg;
-    const QColor toBg = towardsHoverReading ? hoverBg : normalBg;
-    const QColor fromBorder = towardsHoverReading ? normalBorder : hoverBorder;
-    const QColor toBorder = towardsHoverReading ? hoverBorder : normalBorder;
-    const int fromRadius = towardsHoverReading ? normalRadius : hoverRadius;
-    const int toRadius = towardsHoverReading ? hoverRadius : normalRadius;
+    const HoverReadingTheme theme = hoverReadingThemeForMode(m_cfg.hoverReadingUiMode);
+    const QColor hoverGrid = m_cfg.showGrid ? theme.border : QColor(0, 0, 0, 0);
 
-    const QColor bg = mixColor(fromBg, toBg, progress);
-    const QColor border = mixColor(fromBorder, toBorder, progress);
-    const int radius = mixInt(fromRadius, toRadius, progress);
+    const QColor bg = mixColor(normalBg, theme.background, progress);
+    const QColor border = mixColor(normalBorder, theme.border, progress);
+    const QColor text = mixColor(normalText, theme.textPrimary, progress);
+    const QColor grid = mixColor(normalGrid, hoverGrid, progress);
+    const QColor headerBg = mixColor(normalHeaderBg, theme.surface, progress);
+    const QColor tableBg = mixColor(normalTableBg, theme.background, progress);
 
     const QString css = QString(
         "QFrame#panel{"
         "background-color: rgba(%1,%2,%3,%4);"
-        "border-radius: %5px;"
-        "border: 1px solid rgba(%6,%7,%8,%9);"
+        "border-radius: 8px;"
+        "border: 1px solid rgba(%5,%6,%7,%8);"
         "}"
         "QTableView{"
-        "background: transparent;"
+        "background-color: rgba(%16,%17,%18,%19);"
         "border: none;"
-        "color: rgb(%10,%11,%12);"
-        "gridline-color: rgba(%13,%14,%15,%16);"
+        "color: rgb(%9,%10,%11);"
+        "gridline-color: rgba(%12,%13,%14,%15);"
         "}"
         "QHeaderView::section{"
-        "background: transparent;"
+        "background-color: rgba(%20,%21,%22,%23);"
         "border: none;"
         "padding: 0 4px;"
         "font-weight: 600;"
-        "color: rgb(%10,%11,%12);"
+        "color: rgb(%9,%10,%11);"
         "}"
         "QAbstractItemView::item{"
         "padding: 0 4px;"
@@ -620,7 +653,6 @@ void FloatingWindow::applyInterpolatedStyle(qreal progress, bool towardsHoverRea
         .arg(bg.green())
         .arg(bg.blue())
         .arg(bg.alpha())
-        .arg(radius)
         .arg(border.red())
         .arg(border.green())
         .arg(border.blue())
@@ -631,7 +663,15 @@ void FloatingWindow::applyInterpolatedStyle(qreal progress, bool towardsHoverRea
         .arg(grid.red())
         .arg(grid.green())
         .arg(grid.blue())
-        .arg(grid.alpha());
+        .arg(grid.alpha())
+        .arg(tableBg.red())
+        .arg(tableBg.green())
+        .arg(tableBg.blue())
+        .arg(tableBg.alpha())
+        .arg(headerBg.red())
+        .arg(headerBg.green())
+        .arg(headerBg.blue())
+        .arg(headerBg.alpha());
 
     m_panel->setStyleSheet(css);
     m_table->setShowGrid(m_cfg.showGrid);
@@ -639,7 +679,7 @@ void FloatingWindow::applyInterpolatedStyle(qreal progress, bool towardsHoverRea
 
 #ifdef WIN32
     QPalette pal = m_table->palette();
-    pal.setColor(QPalette::Base, Qt::transparent);
+    pal.setColor(QPalette::Base, tableBg);
     pal.setColor(QPalette::Text, text);
     pal.setColor(QPalette::WindowText, text);
     m_table->setPalette(pal);

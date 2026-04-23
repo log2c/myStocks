@@ -27,11 +27,14 @@ protected:
     void leaveEvent(QEvent* event) override;
 
 private:
+    bool isCursorInsideWindow() const;
+    void scheduleHoverReadingTimer();
+    void updateHoverReadingState(bool animated);
     void enforceWindowLevel(bool activate = false);
     void applyStyle();
     void applyHoverReadingStyle();
     void setHoverReadingActive(bool active, bool animated);
-    void applyInterpolatedStyle(qreal progress, bool towardsHoverReading);
+    void applyInterpolatedStyle(qreal hoverProgress);
     void applyColumns();
     void adjustWindowSize();
     int autoColumnWidthFromContent(int column) const;
@@ -48,4 +51,5 @@ private:
     QTimer* m_hoverTimer = nullptr;
     QVariantAnimation* m_styleAnimation = nullptr;
     bool m_hoverReadingActive = false;
+    qreal m_hoverReadingProgress = 0.0;
 };
