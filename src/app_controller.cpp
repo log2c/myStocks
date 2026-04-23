@@ -19,6 +19,9 @@
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
 #include <QHotkey>
 #endif
+#if defined(Q_OS_MACOS)
+#include <Carbon/Carbon.h>
+#endif
 #include <QMenu>
 #include <QMessageBox>
 #include <QNetworkReply>
@@ -130,6 +133,99 @@ AppController::AppController(QObject* parent)
 }
 
 namespace {
+
+#if defined(Q_OS_MACOS)
+bool macNativeKeycodeForQtKey(Qt::Key key, quint32* nativeKeycode) {
+    if (!nativeKeycode) {
+        return false;
+    }
+
+    switch (key) {
+    case Qt::Key_A: *nativeKeycode = kVK_ANSI_A; return true;
+    case Qt::Key_B: *nativeKeycode = kVK_ANSI_B; return true;
+    case Qt::Key_C: *nativeKeycode = kVK_ANSI_C; return true;
+    case Qt::Key_D: *nativeKeycode = kVK_ANSI_D; return true;
+    case Qt::Key_E: *nativeKeycode = kVK_ANSI_E; return true;
+    case Qt::Key_F: *nativeKeycode = kVK_ANSI_F; return true;
+    case Qt::Key_G: *nativeKeycode = kVK_ANSI_G; return true;
+    case Qt::Key_H: *nativeKeycode = kVK_ANSI_H; return true;
+    case Qt::Key_I: *nativeKeycode = kVK_ANSI_I; return true;
+    case Qt::Key_J: *nativeKeycode = kVK_ANSI_J; return true;
+    case Qt::Key_K: *nativeKeycode = kVK_ANSI_K; return true;
+    case Qt::Key_L: *nativeKeycode = kVK_ANSI_L; return true;
+    case Qt::Key_M: *nativeKeycode = kVK_ANSI_M; return true;
+    case Qt::Key_N: *nativeKeycode = kVK_ANSI_N; return true;
+    case Qt::Key_O: *nativeKeycode = kVK_ANSI_O; return true;
+    case Qt::Key_P: *nativeKeycode = kVK_ANSI_P; return true;
+    case Qt::Key_Q: *nativeKeycode = kVK_ANSI_Q; return true;
+    case Qt::Key_R: *nativeKeycode = kVK_ANSI_R; return true;
+    case Qt::Key_S: *nativeKeycode = kVK_ANSI_S; return true;
+    case Qt::Key_T: *nativeKeycode = kVK_ANSI_T; return true;
+    case Qt::Key_U: *nativeKeycode = kVK_ANSI_U; return true;
+    case Qt::Key_V: *nativeKeycode = kVK_ANSI_V; return true;
+    case Qt::Key_W: *nativeKeycode = kVK_ANSI_W; return true;
+    case Qt::Key_X: *nativeKeycode = kVK_ANSI_X; return true;
+    case Qt::Key_Y: *nativeKeycode = kVK_ANSI_Y; return true;
+    case Qt::Key_Z: *nativeKeycode = kVK_ANSI_Z; return true;
+    case Qt::Key_0: *nativeKeycode = kVK_ANSI_0; return true;
+    case Qt::Key_1: *nativeKeycode = kVK_ANSI_1; return true;
+    case Qt::Key_2: *nativeKeycode = kVK_ANSI_2; return true;
+    case Qt::Key_3: *nativeKeycode = kVK_ANSI_3; return true;
+    case Qt::Key_4: *nativeKeycode = kVK_ANSI_4; return true;
+    case Qt::Key_5: *nativeKeycode = kVK_ANSI_5; return true;
+    case Qt::Key_6: *nativeKeycode = kVK_ANSI_6; return true;
+    case Qt::Key_7: *nativeKeycode = kVK_ANSI_7; return true;
+    case Qt::Key_8: *nativeKeycode = kVK_ANSI_8; return true;
+    case Qt::Key_9: *nativeKeycode = kVK_ANSI_9; return true;
+    default:
+        break;
+    }
+
+    return false;
+}
+
+quint32 macNativeModifiers(Qt::KeyboardModifiers modifiers) {
+    quint32 nativeModifiers = 0;
+    if (modifiers & Qt::ShiftModifier) {
+        nativeModifiers |= shiftKey;
+    }
+    if (modifiers & Qt::ControlModifier) {
+        nativeModifiers |= cmdKey;
+    }
+    if (modifiers & Qt::AltModifier) {
+        nativeModifiers |= optionKey;
+    }
+    if (modifiers & Qt::MetaModifier) {
+        nativeModifiers |= controlKey;
+    }
+    if (modifiers & Qt::KeypadModifier) {
+        nativeModifiers |= kEventKeyModifierNumLockMask;
+    }
+
+    return nativeModifiers;
+}
+
+bool addMacHotkeyMapping(const QKeySequence& sequence) {
+    if (sequence.isEmpty()) {
+        return false;
+    }
+
+    const QKeyCombination combo = sequence[0];
+    const Qt::Key key = combo.key();
+    const Qt::KeyboardModifiers modifiers = combo.keyboardModifiers();
+
+    quint32 nativeKeycode = 0;
+    if (!macNativeKeycodeForQtKey(key, &nativeKeycode)) {
+        return false;
+    }
+
+    QHotkey::addGlobalMapping(
+        sequence,
+        QHotkey::NativeShortcut(nativeKeycode, macNativeModifiers(modifiers))
+    );
+    return true;
+}
+#endif
 
 QString defaultDataYamlTemplate() {
     return QStringLiteral(
@@ -912,8 +1008,18 @@ void AppController::setupHotkey() {
         return;
     }
 
+    const QKeySequence hotkeySequence =
+        QKeySequence::fromString(m_cfg.hotkey, QKeySequence::PortableText);
+
+#if defined(Q_OS_MACOS)
+    if (addMacHotkeyMapping(hotkeySequence)) {
+        qInfo() << "Applied explicit macOS hotkey mapping for"
+                << hotkeySequence.toString(QKeySequence::PortableText);
+    }
+#endif
+
     m_hotkey = new QHotkey(
-        QKeySequence::fromString(m_cfg.hotkey, QKeySequence::PortableText),
+        hotkeySequence,
         true, this
     );
     connect(m_hotkey, &QHotkey::activated, this, [this]() { toggleWindow(); });
