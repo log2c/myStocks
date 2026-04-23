@@ -109,7 +109,11 @@ public:
 private:
     static QString toSecId(const QString& rawCode);
     static double firstNumber(const QJsonObject& obj, const QStringList& keys);
-    void handleResponse(const StockItem& stock, const QByteArray& body, const QString& errorText);
+    void handleResponse(
+        const QHash<QString, StockItem>& requestMap,
+        const QByteArray& body,
+        const QString& errorText
+    );
 
 private:
     QNetworkAccessManager m_nam;

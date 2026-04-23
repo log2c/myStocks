@@ -8,23 +8,32 @@
 namespace {
 
 std::atomic<qint64> g_requestId {1};
-inline constexpr qsizetype kMaxBodyPreviewBytes = 2048;
+inline constexpr qsizetype kBodyPreviewHeadBytes = 256;
+inline constexpr qsizetype kBodyPreviewTailBytes = 96;
+
+QString sanitizePreviewText(const QByteArray& bytes) {
+    QString text = QString::fromUtf8(bytes);
+    text.replace('\r', "\\r");
+    text.replace('\n', "\\n");
+    return text;
+}
 
 QString compactBodyPreview(const QByteArray& body) {
     if (body.isEmpty()) {
         return "<empty>";
     }
 
-    const bool truncated = body.size() > kMaxBodyPreviewBytes;
-    const QByteArray previewBytes = truncated ? body.left(kMaxBodyPreviewBytes) : body;
-
-    QString preview = QString::fromUtf8(previewBytes);
-    preview.replace('\r', "\\r");
-    preview.replace('\n', "\\n");
-
-    if (truncated) {
-        preview += QString(" ...(truncated %1 bytes)").arg(body.size() - previewBytes.size());
+    if (body.size() <= kBodyPreviewHeadBytes) {
+        return sanitizePreviewText(body);
     }
+
+    const QByteArray headBytes = body.left(kBodyPreviewHeadBytes);
+    const QByteArray tailBytes = body.right(kBodyPreviewTailBytes);
+    const qsizetype omitted = body.size() - headBytes.size() - tailBytes.size();
+
+    QString preview = sanitizePreviewText(headBytes);
+    preview += QString(" ...(omitted %1 bytes)... ").arg(qMax<qsizetype>(0, omitted));
+    preview += sanitizePreviewText(tailBytes);
 
     return preview;
 }

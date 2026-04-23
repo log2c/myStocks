@@ -6,6 +6,8 @@
 #include <QFrame>
 #include <QPoint>
 #include <QTableView>
+#include <QTimer>
+#include <QVariantAnimation>
 #include <QWidget>
 
 class FloatingWindow : public QWidget {
@@ -21,10 +23,15 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void showEvent(QShowEvent* event) override;
+    void enterEvent(QEnterEvent* event) override;
+    void leaveEvent(QEvent* event) override;
 
 private:
     void enforceWindowLevel(bool activate = false);
     void applyStyle();
+    void applyHoverReadingStyle();
+    void setHoverReadingActive(bool active, bool animated);
+    void applyInterpolatedStyle(qreal progress, bool towardsHoverReading);
     void applyColumns();
     void adjustWindowSize();
     int autoColumnWidthFromContent(int column) const;
@@ -37,4 +44,8 @@ private:
     AppConfig m_cfg;
     bool m_dragging = false;
     QPoint m_dragOffset;
+
+    QTimer* m_hoverTimer = nullptr;
+    QVariantAnimation* m_styleAnimation = nullptr;
+    bool m_hoverReadingActive = false;
 };

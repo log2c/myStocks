@@ -25,6 +25,8 @@
 #include <QNetworkRequest>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSettings>
+#include <QSet>
 #include <QStyle>
 #include <QSystemTrayIcon>
 #include <QTimer>
@@ -43,21 +45,34 @@ AppController::AppController(QObject* parent)
             << "logEnabled=" << m_cfg.logEnabled
             << "logLevel=" << m_cfg.logLevel;
 
-    m_stocks = ConfigManager::loadStocksFromYaml(findDataYaml());
+    QStringList ignoredYamlIndexes;
+    m_stocks = filterYamlStocks(
+        ConfigManager::loadStocksFromYaml(findDataYaml()),
+        &ignoredYamlIndexes
+    );
     if (m_stocks.isEmpty()) {
         m_stocks = {
-            {"sh000001", "SSE Composite"},
-            {"sz399001", "SZSE Component"},
-            {"sz399006", "ChiNext"}
+            {"sh600519", "Kweichow Moutai"},
+            {"sz000001", "Ping An Bank"},
+            {"sz300750", "CATL"}
         };
         qInfo() << "Stock list is empty; fallback defaults loaded count=" << m_stocks.size();
     }
-    qInfo() << "Initial stock count=" << m_stocks.size();
+    m_lastIgnoredYamlIndexCodes = ignoredYamlIndexes;
+
+    loadExtraWatchItems();
+
+    const QVector<StockItem> merged = mergedWatchItems();
+    qInfo() << "Initial watch counts"
+            << "stocks=" << m_stocks.size()
+            << "indexes=" << m_indexes.size()
+            << "sectors=" << m_sectors.size()
+            << "merged=" << merged.size();
 
     m_model = new QuoteModel(this);
     m_model->setLanguage(m_resolvedLanguage);
     m_model->setConfig(m_cfg);
-    m_model->setStocks(m_stocks);
+    m_model->setStocks(merged);
 
     m_window = new FloatingWindow(m_model);
     m_window->setGeometry(m_cfg.windowRect);
@@ -72,6 +87,16 @@ AppController::AppController(QObject* parent)
             QSystemTrayIcon::Information,
             2500
         );
+
+        if (!m_lastIgnoredYamlIndexCodes.isEmpty()) {
+            m_tray->showMessage(
+                i18n::t("app.name", m_resolvedLanguage),
+                i18n::t("settings.indexSector.ignoreYamlIndexFmt", m_resolvedLanguage)
+                    .arg(m_lastIgnoredYamlIndexCodes.join(QStringLiteral(", "))),
+                QSystemTrayIcon::Warning,
+                5000
+            );
+        }
     }
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     setupHotkey();
@@ -99,12 +124,12 @@ namespace {
 QString defaultDataYamlTemplate() {
     return QStringLiteral(
         "# MyStocks stock list template\n"
-        "- code: sh000001\n"
-        "  name: SSE Composite\n"
-        "- code: sz399001\n"
-        "  name: SZSE Component\n"
-        "- code: sz399006\n"
-        "  name: ChiNext\n"
+        "- code: sh600519\n"
+        "  name: Kweichow Moutai\n"
+        "- code: sz000001\n"
+        "  name: Ping An Bank\n"
+        "- code: sz300750\n"
+        "  name: CATL\n"
     );
 }
 
@@ -125,7 +150,47 @@ bool ensureDataYamlExists(const QString& path) {
 }
 
 bool isHongKongCode(const QString& rawCode) {
-    return rawCode.trimmed().toLower().startsWith("hk");
+    const QString code = rawCode.trimmed().toLower();
+    if (code.isEmpty()) {
+        return false;
+    }
+
+    if (code.startsWith("hk")
+        || code.startsWith(QStringLiteral("116."))
+        || code.startsWith(QStringLiteral("128."))) {
+        return true;
+    }
+
+    static const QSet<QString> hkIndexCodes {
+        QStringLiteral("hsi"),
+        QStringLiteral("hstech"),
+        QStringLiteral("100.hsi"),
+        QStringLiteral("124.hstech"),
+    };
+
+    if (hkIndexCodes.contains(code)) {
+        return true;
+    }
+
+    if (code.startsWith(QStringLiteral("100."))
+        && hkIndexCodes.contains(code.mid(4))) {
+        return true;
+    }
+    if (code.startsWith(QStringLiteral("124."))
+        && hkIndexCodes.contains(code.mid(4))) {
+        return true;
+    }
+
+    if (code.size() == 5) {
+        for (QChar ch : code) {
+            if (!ch.isDigit()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    return false;
 }
 
 bool isBenignCanceledError(const QString& message) {
@@ -133,6 +198,173 @@ bool isBenignCanceledError(const QString& message) {
     return lower.contains("operation canceled")
         || lower.contains("operation cancelled")
         || lower.contains("operation cancled");
+}
+
+bool isDigitsOnly(const QString& value) {
+    if (value.isEmpty()) {
+        return false;
+    }
+
+    for (QChar ch : value) {
+        if (!ch.isDigit()) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+const QSet<QString>& predefinedIndexAliases() {
+    static const QSet<QString> aliases {
+        QStringLiteral("sh000001"),
+        QStringLiteral("sz399001"),
+        QStringLiteral("sh000300"),
+        QStringLiteral("sz399300"),
+        QStringLiteral("sh000016"),
+        QStringLiteral("sh000905"),
+        QStringLiteral("sh000852"),
+        QStringLiteral("sz399006"),
+        QStringLiteral("sz399673"),
+        QStringLiteral("sh000688"),
+        QStringLiteral("sh931643"),
+        QStringLiteral("sz931643"),
+        QStringLiteral("sh932133"),
+        QStringLiteral("sz399431"),
+        QStringLiteral("sz399975"),
+        QStringLiteral("sh000808"),
+        QStringLiteral("sh000932"),
+        QStringLiteral("sz399808"),
+        QStringLiteral("sh980017"),
+        QStringLiteral("sz980017"),
+        QStringLiteral("hsi"),
+        QStringLiteral("hstech"),
+        QStringLiteral("100.hsi"),
+        QStringLiteral("124.hstech"),
+
+        // Digits-only aliases from docs/api examples except 000001 (ambiguous with stock).
+        QStringLiteral("399001"),
+        QStringLiteral("000300"),
+        QStringLiteral("399300"),
+        QStringLiteral("000016"),
+        QStringLiteral("000905"),
+        QStringLiteral("000852"),
+        QStringLiteral("399006"),
+        QStringLiteral("399673"),
+        QStringLiteral("000688"),
+        QStringLiteral("931643"),
+        QStringLiteral("932133"),
+        QStringLiteral("399431"),
+        QStringLiteral("399975"),
+        QStringLiteral("000808"),
+        QStringLiteral("000932"),
+        QStringLiteral("399808"),
+        QStringLiteral("980017"),
+    };
+
+    return aliases;
+}
+
+bool isPredefinedIndexCode(const QString& rawCode) {
+    const QString code = rawCode.trimmed().toLower();
+    if (code.isEmpty()) {
+        return false;
+    }
+    if (code.startsWith(QStringLiteral("bk")) || code.startsWith(QStringLiteral("90."))) {
+        return false;
+    }
+
+    if (predefinedIndexAliases().contains(code)) {
+        return true;
+    }
+
+    if (isDigitsOnly(code) && code.size() == 6) {
+        return predefinedIndexAliases().contains(code);
+    }
+
+    return false;
+}
+
+QString watchCodeKey(const QString& code) {
+    return code.trimmed().toLower();
+}
+
+QString normalizeSectorCode(const QString& rawCode) {
+    QString code = rawCode.trimmed();
+    if (code.isEmpty()) {
+        return {};
+    }
+
+    if (code.startsWith(QStringLiteral("90."), Qt::CaseInsensitive)) {
+        code = code.mid(3);
+    }
+
+    if (code.startsWith(QStringLiteral("bk"), Qt::CaseInsensitive)) {
+        return code.toUpper();
+    }
+
+    return {};
+}
+
+QString normalizeHongKongIndexCode(const QString& rawCode) {
+    const QString code = rawCode.trimmed().toLower();
+    if (code.isEmpty()) {
+        return {};
+    }
+
+    if (code == QStringLiteral("hsi")
+        || code == QStringLiteral("100.hsi")
+        || code == QStringLiteral("124.hsi")) {
+        return QStringLiteral("100.HSI");
+    }
+
+    if (code == QStringLiteral("hstech")
+        || code == QStringLiteral("124.hstech")
+        || code == QStringLiteral("100.hstech")) {
+        return QStringLiteral("124.HSTECH");
+    }
+
+    return {};
+}
+
+QString encodeWatchItem(const StockItem& item) {
+    return item.code.trimmed() + QStringLiteral("\t") + item.name.trimmed();
+}
+
+QVector<StockItem> decodeWatchItems(const QStringList& values) {
+    QVector<StockItem> out;
+    out.reserve(values.size());
+
+    QSet<QString> seen;
+    for (const QString& raw : values) {
+        const int sep = raw.indexOf(QLatin1Char('\t'));
+        const QString code = (sep >= 0 ? raw.left(sep) : raw).trimmed();
+        const QString name = (sep >= 0 ? raw.mid(sep + 1) : QString()).trimmed();
+        if (code.isEmpty()) {
+            continue;
+        }
+
+        const QString key = watchCodeKey(code);
+        if (seen.contains(key)) {
+            continue;
+        }
+        seen.insert(key);
+
+        out.push_back({code, name});
+    }
+
+    return out;
+}
+
+QStringList encodeWatchItems(const QVector<StockItem>& items) {
+    QStringList out;
+    out.reserve(items.size());
+    for (const StockItem& item : items) {
+        if (item.code.trimmed().isEmpty()) {
+            continue;
+        }
+        out.push_back(encodeWatchItem(item));
+    }
+    return out;
 }
 
 } // namespace
@@ -163,6 +395,117 @@ QString AppController::findDataYaml() const {
 #endif
 }
 
+bool AppController::isSectorCode(const QString& code) {
+    return !normalizeSectorCode(code).isEmpty();
+}
+
+QVector<StockItem> AppController::filterYamlStocks(
+    const QVector<StockItem>& loaded,
+    QStringList* ignoredCodes
+) const {
+    QVector<StockItem> out;
+    out.reserve(loaded.size());
+
+    QSet<QString> seen;
+    QStringList ignored;
+    for (const StockItem& item : loaded) {
+        const QString code = item.code.trimmed();
+        if (code.isEmpty()) {
+            continue;
+        }
+
+        if (isPredefinedIndexCode(code)) {
+            ignored.push_back(code);
+            continue;
+        }
+
+        const QString key = watchCodeKey(code);
+        if (seen.contains(key)) {
+            continue;
+        }
+        seen.insert(key);
+
+        out.push_back({code, item.name.trimmed()});
+    }
+
+    if (ignoredCodes) {
+        ignored.removeDuplicates();
+        *ignoredCodes = ignored;
+    }
+
+    return out;
+}
+
+QVector<StockItem> AppController::mergedWatchItems() const {
+    QVector<StockItem> out;
+    out.reserve(m_indexes.size() + m_sectors.size() + m_stocks.size());
+
+    QSet<QString> seen;
+    const auto appendUnique = [&out, &seen](const StockItem& item) {
+        const QString code = item.code.trimmed();
+        if (code.isEmpty()) {
+            return;
+        }
+        const QString key = watchCodeKey(code);
+        if (seen.contains(key)) {
+            return;
+        }
+        seen.insert(key);
+        out.push_back({code, item.name.trimmed()});
+    };
+
+    for (const StockItem& item : m_indexes) {
+        appendUnique(item);
+    }
+
+    for (const StockItem& item : m_sectors) {
+        const QString sectorCode = normalizeSectorCode(item.code);
+        if (sectorCode.isEmpty()) {
+            continue;
+        }
+        appendUnique({sectorCode, item.name});
+    }
+
+    for (const StockItem& item : m_stocks) {
+        appendUnique(item);
+    }
+
+    return out;
+}
+
+void AppController::loadExtraWatchItems() {
+    QSettings s("myStocks", "myStocks");
+
+    m_indexes = decodeWatchItems(s.value("watch/indexes").toStringList());
+
+    QVector<StockItem> decodedSectors = decodeWatchItems(s.value("watch/sectors").toStringList());
+    m_sectors.clear();
+    m_sectors.reserve(decodedSectors.size());
+
+    QSet<QString> sectorSeen;
+    for (const StockItem& sector : decodedSectors) {
+        const QString code = normalizeSectorCode(sector.code);
+        if (code.isEmpty()) {
+            continue;
+        }
+
+        const QString key = watchCodeKey(code);
+        if (sectorSeen.contains(key)) {
+            continue;
+        }
+        sectorSeen.insert(key);
+
+        m_sectors.push_back({code, sector.name.trimmed()});
+    }
+}
+
+void AppController::saveExtraWatchItems() const {
+    QSettings s("myStocks", "myStocks");
+    s.setValue("watch/indexes", encodeWatchItems(m_indexes));
+    s.setValue("watch/sectors", encodeWatchItems(m_sectors));
+    s.sync();
+}
+
 void AppController::toggleWindow() {
     if (!m_window) {
         return;
@@ -188,6 +531,8 @@ void AppController::openSettings() {
         SettingsDialog dlg(
             m_cfg,
             m_stocks,
+            m_indexes,
+            m_sectors,
             currentApiNamesByCode(),
             findDataYaml(),
             [this]() {
@@ -204,6 +549,9 @@ void AppController::openSettings() {
         accepted = (dlg.exec() == QDialog::Accepted);
         if (accepted) {
             updatedCfg = dlg.config();
+            m_indexes = dlg.selectedIndexes();
+            m_sectors = dlg.selectedSectors();
+            saveExtraWatchItems();
         }
     }
 
@@ -211,12 +559,25 @@ void AppController::openSettings() {
     {
         const QString dataPath = findDataYaml();
         if (!dataPath.isEmpty()) {
-            const QVector<StockItem> reloaded = ConfigManager::loadStocksFromYaml(dataPath);
-            if (!reloaded.isEmpty()) {
+            const QVector<StockItem> reloadedRaw = ConfigManager::loadStocksFromYaml(dataPath);
+            QStringList ignoredIndexes;
+            const QVector<StockItem> reloaded = filterYamlStocks(reloadedRaw, &ignoredIndexes);
+
+            if (!ignoredIndexes.isEmpty()) {
+                m_lastIgnoredYamlIndexCodes = ignoredIndexes;
+                QMessageBox::information(
+                    m_window,
+                    i18n::t("app.name", m_resolvedLanguage),
+                    i18n::t("settings.indexSector.ignoreYamlIndexFmt", m_resolvedLanguage)
+                        .arg(ignoredIndexes.join(QStringLiteral(", ")))
+                );
+            }
+
+            if (!reloadedRaw.isEmpty() || !ignoredIndexes.isEmpty()) {
                 m_stocks = reloaded;
                 m_apiNamesByCode.clear();
                 if (m_model) {
-                    m_model->setStocks(m_stocks);
+                    m_model->setStocks(mergedWatchItems());
                 }
             }
         }
@@ -224,9 +585,7 @@ void AppController::openSettings() {
 
     if (!accepted) {
         qInfo() << "Settings dialog canceled by user.";
-        if (m_provider) {
-            m_provider->fetchQuotes(m_stocks);
-        }
+        refreshQuotes(true);
         return;
     }
 
@@ -257,6 +616,7 @@ void AppController::openSettings() {
 
     m_model->setLanguage(m_resolvedLanguage);
     m_model->setConfig(m_cfg);
+    m_model->setStocks(mergedWatchItems());
 
     // Recreate the floating window so column visibility/order takes effect cleanly.
     m_window = new FloatingWindow(m_model);
@@ -300,8 +660,8 @@ void AppController::reloadStocksFromYaml() {
         return;
     }
 
-    const QVector<StockItem> loaded = ConfigManager::loadStocksFromYaml(dataPath);
-    if (loaded.isEmpty()) {
+    const QVector<StockItem> loadedRaw = ConfigManager::loadStocksFromYaml(dataPath);
+    if (loadedRaw.isEmpty()) {
         qWarning() << "Reload stocks failed: no valid stocks in" << dataPath;
         if (m_tray) {
             m_tray->showMessage(
@@ -314,7 +674,11 @@ void AppController::reloadStocksFromYaml() {
         return;
     }
 
+    QStringList ignoredIndexes;
+    const QVector<StockItem> loaded = filterYamlStocks(loadedRaw, &ignoredIndexes);
+
     m_stocks = loaded;
+    m_lastIgnoredYamlIndexCodes = ignoredIndexes;
     qInfo() << "Reload stocks success count=" << m_stocks.size() << "path=" << dataPath;
     m_apiNamesByCode.clear();
     m_probeDate = QDate();
@@ -322,13 +686,11 @@ void AppController::reloadStocksFromYaml() {
     m_probeTradingDay = true;
 
     if (m_model) {
-        m_model->setStocks(m_stocks);
+        m_model->setStocks(mergedWatchItems());
     }
 
-    if (m_provider) {
-        // Manual reload should refresh immediately regardless of polling window.
-        m_provider->fetchQuotes(m_stocks);
-    }
+    // Manual reload should refresh immediately regardless of polling window.
+    refreshQuotes(true);
 
     if (m_window && m_window->isVisible() && m_cfg.floatingWindowAlwaysOnTop) {
         m_window->raise();
@@ -341,11 +703,21 @@ void AppController::reloadStocksFromYaml() {
             QSystemTrayIcon::Information,
             2000
         );
+
+        if (!ignoredIndexes.isEmpty()) {
+            m_tray->showMessage(
+                i18n::t("app.name", m_resolvedLanguage),
+                i18n::t("settings.indexSector.ignoreYamlIndexFmt", m_resolvedLanguage)
+                    .arg(ignoredIndexes.join(QStringLiteral(", "))),
+                QSystemTrayIcon::Warning,
+                5000
+            );
+        }
     }
 }
 
 void AppController::refreshQuotes(bool force) {
-    if (!m_provider) {
+    if (!m_provider && !m_sectorProvider) {
         return;
     }
 
@@ -353,7 +725,63 @@ void AppController::refreshQuotes(bool force) {
         return;
     }
 
-    m_provider->fetchQuotes(m_stocks);
+    const QVector<StockItem> merged = mergedWatchItems();
+
+    // EastMoney source now supports mixed batch quotes (index + sector + stock)
+    // via ulist endpoint, so avoid splitting into separate requests.
+    if (m_cfg.apiSource == QStringLiteral("eastmoney")) {
+        QVector<StockItem> allItems;
+        allItems.reserve(merged.size());
+        for (const StockItem& item : merged) {
+            const QString sectorCode = normalizeSectorCode(item.code);
+            if (!sectorCode.isEmpty()) {
+                allItems.push_back({sectorCode, item.name});
+                continue;
+            }
+
+            const QString hkIndexCode = normalizeHongKongIndexCode(item.code);
+            if (!hkIndexCode.isEmpty()) {
+                allItems.push_back({hkIndexCode, item.name});
+                continue;
+            }
+
+            allItems.push_back(item);
+        }
+
+        if (m_provider && !allItems.isEmpty()) {
+            m_provider->fetchQuotes(allItems);
+        }
+        return;
+    }
+
+    QVector<StockItem> marketItems;
+    QVector<StockItem> sectorItems;
+    marketItems.reserve(merged.size());
+    sectorItems.reserve(merged.size());
+
+    for (const StockItem& item : merged) {
+        const QString sectorCode = normalizeSectorCode(item.code);
+        if (!sectorCode.isEmpty()) {
+            sectorItems.push_back({sectorCode, item.name});
+            continue;
+        }
+
+        const QString hkIndexCode = normalizeHongKongIndexCode(item.code);
+        if (!hkIndexCode.isEmpty()) {
+            // Hang Seng family indexes should be fetched with EastMoney sector batch.
+            sectorItems.push_back({hkIndexCode, item.name});
+            continue;
+        }
+
+        marketItems.push_back(item);
+    }
+
+    if (m_provider && !marketItems.isEmpty()) {
+        m_provider->fetchQuotes(marketItems);
+    }
+    if (m_sectorProvider && !sectorItems.isEmpty()) {
+        m_sectorProvider->fetchQuotes(sectorItems);
+    }
 }
 
 void AppController::onProviderError(const QString& message) {
@@ -476,6 +904,11 @@ void AppController::rebuildProvider() {
         m_provider->deleteLater();
         m_provider = nullptr;
     }
+    if (m_sectorProvider) {
+        disconnect(m_sectorProvider, nullptr, this, nullptr);
+        m_sectorProvider->deleteLater();
+        m_sectorProvider = nullptr;
+    }
 
     if (m_cfg.apiSource == "xtick") {
         m_provider = new XTickQuoteProvider(m_cfg.xtickToken, this);
@@ -493,6 +926,15 @@ void AppController::rebuildProvider() {
 
     m_provider->setLanguage(m_resolvedLanguage);
     m_provider->applyConfig(m_cfg);
+
+    // Sector(BKxxxx) quotes are always fetched from EastMoney so they can work
+    // even when the primary provider is Tencent/Sina/XTick.
+    // When primary source is EastMoney, m_provider already fetches everything in batch.
+    if (m_cfg.apiSource != "eastmoney") {
+        m_sectorProvider = new EastMoneyQuoteProvider(this);
+        m_sectorProvider->setLanguage(m_resolvedLanguage);
+        m_sectorProvider->applyConfig(m_cfg);
+    }
 
     m_apiNamesByCode.clear();
     const QString sourceAtConnect = m_cfg.apiSource;
@@ -518,6 +960,26 @@ void AppController::rebuildProvider() {
     connect(m_provider, &IQuoteProvider::error, this, [this](const QString& msg) {
         onProviderError(msg);
     });
+
+    if (m_sectorProvider) {
+        connect(m_sectorProvider, &IQuoteProvider::quotesReady, this, [this](const QVector<QuoteItem>& quotes) {
+            for (const QuoteItem& q : quotes) {
+                const QString code = q.code.trimmed();
+                const QString name = q.name.trimmed();
+                if (code.isEmpty() || name.isEmpty()) {
+                    continue;
+                }
+                m_apiNamesByCode.insert(code, name);
+            }
+        });
+        connect(m_sectorProvider, &IQuoteProvider::quotesReady, m_model, &QuoteModel::updateQuotes);
+        connect(m_sectorProvider, &IQuoteProvider::quotesReady, this, [this](const QVector<QuoteItem>&) {
+            updateTrayTooltip();
+        });
+        connect(m_sectorProvider, &IQuoteProvider::error, this, [this](const QString& msg) {
+            onProviderError(msg);
+        });
+    }
 }
 
 QHash<QString, QString> AppController::currentApiNamesByCode() const {
@@ -785,7 +1247,8 @@ bool AppController::shouldPollNow() {
 }
 
 bool AppController::hasHongKongStocks() const {
-    for (const StockItem& stock : m_stocks) {
+    const QVector<StockItem> merged = mergedWatchItems();
+    for (const StockItem& stock : merged) {
         if (isHongKongCode(stock.code)) {
             return true;
         }

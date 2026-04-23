@@ -8,6 +8,7 @@
 #include <QNetworkAccessManager>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 class FloatingWindow;
@@ -37,6 +38,14 @@ private:
     void rebuildProvider();
     int writeApiNamesToDataYaml();
     QHash<QString, QString> currentApiNamesByCode() const;
+    void loadExtraWatchItems();
+    void saveExtraWatchItems() const;
+    QVector<StockItem> mergedWatchItems() const;
+    QVector<StockItem> filterYamlStocks(
+        const QVector<StockItem>& loaded,
+        QStringList* ignoredCodes = nullptr
+    ) const;
+    static bool isSectorCode(const QString& code);
     bool shouldPollNow();
     bool hasHongKongStocks() const;
     bool isWithinTradingSession(const QDateTime& bjNow) const;
@@ -49,13 +58,17 @@ private:
     AppConfig m_cfg;
     QString m_resolvedLanguage;
     QVector<StockItem> m_stocks;
+    QVector<StockItem> m_indexes;
+    QVector<StockItem> m_sectors;
     QHash<QString, QString> m_apiNamesByCode;
+    QStringList m_lastIgnoredYamlIndexCodes;
     QString m_lastTrayErrorMessage;
     QDateTime m_lastTrayErrorAt;
 
     QuoteModel* m_model = nullptr;
     FloatingWindow* m_window = nullptr;
     IQuoteProvider* m_provider = nullptr;
+    IQuoteProvider* m_sectorProvider = nullptr;
 
     QTimer* m_timer = nullptr;
     QSystemTrayIcon* m_tray = nullptr;
