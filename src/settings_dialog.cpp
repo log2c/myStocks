@@ -140,7 +140,9 @@ public:
         setSelectionMode(QAbstractItemView::SingleSelection);
         setDragDropMode(QAbstractItemView::NoDragDrop);
         setEditTriggers(QAbstractItemView::NoEditTriggers);
+        setAlternatingRowColors(true);
         verticalHeader()->setVisible(false);
+        verticalHeader()->setDefaultSectionSize(24);
         horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
         horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
         horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
@@ -433,6 +435,27 @@ bool isTokenQuotaExceeded(const QString& message) {
     return msg.contains(QStringLiteral("超出最大请求次数"), Qt::CaseInsensitive);
 }
 
+void applyCompactFormLayout(QFormLayout* form) {
+    if (!form) {
+        return;
+    }
+
+    form->setContentsMargins(10, 8, 10, 8);
+    form->setHorizontalSpacing(10);
+    form->setVerticalSpacing(6);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    form->setFormAlignment(Qt::AlignTop);
+}
+
+void addCompactFormRow(QFormLayout* form, QWidget* widget) {
+    if (!form || !widget) {
+        return;
+    }
+
+    form->addRow(QString(), widget);
+}
+
 } // namespace
 
 SettingsDialog::SettingsDialog(
@@ -459,7 +482,11 @@ SettingsDialog::SettingsDialog(
     resize(600, 560);
 
     QVBoxLayout* root = new QVBoxLayout(this);
+    root->setContentsMargins(10, 10, 10, 8);
+    root->setSpacing(8);
+
     QTabWidget* tabs = new QTabWidget(this);
+    tabs->setDocumentMode(true);
     tabs->addTab(buildGeneralTab(), trText("settings.tab.general"));
     tabs->addTab(buildNetworkTab(), trText("settings.tab.network"));
     tabs->addTab(buildDisplayTab(), trText("settings.tab.display"));
@@ -685,6 +712,7 @@ QColor SettingsDialog::buttonColor(QPushButton* btn) {
 QWidget* SettingsDialog::buildGeneralTab() {
     QWidget* w = new QWidget(this);
     QFormLayout* form = new QFormLayout(w);
+    applyCompactFormLayout(form);
 
     m_pollSpin = new QSpinBox(w);
     m_pollSpin->setRange(500, 60000);
@@ -729,7 +757,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
     QWidget* hotkeyWidget = new QWidget(w);
     QHBoxLayout* hotkeyLayout = new QHBoxLayout(hotkeyWidget);
     hotkeyLayout->setContentsMargins(0, 0, 0, 0);
-    hotkeyLayout->setSpacing(6);
+    hotkeyLayout->setSpacing(5);
     hotkeyLayout->addWidget(m_hotkeyEdit, 1);
     hotkeyLayout->addWidget(m_hotkeyIndicator);
     hotkeyLayout->addWidget(m_hotkeyClearBtn);
@@ -759,7 +787,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
     m_tokenRowWidget = new QWidget(w);
     QHBoxLayout* tokenLayout = new QHBoxLayout(m_tokenRowWidget);
     tokenLayout->setContentsMargins(0, 0, 0, 0);
-    tokenLayout->setSpacing(6);
+    tokenLayout->setSpacing(5);
     tokenLayout->addWidget(m_tokenEdit, 1);
     tokenLayout->addWidget(m_tokenCheckBtn);
 
@@ -928,7 +956,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
     QWidget* transparentOpacityWidget = new QWidget(w);
     QHBoxLayout* transparentOpacityLayout = new QHBoxLayout(transparentOpacityWidget);
     transparentOpacityLayout->setContentsMargins(0, 0, 0, 0);
-    transparentOpacityLayout->setSpacing(8);
+    transparentOpacityLayout->setSpacing(6);
     transparentOpacityLayout->addWidget(m_transparentOpacitySlider, 1);
     transparentOpacityLayout->addWidget(m_transparentOpacityLabel);
 
@@ -990,7 +1018,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
 
     form->addRow(trText("settings.general.poll"), m_pollSpin);
     form->addRow(trText("settings.general.hotkey"), hotkeyWidget);
-    form->addRow(m_startupShowFloatingWindowCheck);
+    addCompactFormRow(form, m_startupShowFloatingWindowCheck);
     form->addRow(trText("settings.general.apiSource"), m_sourceCombo);
     form->addRow(trText("settings.general.token"), m_tokenRowWidget);
     m_tokenRowLabel = form->labelForField(m_tokenRowWidget);
@@ -1017,7 +1045,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
     );
     syncTokenRowVisibility();
 
-    form->addRow(m_transparentBackgroundCheck);
+    addCompactFormRow(form, m_transparentBackgroundCheck);
     form->addRow(trText("settings.general.transparentOpacity"), transparentOpacityWidget);
     form->addRow(trText("settings.general.language"), m_languageCombo);
     form->addRow(trText("settings.general.background"), m_bgBtn);
@@ -1025,7 +1053,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
     form->addRow(trText("settings.general.up"), m_upBtn);
     form->addRow(trText("settings.general.down"), m_downBtn);
     form->addRow(trText("settings.general.flat"), m_flatBtn);
-    form->addRow(resetColorsButton);
+    addCompactFormRow(form, resetColorsButton);
 
     return w;
 }
@@ -1033,6 +1061,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
 QWidget* SettingsDialog::buildNetworkTab() {
     QWidget* w = new QWidget(this);
     QFormLayout* form = new QFormLayout(w);
+    applyCompactFormLayout(form);
 
     m_userAgentEdit = new QLineEdit(m_cfg.userAgent, w);
     if (m_userAgentEdit->text().trimmed().isEmpty()) {
@@ -1072,15 +1101,35 @@ QWidget* SettingsDialog::buildNetworkTab() {
 
 QWidget* SettingsDialog::buildDisplayTab() {
     QWidget* w = new QWidget(this);
-    QFormLayout* form = new QFormLayout(w);
+    QVBoxLayout* root = new QVBoxLayout(w);
+    root->setContentsMargins(6, 6, 6, 6);
+    root->setSpacing(6);
+
+    QGroupBox* windowGroup = new QGroupBox(trText("settings.display.groupWindow"), w);
+    QFormLayout* windowForm = new QFormLayout(windowGroup);
+    applyCompactFormLayout(windowForm);
+    windowForm->setContentsMargins(6, 6, 6, 6);
+    windowForm->setVerticalSpacing(5);
+
+    QGroupBox* interactionGroup = new QGroupBox(trText("settings.display.groupInteraction"), w);
+    QFormLayout* interactionForm = new QFormLayout(interactionGroup);
+    applyCompactFormLayout(interactionForm);
+    interactionForm->setContentsMargins(6, 6, 6, 6);
+    interactionForm->setVerticalSpacing(5);
+
+    QGroupBox* columnsGroup = new QGroupBox(trText("settings.display.groupColumns"), w);
+    QFormLayout* columnsForm = new QFormLayout(columnsGroup);
+    applyCompactFormLayout(columnsForm);
+    columnsForm->setContentsMargins(6, 6, 6, 6);
+    columnsForm->setVerticalSpacing(5);
 
     m_floatingTopMostCheck = new QCheckBox(trText("settings.display.alwaysOnTop"), w);
     m_floatingTopMostCheck->setChecked(m_cfg.floatingWindowAlwaysOnTop);
-    form->addRow(m_floatingTopMostCheck);
+    addCompactFormRow(windowForm, m_floatingTopMostCheck);
 
     m_showHeaderCheck = new QCheckBox(trText("settings.display.showHeader"), w);
     m_showHeaderCheck->setChecked(m_cfg.showHeader);
-    form->addRow(m_showHeaderCheck);
+    addCompactFormRow(windowForm, m_showHeaderCheck);
 
     m_showGridCheck = new QCheckBox(trText("settings.display.showGrid"), w);
     m_showGridCheck->setChecked(m_cfg.showGrid);
@@ -1089,12 +1138,12 @@ QWidget* SettingsDialog::buildDisplayTab() {
     connect(m_showGridCheck, &QCheckBox::toggled, this, [this](bool checked) {
         m_gridColorBtn->setEnabled(checked);
     });
-    form->addRow(m_showGridCheck);
-    form->addRow(trText("settings.display.gridColor"), m_gridColorBtn);
+    addCompactFormRow(windowForm, m_showGridCheck);
+    windowForm->addRow(trText("settings.display.gridColor"), m_gridColorBtn);
 
     m_simpleModeCheck = new QCheckBox(trText("settings.display.simpleMode"), w);
     m_simpleModeCheck->setChecked(m_cfg.simpleModeEnabled);
-    form->addRow(m_simpleModeCheck);
+    addCompactFormRow(interactionForm, m_simpleModeCheck);
 
     m_blinkReminderCheck = new QCheckBox(trText("settings.display.blinkReminder"), w);
     m_blinkReminderCheck->setChecked(m_cfg.blinkReminderEnabled);
@@ -1102,14 +1151,16 @@ QWidget* SettingsDialog::buildDisplayTab() {
     connect(m_simpleModeCheck, &QCheckBox::toggled, this, [this](bool checked) {
         m_blinkReminderCheck->setEnabled(checked);
     });
-    form->addRow(m_blinkReminderCheck);
+    addCompactFormRow(interactionForm, m_blinkReminderCheck);
 
     m_trayTooltipCheck = new QCheckBox(trText("settings.display.trayTooltip"), w);
     m_trayTooltipCheck->setChecked(m_cfg.trayTooltipEnabled);
-    form->addRow(m_trayTooltipCheck);
+    addCompactFormRow(interactionForm, m_trayTooltipCheck);
 
     m_hoverReadingCheck = new QCheckBox(trText("settings.display.hoverReading"), w);
     m_hoverReadingCheck->setChecked(m_cfg.hoverReadingEnabled);
+    addCompactFormRow(interactionForm, m_hoverReadingCheck);
+
     m_hoverReadingDelaySpin = new QDoubleSpinBox(w);
     m_hoverReadingDelaySpin->setRange(0.1, 60.0);
     m_hoverReadingDelaySpin->setSingleStep(0.1);
@@ -1141,10 +1192,18 @@ QWidget* SettingsDialog::buildDisplayTab() {
     );
     m_hoverReadingTransparentBackgroundCheck->setEnabled(m_cfg.hoverReadingEnabled);
 
-    QLabel* hoverReadingDelayLabel = new QLabel(trText("settings.display.hoverReadingDelay"), w);
-    QLabel* hoverReadingModeLabel = new QLabel(trText("settings.display.hoverReadingMode"), w);
-    hoverReadingDelayLabel->setEnabled(m_cfg.hoverReadingEnabled);
-    hoverReadingModeLabel->setEnabled(m_cfg.hoverReadingEnabled);
+    interactionForm->addRow(trText("settings.display.hoverReadingDelay"), m_hoverReadingDelaySpin);
+    interactionForm->addRow(trText("settings.display.hoverReadingMode"), m_hoverReadingModeCombo);
+    addCompactFormRow(interactionForm, m_hoverReadingTransparentBackgroundCheck);
+
+    QWidget* hoverReadingDelayLabel = interactionForm->labelForField(m_hoverReadingDelaySpin);
+    QWidget* hoverReadingModeLabel = interactionForm->labelForField(m_hoverReadingModeCombo);
+    if (hoverReadingDelayLabel) {
+        hoverReadingDelayLabel->setEnabled(m_cfg.hoverReadingEnabled);
+    }
+    if (hoverReadingModeLabel) {
+        hoverReadingModeLabel->setEnabled(m_cfg.hoverReadingEnabled);
+    }
 
     connect(m_hoverReadingCheck, &QCheckBox::toggled, this, [this](bool checked) {
         m_hoverReadingDelaySpin->setEnabled(checked);
@@ -1155,23 +1214,16 @@ QWidget* SettingsDialog::buildDisplayTab() {
             m_hoverReadingTransparentBackgroundCheck->setEnabled(checked);
         }
     });
-    connect(m_hoverReadingCheck, &QCheckBox::toggled, hoverReadingDelayLabel, &QLabel::setEnabled);
-    connect(m_hoverReadingCheck, &QCheckBox::toggled, hoverReadingModeLabel, &QLabel::setEnabled);
-
-    {
-        QWidget* hoverReadingWidget = new QWidget(w);
-        QHBoxLayout* hoverReadingLayout = new QHBoxLayout(hoverReadingWidget);
-        hoverReadingLayout->setContentsMargins(0, 0, 0, 0);
-        hoverReadingLayout->setSpacing(8);
-        hoverReadingLayout->addWidget(m_hoverReadingCheck);
-        hoverReadingLayout->addStretch(1);
-        hoverReadingLayout->addWidget(hoverReadingDelayLabel);
-        hoverReadingLayout->addWidget(m_hoverReadingDelaySpin);
-        hoverReadingLayout->addWidget(hoverReadingModeLabel);
-        hoverReadingLayout->addWidget(m_hoverReadingModeCombo);
-        hoverReadingLayout->addWidget(m_hoverReadingTransparentBackgroundCheck);
-        form->addRow(hoverReadingWidget);
-    }
+    connect(m_hoverReadingCheck, &QCheckBox::toggled, this, [hoverReadingDelayLabel](bool checked) {
+        if (hoverReadingDelayLabel) {
+            hoverReadingDelayLabel->setEnabled(checked);
+        }
+    });
+    connect(m_hoverReadingCheck, &QCheckBox::toggled, this, [hoverReadingModeLabel](bool checked) {
+        if (hoverReadingModeLabel) {
+            hoverReadingModeLabel->setEnabled(checked);
+        }
+    });
 
     const QStringList names = i18n::columnNames(m_uiLanguage);
     const QVector<int> columnOrder = normalizedColumnOrder(m_cfg.columnOrder);
@@ -1198,11 +1250,11 @@ QWidget* SettingsDialog::buildDisplayTab() {
         item->setCheckState(m_cfg.visibleColumns.value(logical, true) ? Qt::Checked : Qt::Unchecked);
     }
 
-    form->addRow(trText("settings.display.columns"), m_columnList);
+    columnsForm->addRow(trText("settings.display.columns"), m_columnList);
 
     QLabel* columnsHint = new QLabel(trText("settings.display.columnsHint"), w);
     columnsHint->setWordWrap(true);
-    form->addRow(columnsHint);
+    addCompactFormRow(columnsForm, columnsHint);
 
     m_columnMaxWidthSpins.resize(ColCount);
 
@@ -1216,11 +1268,15 @@ QWidget* SettingsDialog::buildDisplayTab() {
         m_columnMaxWidthSpins[i]->setSuffix(maxSuffix);
         m_columnMaxWidthSpins[i]->setValue(qMax(0, m_cfg.columnMaxWidths.value(i, 0)));
 
-        form->addRow(
+        columnsForm->addRow(
             trText("settings.display.columnMaxNameFmt").arg(names.value(i)),
             m_columnMaxWidthSpins[i]
         );
     }
+
+    root->addWidget(windowGroup);
+    root->addWidget(interactionGroup);
+    root->addWidget(columnsGroup, 1);
 
     return w;
 }
@@ -1228,6 +1284,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
 QWidget* SettingsDialog::buildOtherTab() {
     QWidget* w = new QWidget(this);
     QFormLayout* form = new QFormLayout(w);
+    applyCompactFormLayout(form);
 
     m_debugIgnoreTradingTimeCheck = new QCheckBox(
         trText("settings.general.debugIgnoreTradingTime"),
@@ -1278,11 +1335,11 @@ QWidget* SettingsDialog::buildOtherTab() {
 
     m_logLevelCombo->setEnabled(m_logEnabledCheck->isChecked());
 
-    form->addRow(m_debugIgnoreTradingTimeCheck);
-    form->addRow(m_logEnabledCheck);
+    addCompactFormRow(form, m_debugIgnoreTradingTimeCheck);
+    addCompactFormRow(form, m_logEnabledCheck);
     form->addRow(trText("settings.other.logLevel"), m_logLevelCombo);
-    form->addRow(m_openLogDirButton);
-    form->addRow(m_writeStockNamesButton);
+    addCompactFormRow(form, m_openLogDirButton);
+    addCompactFormRow(form, m_writeStockNamesButton);
 
     return w;
 }
@@ -1290,16 +1347,17 @@ QWidget* SettingsDialog::buildOtherTab() {
 QWidget* SettingsDialog::buildStocksTab() {
     QWidget* w = new QWidget(this);
     QVBoxLayout* vbox = new QVBoxLayout(w);
-    vbox->setSpacing(6);
-    vbox->setContentsMargins(8, 8, 8, 8);
+    vbox->setSpacing(5);
+    vbox->setContentsMargins(6, 6, 6, 6);
 
     // --- Search row ---
     QWidget* searchRow = new QWidget(w);
     QHBoxLayout* searchLayout = new QHBoxLayout(searchRow);
     searchLayout->setContentsMargins(0, 0, 0, 0);
-    searchLayout->setSpacing(6);
+    searchLayout->setSpacing(5);
 
     m_stockMarketCombo = new QComboBox(searchRow);
+    m_stockMarketCombo->setFixedWidth(98);
     m_stockMarketCombo->addItem(trText("settings.stocks.market1"), QStringLiteral("a"));
     m_stockMarketCombo->addItem(trText("settings.stocks.market2"), QStringLiteral("hk"));
     m_stockMarketCombo->addItem(trText("settings.stocks.market6"), QStringLiteral("etf"));
@@ -1308,6 +1366,7 @@ QWidget* SettingsDialog::buildStocksTab() {
     m_stockSearchEdit->setPlaceholderText(trText("settings.stocks.searchPlaceholder"));
 
     m_stockSearchBtn = new QPushButton(trText("settings.stocks.search"), searchRow);
+    m_stockSearchBtn->setMinimumWidth(76);
 
     searchLayout->addWidget(m_stockMarketCombo);
     searchLayout->addWidget(m_stockSearchEdit, 1);
@@ -1353,17 +1412,17 @@ QWidget* SettingsDialog::buildStocksTab() {
     QWidget* tableArea = new QWidget(w);
     QHBoxLayout* tableAreaLayout = new QHBoxLayout(tableArea);
     tableAreaLayout->setContentsMargins(0, 0, 0, 0);
-    tableAreaLayout->setSpacing(4);
+    tableAreaLayout->setSpacing(6);
     tableAreaLayout->addWidget(m_stockTable, 1);
 
     QWidget* orderBtnCol = new QWidget(tableArea);
     QVBoxLayout* orderBtnLayout = new QVBoxLayout(orderBtnCol);
     orderBtnLayout->setContentsMargins(0, 0, 0, 0);
-    orderBtnLayout->setSpacing(4);
+    orderBtnLayout->setSpacing(5);
 
     auto makeOrderBtn = [&](const QString& label) -> QPushButton* {
         QPushButton* btn = new QPushButton(label, orderBtnCol);
-        btn->setFixedWidth(60);
+        btn->setFixedWidth(56);
         return btn;
     };
 
@@ -1386,8 +1445,11 @@ QWidget* SettingsDialog::buildStocksTab() {
     QWidget* btnRow = new QWidget(w);
     QHBoxLayout* btnLayout = new QHBoxLayout(btnRow);
     btnLayout->setContentsMargins(0, 0, 0, 0);
+    btnLayout->setSpacing(6);
     QPushButton* saveBtn = new QPushButton(trText("settings.stocks.save"), btnRow);
     QPushButton* resetBtn = new QPushButton(trText("settings.stocks.reset"), btnRow);
+    saveBtn->setMinimumWidth(82);
+    resetBtn->setMinimumWidth(82);
     btnLayout->addStretch();
     btnLayout->addWidget(saveBtn);
     btnLayout->addWidget(resetBtn);
@@ -1562,14 +1624,14 @@ QWidget* SettingsDialog::buildStocksTab() {
 QWidget* SettingsDialog::buildIndexSectorTab() {
     QWidget* w = new QWidget(this);
     QVBoxLayout* root = new QVBoxLayout(w);
-    root->setSpacing(8);
-    root->setContentsMargins(8, 8, 8, 8);
+    root->setSpacing(6);
+    root->setContentsMargins(6, 6, 6, 6);
 
     // --- Index section ---
     QGroupBox* indexGroup = new QGroupBox(trText("settings.indexSector.indexGroup"), w);
     QVBoxLayout* indexLayout = new QVBoxLayout(indexGroup);
-    indexLayout->setContentsMargins(8, 8, 8, 8);
-    indexLayout->setSpacing(6);
+    indexLayout->setContentsMargins(6, 6, 6, 6);
+    indexLayout->setSpacing(5);
 
     QLabel* indexHint = new QLabel(trText("settings.indexSector.indexHint"), indexGroup);
     indexHint->setWordWrap(true);
@@ -1581,7 +1643,7 @@ QWidget* SettingsDialog::buildIndexSectorTab() {
     m_indexList->setDragEnabled(true);
     m_indexList->setAcceptDrops(true);
     m_indexList->setDropIndicatorShown(true);
-    m_indexList->setMinimumHeight(170);
+    m_indexList->setMinimumHeight(160);
 
     QSet<QString> checkedKeys;
     QStringList orderedKeys;
@@ -1633,8 +1695,8 @@ QWidget* SettingsDialog::buildIndexSectorTab() {
     // --- Sector section ---
     QGroupBox* sectorGroup = new QGroupBox(trText("settings.indexSector.sectorGroup"), w);
     QVBoxLayout* sectorLayout = new QVBoxLayout(sectorGroup);
-    sectorLayout->setContentsMargins(8, 8, 8, 8);
-    sectorLayout->setSpacing(6);
+    sectorLayout->setContentsMargins(6, 6, 6, 6);
+    sectorLayout->setSpacing(5);
 
     QLabel* sectorHint = new QLabel(trText("settings.indexSector.sectorHint"), sectorGroup);
     sectorHint->setWordWrap(true);
@@ -1643,11 +1705,12 @@ QWidget* SettingsDialog::buildIndexSectorTab() {
     QWidget* searchRow = new QWidget(sectorGroup);
     QHBoxLayout* searchLayout = new QHBoxLayout(searchRow);
     searchLayout->setContentsMargins(0, 0, 0, 0);
-    searchLayout->setSpacing(6);
+    searchLayout->setSpacing(5);
 
     m_sectorSearchEdit = new QLineEdit(searchRow);
     m_sectorSearchEdit->setPlaceholderText(trText("settings.indexSector.sectorSearchPlaceholder"));
     m_sectorSearchBtn = new QPushButton(trText("settings.stocks.search"), searchRow);
+    m_sectorSearchBtn->setMinimumWidth(76);
 
     searchLayout->addWidget(m_sectorSearchEdit, 1);
     searchLayout->addWidget(m_sectorSearchBtn);
@@ -1690,17 +1753,17 @@ QWidget* SettingsDialog::buildIndexSectorTab() {
     QWidget* tableArea = new QWidget(sectorGroup);
     QHBoxLayout* tableAreaLayout = new QHBoxLayout(tableArea);
     tableAreaLayout->setContentsMargins(0, 0, 0, 0);
-    tableAreaLayout->setSpacing(4);
+    tableAreaLayout->setSpacing(6);
     tableAreaLayout->addWidget(m_sectorTable, 1);
 
     QWidget* orderBtnCol = new QWidget(tableArea);
     QVBoxLayout* orderBtnLayout = new QVBoxLayout(orderBtnCol);
     orderBtnLayout->setContentsMargins(0, 0, 0, 0);
-    orderBtnLayout->setSpacing(4);
+    orderBtnLayout->setSpacing(5);
 
     auto makeOrderBtn = [&](const QString& label) -> QPushButton* {
         QPushButton* btn = new QPushButton(label, orderBtnCol);
-        btn->setFixedWidth(60);
+        btn->setFixedWidth(56);
         return btn;
     };
 
