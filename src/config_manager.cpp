@@ -4,11 +4,15 @@
 #include "i18n.h"
 
 #include <QDebug>
+#include <QDir>
 #include <QFile>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
 #include <QSettings>
+#include <QStandardPaths>
+
+#include <memory>
 
 namespace {
 
@@ -48,7 +52,119 @@ QString settingsStatusToString(QSettings::Status status) {
     return QStringLiteral("unknown");
 }
 
+bool shouldUseCacheBackedSettings() {
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    return true;
+#else
+    return false;
+#endif
+}
+
+QString fallbackCacheDirPath() {
+#if defined(Q_OS_WIN)
+    const QString localAppData = qEnvironmentVariable("LOCALAPPDATA").trimmed();
+    if (!localAppData.isEmpty()) {
+        return QDir::cleanPath(QDir(localAppData).filePath("myStocks/cache"));
+    }
+    return {};
+#elif defined(Q_OS_MACOS)
+    return QDir::cleanPath(QDir::homePath() + "/Library/Caches/myStocks");
+#else
+    return QDir::cleanPath(QDir::homePath() + "/.cache/myStocks");
+#endif
+}
+
+QString resolvedSettingsCacheDirPath() {
+    QString cacheDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation).trimmed();
+    if (cacheDir.isEmpty()) {
+        cacheDir = fallbackCacheDirPath();
+    }
+
+    if (cacheDir.isEmpty()) {
+        return {};
+    }
+
+    return QDir::cleanPath(cacheDir);
+}
+
+std::unique_ptr<QSettings> createAppSettings() {
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    ConfigManager::migrateSettingsToCacheIfNeeded();
+    const QString settingsPath = ConfigManager::appSettingsFilePath();
+    if (!settingsPath.isEmpty()) {
+        return std::make_unique<QSettings>(settingsPath, QSettings::IniFormat);
+    }
+#endif
+
+    return std::make_unique<QSettings>("myStocks", "myStocks");
+}
+
 } // namespace
+
+QString ConfigManager::appSettingsFilePath() {
+    if (!shouldUseCacheBackedSettings()) {
+        return {};
+    }
+
+    const QString cacheDir = resolvedSettingsCacheDirPath();
+    if (cacheDir.isEmpty()) {
+        qWarning() << "ConfigManager::appSettingsFilePath cache dir is empty.";
+        return {};
+    }
+
+    if (!QDir().mkpath(cacheDir)) {
+        qWarning() << "ConfigManager::appSettingsFilePath failed to create dir" << cacheDir;
+        return {};
+    }
+
+    return QDir(cacheDir).filePath("settings.ini");
+}
+
+void ConfigManager::migrateSettingsToCacheIfNeeded() {
+    if (!shouldUseCacheBackedSettings()) {
+        return;
+    }
+
+    static bool checked = false;
+    if (checked) {
+        return;
+    }
+    checked = true;
+
+    const QString targetPath = appSettingsFilePath();
+    if (targetPath.isEmpty()) {
+        return;
+    }
+
+    QSettings cacheSettings(targetPath, QSettings::IniFormat);
+    if (!cacheSettings.allKeys().isEmpty()) {
+        return;
+    }
+
+    QSettings legacySettings("myStocks", "myStocks");
+    const QStringList legacyKeys = legacySettings.allKeys();
+    if (legacyKeys.isEmpty()) {
+        return;
+    }
+
+    qInfo() << "ConfigManager migrate settings to cache file"
+            << targetPath
+            << "keys=" << legacyKeys.size();
+
+    for (const QString& key : legacyKeys) {
+        cacheSettings.setValue(key, legacySettings.value(key));
+    }
+
+    cacheSettings.sync();
+    const QSettings::Status status = cacheSettings.status();
+    if (status != QSettings::NoError) {
+        qWarning() << "ConfigManager migrate settings failed status="
+                   << settingsStatusToString(status);
+        return;
+    }
+
+    qInfo() << "ConfigManager migrate settings success path=" << targetPath;
+}
 
 QVector<StockItem> ConfigManager::loadStocksFromYaml(const QString& filePath) {
     QVector<StockItem> out;
@@ -152,7 +268,8 @@ bool ConfigManager::saveStocksToYaml(const QString& filePath, const QVector<Stoc
 
 AppConfig ConfigManager::loadConfig() {
     AppConfig cfg;
-    QSettings s("myStocks", "myStocks");
+    std::unique_ptr<QSettings> settings = createAppSettings();
+    QSettings& s = *settings;
 
     cfg.pollMs = s.value("general/pollMs", cfg.pollMs).toInt();
     cfg.opacity = s.value("general/opacity", cfg.opacity).toDouble();
@@ -277,7 +394,8 @@ AppConfig ConfigManager::loadConfig() {
 }
 
 void ConfigManager::saveConfig(const AppConfig& cfg) {
-    QSettings s("myStocks", "myStocks");
+    std::unique_ptr<QSettings> settings = createAppSettings();
+    QSettings& s = *settings;
 
         qInfo() << "ConfigManager::saveConfig begin"
             << "apiSource=" << cfg.apiSource

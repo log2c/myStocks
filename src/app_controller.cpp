@@ -32,6 +32,8 @@
 #include <QTimer>
 #include <QTimeZone>
 
+#include <memory>
+
 AppController::AppController(QObject* parent)
     : QObject(parent) {
     m_cfg = ConfigManager::loadConfig();
@@ -474,7 +476,18 @@ QVector<StockItem> AppController::mergedWatchItems() const {
 }
 
 void AppController::loadExtraWatchItems() {
-    QSettings s("myStocks", "myStocks");
+    std::unique_ptr<QSettings> settings;
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    ConfigManager::migrateSettingsToCacheIfNeeded();
+    const QString settingsPath = ConfigManager::appSettingsFilePath();
+    if (!settingsPath.isEmpty()) {
+        settings = std::make_unique<QSettings>(settingsPath, QSettings::IniFormat);
+    }
+#endif
+    if (!settings) {
+        settings = std::make_unique<QSettings>("myStocks", "myStocks");
+    }
+    QSettings& s = *settings;
 
     m_indexes = decodeWatchItems(s.value("watch/indexes").toStringList());
 
@@ -500,7 +513,19 @@ void AppController::loadExtraWatchItems() {
 }
 
 void AppController::saveExtraWatchItems() const {
-    QSettings s("myStocks", "myStocks");
+    std::unique_ptr<QSettings> settings;
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    ConfigManager::migrateSettingsToCacheIfNeeded();
+    const QString settingsPath = ConfigManager::appSettingsFilePath();
+    if (!settingsPath.isEmpty()) {
+        settings = std::make_unique<QSettings>(settingsPath, QSettings::IniFormat);
+    }
+#endif
+    if (!settings) {
+        settings = std::make_unique<QSettings>("myStocks", "myStocks");
+    }
+    QSettings& s = *settings;
+
     s.setValue("watch/indexes", encodeWatchItems(m_indexes));
     s.setValue("watch/sectors", encodeWatchItems(m_sectors));
     s.sync();

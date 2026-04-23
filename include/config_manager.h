@@ -9,6 +9,8 @@ class ConfigManager {
 public:
     static QVector<StockItem> loadStocksFromYaml(const QString& filePath);
     static bool saveStocksToYaml(const QString& filePath, const QVector<StockItem>& stocks);
+    static QString appSettingsFilePath();
+    static void migrateSettingsToCacheIfNeeded();
     static AppConfig loadConfig();
     static void saveConfig(const AppConfig& cfg);
 };
