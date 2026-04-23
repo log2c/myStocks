@@ -26,6 +26,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPixmap>
+#include <QScrollArea>
 #include <QSet>
 #include <QStringConverter>
 #include <QTableWidget>
@@ -456,6 +457,20 @@ void addCompactFormRow(QFormLayout* form, QWidget* widget) {
     form->addRow(QString(), widget);
 }
 
+QWidget* makeScrollableTab(QWidget* content, QWidget* parent) {
+    if (!content) {
+        return new QWidget(parent);
+    }
+
+    QScrollArea* scroll = new QScrollArea(parent);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll->setWidget(content);
+    return scroll;
+}
+
 } // namespace
 
 SettingsDialog::SettingsDialog(
@@ -479,7 +494,7 @@ SettingsDialog::SettingsDialog(
     , m_uiLanguage(i18n::resolveLanguage(cfg.language)) {
     setWindowTitle(trText("settings.title"));
     setWindowFlags(windowFlags() & ~Qt::WindowMaximizeButtonHint);
-    resize(600, 560);
+    setFixedSize(700, 560);
 
     QVBoxLayout* root = new QVBoxLayout(this);
     root->setContentsMargins(10, 10, 10, 8);
@@ -487,13 +502,13 @@ SettingsDialog::SettingsDialog(
 
     QTabWidget* tabs = new QTabWidget(this);
     tabs->setDocumentMode(true);
-    tabs->addTab(buildGeneralTab(), trText("settings.tab.general"));
-    tabs->addTab(buildNetworkTab(), trText("settings.tab.network"));
-    tabs->addTab(buildDisplayTab(), trText("settings.tab.display"));
-    tabs->addTab(buildStocksTab(), trText("settings.tab.stocks"));
-    tabs->addTab(buildIndexSectorTab(), trText("settings.tab.indexSector"));
-    tabs->addTab(buildOtherTab(), trText("settings.tab.other"));
-    tabs->addTab(buildAboutTab(), trText("settings.tab.about"));
+    tabs->addTab(makeScrollableTab(buildGeneralTab(), tabs), trText("settings.tab.general"));
+    tabs->addTab(makeScrollableTab(buildNetworkTab(), tabs), trText("settings.tab.network"));
+    tabs->addTab(makeScrollableTab(buildDisplayTab(), tabs), trText("settings.tab.display"));
+    tabs->addTab(makeScrollableTab(buildStocksTab(), tabs), trText("settings.tab.stocks"));
+    tabs->addTab(makeScrollableTab(buildIndexSectorTab(), tabs), trText("settings.tab.indexSector"));
+    tabs->addTab(makeScrollableTab(buildOtherTab(), tabs), trText("settings.tab.other"));
+    tabs->addTab(makeScrollableTab(buildAboutTab(), tabs), trText("settings.tab.about"));
     root->addWidget(tabs);
 
     QDialogButtonBox* box = new QDialogButtonBox(
@@ -513,8 +528,6 @@ SettingsDialog::SettingsDialog(
     connect(box, &QDialogButtonBox::rejected, this, &QDialog::reject);
     root->addWidget(box);
 
-    // Prevent user from resizing the dialog
-    layout()->setSizeConstraint(QLayout::SetFixedSize);
 }
 
 AppConfig SettingsDialog::config() const {
@@ -941,25 +954,6 @@ QWidget* SettingsDialog::buildGeneralTab() {
         });
     });
 
-    m_transparentBackgroundCheck = new QCheckBox(
-        trText("settings.general.transparentBackground"),
-        w
-    );
-    m_transparentBackgroundCheck->setChecked(m_cfg.transparentBackgroundEnabled);
-
-    m_transparentOpacitySlider = new QSlider(Qt::Horizontal, w);
-    m_transparentOpacitySlider->setRange(0, 100);
-    m_transparentOpacitySlider->setValue(qBound(0, m_cfg.transparentBackgroundOpacity, 100));
-
-    m_transparentOpacityLabel = new QLabel(w);
-
-    QWidget* transparentOpacityWidget = new QWidget(w);
-    QHBoxLayout* transparentOpacityLayout = new QHBoxLayout(transparentOpacityWidget);
-    transparentOpacityLayout->setContentsMargins(0, 0, 0, 0);
-    transparentOpacityLayout->setSpacing(6);
-    transparentOpacityLayout->addWidget(m_transparentOpacitySlider, 1);
-    transparentOpacityLayout->addWidget(m_transparentOpacityLabel);
-
     m_languageCombo = new QComboBox(w);
     m_languageCombo->addItem(trText("settings.language.auto"), "auto");
     m_languageCombo->addItem(trText("settings.language.zh"), "zh_CN");
@@ -968,53 +962,6 @@ QWidget* SettingsDialog::buildGeneralTab() {
     if (languageIndex >= 0) {
         m_languageCombo->setCurrentIndex(languageIndex);
     }
-
-    const QString pickColorTitle = trText("settings.color.pick");
-    m_bgBtn = createColorButton(w, m_cfg.bgColor, pickColorTitle);
-    m_textBtn = createColorButton(w, m_cfg.textColor, pickColorTitle);
-    m_upBtn = createColorButton(w, m_cfg.upColor, pickColorTitle);
-    m_downBtn = createColorButton(w, m_cfg.downColor, pickColorTitle);
-    m_flatBtn = createColorButton(w, m_cfg.flatColor, pickColorTitle);
-
-    const AppConfig defaultCfg;
-    QPushButton* resetColorsButton = new QPushButton(
-        trText("settings.general.resetColors"),
-        w
-    );
-    connect(resetColorsButton, &QPushButton::clicked, this, [this, defaultCfg]() {
-        m_bgBtn->setProperty("pickColor", defaultCfg.bgColor);
-        m_textBtn->setProperty("pickColor", defaultCfg.textColor);
-        m_upBtn->setProperty("pickColor", defaultCfg.upColor);
-        m_downBtn->setProperty("pickColor", defaultCfg.downColor);
-        m_flatBtn->setProperty("pickColor", defaultCfg.flatColor);
-
-        paintColorButton(m_bgBtn, defaultCfg.bgColor);
-        paintColorButton(m_textBtn, defaultCfg.textColor);
-        paintColorButton(m_upBtn, defaultCfg.upColor);
-        paintColorButton(m_downBtn, defaultCfg.downColor);
-        paintColorButton(m_flatBtn, defaultCfg.flatColor);
-    });
-
-    connect(m_transparentOpacitySlider, &QSlider::valueChanged, this, [this](int value) {
-        m_transparentOpacityLabel->setText(
-            trText("settings.general.transparentOpacityValue").arg(value)
-        );
-    });
-
-    connect(m_transparentBackgroundCheck, &QCheckBox::toggled, this, [this](bool enabled) {
-        m_transparentOpacitySlider->setEnabled(enabled);
-        m_transparentOpacityLabel->setEnabled(enabled);
-        m_bgBtn->setEnabled(!enabled);
-    });
-
-    m_transparentOpacityLabel->setText(
-        trText("settings.general.transparentOpacityValue")
-            .arg(m_transparentOpacitySlider->value())
-    );
-    const bool transparentModeEnabled = m_transparentBackgroundCheck->isChecked();
-    m_transparentOpacitySlider->setEnabled(transparentModeEnabled);
-    m_transparentOpacityLabel->setEnabled(transparentModeEnabled);
-    m_bgBtn->setEnabled(!transparentModeEnabled);
 
     form->addRow(trText("settings.general.poll"), m_pollSpin);
     form->addRow(trText("settings.general.hotkey"), hotkeyWidget);
@@ -1045,15 +992,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
     );
     syncTokenRowVisibility();
 
-    addCompactFormRow(form, m_transparentBackgroundCheck);
-    form->addRow(trText("settings.general.transparentOpacity"), transparentOpacityWidget);
     form->addRow(trText("settings.general.language"), m_languageCombo);
-    form->addRow(trText("settings.general.background"), m_bgBtn);
-    form->addRow(trText("settings.general.text"), m_textBtn);
-    form->addRow(trText("settings.general.up"), m_upBtn);
-    form->addRow(trText("settings.general.down"), m_downBtn);
-    form->addRow(trText("settings.general.flat"), m_flatBtn);
-    addCompactFormRow(form, resetColorsButton);
 
     return w;
 }
@@ -1140,6 +1079,81 @@ QWidget* SettingsDialog::buildDisplayTab() {
     });
     addCompactFormRow(windowForm, m_showGridCheck);
     windowForm->addRow(trText("settings.display.gridColor"), m_gridColorBtn);
+
+    m_transparentBackgroundCheck = new QCheckBox(
+        trText("settings.general.transparentBackground"),
+        w
+    );
+    m_transparentBackgroundCheck->setChecked(m_cfg.transparentBackgroundEnabled);
+
+    m_transparentOpacitySlider = new QSlider(Qt::Horizontal, w);
+    m_transparentOpacitySlider->setRange(0, 100);
+    m_transparentOpacitySlider->setValue(qBound(0, m_cfg.transparentBackgroundOpacity, 100));
+
+    m_transparentOpacityLabel = new QLabel(w);
+
+    QWidget* transparentOpacityWidget = new QWidget(w);
+    QHBoxLayout* transparentOpacityLayout = new QHBoxLayout(transparentOpacityWidget);
+    transparentOpacityLayout->setContentsMargins(0, 0, 0, 0);
+    transparentOpacityLayout->setSpacing(6);
+    transparentOpacityLayout->addWidget(m_transparentOpacitySlider, 1);
+    transparentOpacityLayout->addWidget(m_transparentOpacityLabel);
+
+    const QString pickColorTitle = trText("settings.color.pick");
+    m_bgBtn = createColorButton(w, m_cfg.bgColor, pickColorTitle);
+    m_textBtn = createColorButton(w, m_cfg.textColor, pickColorTitle);
+    m_upBtn = createColorButton(w, m_cfg.upColor, pickColorTitle);
+    m_downBtn = createColorButton(w, m_cfg.downColor, pickColorTitle);
+    m_flatBtn = createColorButton(w, m_cfg.flatColor, pickColorTitle);
+
+    const AppConfig defaultCfg;
+    QPushButton* resetColorsButton = new QPushButton(
+        trText("settings.general.resetColors"),
+        w
+    );
+    connect(resetColorsButton, &QPushButton::clicked, this, [this, defaultCfg]() {
+        m_bgBtn->setProperty("pickColor", defaultCfg.bgColor);
+        m_textBtn->setProperty("pickColor", defaultCfg.textColor);
+        m_upBtn->setProperty("pickColor", defaultCfg.upColor);
+        m_downBtn->setProperty("pickColor", defaultCfg.downColor);
+        m_flatBtn->setProperty("pickColor", defaultCfg.flatColor);
+
+        paintColorButton(m_bgBtn, defaultCfg.bgColor);
+        paintColorButton(m_textBtn, defaultCfg.textColor);
+        paintColorButton(m_upBtn, defaultCfg.upColor);
+        paintColorButton(m_downBtn, defaultCfg.downColor);
+        paintColorButton(m_flatBtn, defaultCfg.flatColor);
+    });
+
+    connect(m_transparentOpacitySlider, &QSlider::valueChanged, this, [this](int value) {
+        m_transparentOpacityLabel->setText(
+            trText("settings.general.transparentOpacityValue").arg(value)
+        );
+    });
+
+    connect(m_transparentBackgroundCheck, &QCheckBox::toggled, this, [this](bool enabled) {
+        m_transparentOpacitySlider->setEnabled(enabled);
+        m_transparentOpacityLabel->setEnabled(enabled);
+        m_bgBtn->setEnabled(!enabled);
+    });
+
+    m_transparentOpacityLabel->setText(
+        trText("settings.general.transparentOpacityValue")
+            .arg(m_transparentOpacitySlider->value())
+    );
+    const bool transparentModeEnabled = m_transparentBackgroundCheck->isChecked();
+    m_transparentOpacitySlider->setEnabled(transparentModeEnabled);
+    m_transparentOpacityLabel->setEnabled(transparentModeEnabled);
+    m_bgBtn->setEnabled(!transparentModeEnabled);
+
+    addCompactFormRow(windowForm, m_transparentBackgroundCheck);
+    windowForm->addRow(trText("settings.general.transparentOpacity"), transparentOpacityWidget);
+    windowForm->addRow(trText("settings.general.background"), m_bgBtn);
+    windowForm->addRow(trText("settings.general.text"), m_textBtn);
+    windowForm->addRow(trText("settings.general.up"), m_upBtn);
+    windowForm->addRow(trText("settings.general.down"), m_downBtn);
+    windowForm->addRow(trText("settings.general.flat"), m_flatBtn);
+    addCompactFormRow(windowForm, resetColorsButton);
 
     m_simpleModeCheck = new QCheckBox(trText("settings.display.simpleMode"), w);
     m_simpleModeCheck->setChecked(m_cfg.simpleModeEnabled);
