@@ -80,6 +80,7 @@ private:
     QKeySequenceEdit* m_hotkeyEdit = nullptr;
     QLabel* m_hotkeyIndicator = nullptr;
     QPushButton* m_hotkeyClearBtn = nullptr;
+    QCheckBox* m_startupShowFloatingWindowCheck = nullptr;
     QComboBox* m_sourceCombo = nullptr;
     QLineEdit* m_tokenEdit = nullptr;
     QPushButton* m_tokenCheckBtn = nullptr;

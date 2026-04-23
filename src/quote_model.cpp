@@ -164,6 +164,13 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
     }
 
     if (role == Qt::ForegroundRole) {
+        const bool lightHoverText = m_hoverReadingVisualActive
+            && m_cfg.hoverReadingEnabled
+            && m_cfg.hoverReadingUiMode.compare(QStringLiteral("light"), Qt::CaseInsensitive) == 0;
+        const QColor defaultText = lightHoverText
+            ? QColor(QStringLiteral("#1F1F1F"))
+            : m_cfg.textColor;
+
         if (index.column() == ColIndicator) {
             // Determine base color from direction
             const int level = indicatorLevel(q.code, q.pct);
@@ -189,11 +196,11 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
             return indicatorColor;
         }
         if (m_cfg.simpleModeEnabled) {
-            return m_cfg.textColor;
+            return defaultText;
         }
         if (index.column() >= ColPrice) {
             if (std::isnan(q.pct)) {
-                return m_cfg.textColor;
+                return defaultText;
             }
             if (q.pct > 0.0) {
                 return m_cfg.upColor;
@@ -203,7 +210,7 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
             }
             return m_cfg.flatColor;
         }
-        return m_cfg.textColor;
+        return defaultText;
     }
 
     return {};
@@ -259,6 +266,17 @@ void QuoteModel::updateQuotes(const QVector<QuoteItem>& quotes) {
 
 void QuoteModel::setConfig(const AppConfig& cfg) {
     m_cfg = cfg;
+    if (!m_rows.isEmpty()) {
+        emit dataChanged(index(0, 0), index(m_rows.size() - 1, ColCount - 1), {Qt::ForegroundRole});
+    }
+}
+
+void QuoteModel::setHoverReadingVisualState(bool active) {
+    if (m_hoverReadingVisualActive == active) {
+        return;
+    }
+
+    m_hoverReadingVisualActive = active;
     if (!m_rows.isEmpty()) {
         emit dataChanged(index(0, 0), index(m_rows.size() - 1, ColCount - 1), {Qt::ForegroundRole});
     }

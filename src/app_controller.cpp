@@ -79,16 +79,24 @@ AppController::AppController(QObject* parent)
     m_window = new FloatingWindow(m_model);
     m_window->setGeometry(m_cfg.windowRect);
     m_window->applyConfig(m_cfg);
-    // Window starts hidden; user shows it via tray or hotkey
+    if (m_cfg.startupShowFloatingWindow) {
+        m_window->show();
+        if (m_cfg.floatingWindowAlwaysOnTop) {
+            m_window->raise();
+            m_window->activateWindow();
+        }
+    }
 
     setupTray();
     if (m_tray) {
-        m_tray->showMessage(
-            i18n::t("app.name", m_resolvedLanguage),
-            i18n::t("app.started", m_resolvedLanguage),
-            QSystemTrayIcon::Information,
-            2500
-        );
+        if (!m_cfg.startupShowFloatingWindow) {
+            m_tray->showMessage(
+                i18n::t("app.name", m_resolvedLanguage),
+                i18n::t("app.started", m_resolvedLanguage),
+                QSystemTrayIcon::Information,
+                2500
+            );
+        }
 
         if (!m_lastIgnoredYamlIndexCodes.isEmpty()) {
             m_tray->showMessage(

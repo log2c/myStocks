@@ -495,6 +495,7 @@ AppConfig SettingsDialog::config() const {
 
     out.pollMs = m_pollSpin->value();
     out.hotkey = normalizedHotkeySequence(m_hotkeyEdit->keySequence()).toString(QKeySequence::PortableText);
+    out.startupShowFloatingWindow = m_startupShowFloatingWindowCheck->isChecked();
     out.apiSource = m_sourceCombo->currentData().toString();
     out.xtickToken = m_tokenEdit->text().trimmed();
     out.userAgent = m_userAgentEdit->text().trimmed();
@@ -729,6 +730,12 @@ QWidget* SettingsDialog::buildGeneralTab() {
     hotkeyLayout->addWidget(m_hotkeyEdit, 1);
     hotkeyLayout->addWidget(m_hotkeyIndicator);
     hotkeyLayout->addWidget(m_hotkeyClearBtn);
+
+    m_startupShowFloatingWindowCheck = new QCheckBox(
+        trText("settings.general.startupShowFloatingWindow"),
+        w
+    );
+    m_startupShowFloatingWindowCheck->setChecked(m_cfg.startupShowFloatingWindow);
 
     m_sourceCombo = new QComboBox(w);
     m_sourceCombo->addItem(trText("settings.source.tencent"), "tencent");
@@ -980,6 +987,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
 
     form->addRow(trText("settings.general.poll"), m_pollSpin);
     form->addRow(trText("settings.general.hotkey"), hotkeyWidget);
+    form->addRow(m_startupShowFloatingWindowCheck);
     form->addRow(trText("settings.general.apiSource"), m_sourceCombo);
     form->addRow(trText("settings.general.token"), m_tokenRowWidget);
     m_tokenRowLabel = form->labelForField(m_tokenRowWidget);

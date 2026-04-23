@@ -506,7 +506,12 @@ void FloatingWindow::applyStyle() {
 
 void FloatingWindow::applyHoverReadingStyle() {
     const HoverReadingTheme theme = hoverReadingThemeForMode(m_cfg.hoverReadingUiMode);
+    const bool lightMode = normalizeHoverReadingUiMode(m_cfg.hoverReadingUiMode)
+        == QLatin1String("light");
     const QColor grid = m_cfg.showGrid ? theme.border : QColor(0, 0, 0, 0);
+    const QColor tableBorder = (m_cfg.showGrid && lightMode)
+        ? theme.border
+        : QColor(0, 0, 0, 0);
 
     const QString css = QString(
         "QFrame#panel{"
@@ -516,12 +521,12 @@ void FloatingWindow::applyHoverReadingStyle() {
         "}"
         "QTableView{"
         "background-color: rgba(%1,%2,%3,%4);"
-        "border: none;"
+        "border: 1px solid rgba(%16,%17,%18,%19);"
         "color: rgb(%9,%10,%11);"
         "gridline-color: rgba(%12,%13,%14,%15);"
         "}"
         "QHeaderView::section{"
-        "background-color: rgba(%16,%17,%18,%19);"
+        "background-color: rgba(%20,%21,%22,%23);"
         "border: none;"
         "padding: 0 4px;"
         "font-weight: 600;"
@@ -546,6 +551,10 @@ void FloatingWindow::applyHoverReadingStyle() {
         .arg(grid.green())
         .arg(grid.blue())
         .arg(grid.alpha())
+        .arg(tableBorder.red())
+        .arg(tableBorder.green())
+        .arg(tableBorder.blue())
+        .arg(tableBorder.alpha())
         .arg(theme.surface.red())
         .arg(theme.surface.green())
         .arg(theme.surface.blue())
@@ -574,6 +583,9 @@ void FloatingWindow::setHoverReadingActive(bool active, bool animated) {
     }
 
     m_hoverReadingActive = active;
+    if (m_model) {
+        m_model->setHoverReadingVisualState(m_hoverReadingActive);
+    }
     const qreal target = m_hoverReadingActive ? 1.0 : 0.0;
 
     if (!animated || !m_styleAnimation) {
@@ -615,9 +627,15 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
     const QColor normalBorder(0, 0, 0, 0);
     const QColor normalHeaderBg(0, 0, 0, 0);
     const QColor normalTableBg(0, 0, 0, 0);
+    const QColor normalTableBorder(0, 0, 0, 0);
 
     const HoverReadingTheme theme = hoverReadingThemeForMode(m_cfg.hoverReadingUiMode);
+    const bool lightMode = normalizeHoverReadingUiMode(m_cfg.hoverReadingUiMode)
+        == QLatin1String("light");
     const QColor hoverGrid = m_cfg.showGrid ? theme.border : QColor(0, 0, 0, 0);
+    const QColor hoverTableBorder = (m_cfg.showGrid && lightMode)
+        ? theme.border
+        : QColor(0, 0, 0, 0);
 
     const QColor bg = mixColor(normalBg, theme.background, progress);
     const QColor border = mixColor(normalBorder, theme.border, progress);
@@ -625,6 +643,7 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
     const QColor grid = mixColor(normalGrid, hoverGrid, progress);
     const QColor headerBg = mixColor(normalHeaderBg, theme.surface, progress);
     const QColor tableBg = mixColor(normalTableBg, theme.background, progress);
+    const QColor tableBorder = mixColor(normalTableBorder, hoverTableBorder, progress);
 
     const QString css = QString(
         "QFrame#panel{"
@@ -634,7 +653,7 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
         "}"
         "QTableView{"
         "background-color: rgba(%16,%17,%18,%19);"
-        "border: none;"
+        "border: 1px solid rgba(%24,%25,%26,%27);"
         "color: rgb(%9,%10,%11);"
         "gridline-color: rgba(%12,%13,%14,%15);"
         "}"
@@ -671,7 +690,11 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
         .arg(headerBg.red())
         .arg(headerBg.green())
         .arg(headerBg.blue())
-        .arg(headerBg.alpha());
+        .arg(headerBg.alpha())
+        .arg(tableBorder.red())
+        .arg(tableBorder.green())
+        .arg(tableBorder.blue())
+        .arg(tableBorder.alpha());
 
     m_panel->setStyleSheet(css);
     m_table->setShowGrid(m_cfg.showGrid);

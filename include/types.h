@@ -42,6 +42,7 @@ struct AppConfig {
     int pollMs = 3000;
     double opacity = 0.9;
     QString hotkey = "Ctrl+Alt+S";
+    bool startupShowFloatingWindow = true;
     QString apiSource = "tencent";
     QString xtickToken;
     QString language = "auto";

@@ -18,6 +18,7 @@ public:
     void setStocks(const QVector<StockItem>& stocks);
     void updateQuotes(const QVector<QuoteItem>& quotes);
     void setConfig(const AppConfig& cfg);
+    void setHoverReadingVisualState(bool active);
     void setLanguage(const QString& language);
     QString trayTooltipText() const;
 
@@ -34,4 +35,5 @@ private:
     QHash<int, int> m_blinkCounters;
     QTimer* m_blinkTimer = nullptr;
     bool m_blinkPhase = false; // true = highlight phase
+    bool m_hoverReadingVisualActive = false;
 };

@@ -282,6 +282,10 @@ AppConfig ConfigManager::loadConfig() {
     cfg.pollMs = s.value("general/pollMs", cfg.pollMs).toInt();
     cfg.opacity = s.value("general/opacity", cfg.opacity).toDouble();
     cfg.hotkey = s.value("general/hotkey", cfg.hotkey).toString();
+    cfg.startupShowFloatingWindow = s.value(
+        "general/startupShowFloatingWindow",
+        cfg.startupShowFloatingWindow
+    ).toBool();
     cfg.apiSource = s.value("general/apiSource", cfg.apiSource).toString();
     cfg.xtickToken = s.value("general/xtickToken", cfg.xtickToken).toString();
     cfg.language = i18n::normalizeLanguage(
@@ -419,6 +423,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue("general/pollMs", cfg.pollMs);
     s.setValue("general/opacity", cfg.opacity);
     s.setValue("general/hotkey", cfg.hotkey);
+    s.setValue("general/startupShowFloatingWindow", cfg.startupShowFloatingWindow);
     s.setValue("general/apiSource", cfg.apiSource);
     s.setValue("general/xtickToken", cfg.xtickToken);
     s.setValue("general/language", i18n::normalizeLanguage(cfg.language));
