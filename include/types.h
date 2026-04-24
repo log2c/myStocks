@@ -17,6 +17,8 @@ enum QuoteColumn {
     ColCount
 };
 
+inline constexpr int kFloatingWindowPaddingPx = 10;
+
 struct StockItem {
     QString code;
     QString name;

@@ -174,7 +174,12 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
     m_panel->setObjectName("panel");
 
     QVBoxLayout* panelLayout = new QVBoxLayout(m_panel);
-    panelLayout->setContentsMargins(0, 0, 0, 0);
+    panelLayout->setContentsMargins(
+        kFloatingWindowPaddingPx,
+        kFloatingWindowPaddingPx,
+        kFloatingWindowPaddingPx,
+        kFloatingWindowPaddingPx
+    );
 
     m_table = new QTableView(m_panel);
     m_table->setModel(m_model);
@@ -517,12 +522,12 @@ void FloatingWindow::applyStyle() {
         "QHeaderView::section{"
         "background: transparent;"
         "border: none;"
-        "padding: 0 4px;"
+        "%16"
         "font-weight: 600;"
         "color: rgb(%9,%10,%11);"
         "}"
         "QAbstractItemView::item{"
-        "padding: 0 4px;"
+        "%16"
         "}"
     )
         .arg(b.red())
@@ -539,7 +544,8 @@ void FloatingWindow::applyStyle() {
         .arg(g.red())
         .arg(g.green())
         .arg(g.blue())
-        .arg(g.alpha());
+        .arg(g.alpha())
+        .arg(QStringLiteral("padding: 0 %1px;").arg(kFloatingWindowPaddingPx));
 
     m_panel->setStyleSheet(css);
     m_table->setShowGrid(m_cfg.showGrid);
@@ -590,12 +596,12 @@ void FloatingWindow::applyHoverReadingStyle() {
         "QHeaderView::section{"
         "background-color: rgba(%20,%21,%22,%23);"
         "border: none;"
-        "padding: 0 4px;"
+        "%24"
         "font-weight: 600;"
         "color: rgb(%9,%10,%11);"
         "}"
         "QAbstractItemView::item{"
-        "padding: 0 4px;"
+        "%24"
         "}"
     )
         .arg(theme.background.red())
@@ -620,7 +626,8 @@ void FloatingWindow::applyHoverReadingStyle() {
         .arg(theme.surface.red())
         .arg(theme.surface.green())
         .arg(theme.surface.blue())
-        .arg(theme.surface.alpha());
+        .arg(theme.surface.alpha())
+        .arg(QStringLiteral("padding: 0 %1px;").arg(kFloatingWindowPaddingPx));
 
     m_panel->setStyleSheet(css);
     m_table->setShowGrid(m_cfg.showGrid);
@@ -731,12 +738,12 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
         "QHeaderView::section{"
         "background-color: rgba(%20,%21,%22,%23);"
         "border: none;"
-        "padding: 0 4px;"
+        "%28"
         "font-weight: 600;"
         "color: rgb(%9,%10,%11);"
         "}"
         "QAbstractItemView::item{"
-        "padding: 0 4px;"
+        "%28"
         "}"
     )
         .arg(bg.red())
@@ -765,7 +772,8 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
         .arg(tableBorder.red())
         .arg(tableBorder.green())
         .arg(tableBorder.blue())
-        .arg(tableBorder.alpha());
+        .arg(tableBorder.alpha())
+        .arg(QStringLiteral("padding: 0 %1px;").arg(kFloatingWindowPaddingPx));
 
     m_panel->setStyleSheet(css);
     m_table->setShowGrid(m_cfg.showGrid);
@@ -834,8 +842,10 @@ void FloatingWindow::adjustWindowSize() {
     }
     totalHeight += m_model->rowCount() * m_table->verticalHeader()->defaultSectionSize();
 
-    const int safeWidth = qMax(totalWidth, 1);
-    const int safeHeight = qMax(totalHeight, 1);
+    const int horizontalPadding = kFloatingWindowPaddingPx * 2;
+    const int verticalPadding = kFloatingWindowPaddingPx * 2;
+    const int safeWidth = qMax(totalWidth + horizontalPadding, 1);
+    const int safeHeight = qMax(totalHeight + verticalPadding, 1);
     setFixedSize(safeWidth, safeHeight);
 }
 
