@@ -27,6 +27,7 @@ public:
 private:
     QString findDataYaml() const;
     void toggleWindow();
+    void resetFloatingWindowPosition();
     void openSettings();
     void reloadStocksFromYaml();
     void refreshQuotes(bool force = false);

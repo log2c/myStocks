@@ -15,6 +15,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QIcon>
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
 #include <QHotkey>
@@ -28,6 +29,7 @@
 #include <QNetworkRequest>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QScreen>
 #include <QSettings>
 #include <QSet>
 #include <QStyle>
@@ -36,6 +38,31 @@
 #include <QTimeZone>
 
 #include <memory>
+
+namespace {
+
+QRect resetFloatingWindowRect() {
+    const AppConfig defaultCfg;
+    QRect rect = defaultCfg.windowRect;
+
+    QScreen* screen = QGuiApplication::primaryScreen();
+    if (!screen) {
+        return rect;
+    }
+
+    const QRect available = screen->availableGeometry();
+    if (!available.isValid()) {
+        return rect;
+    }
+
+    rect.setWidth(qMin(rect.width(), available.width()));
+    rect.setHeight(qMin(rect.height(), available.height()));
+    rect.moveLeft(available.left() + qMax(0, (available.width() - rect.width()) / 2));
+    rect.moveTop(available.top() + qMax(0, (available.height() - rect.height()) / 2));
+    return rect;
+}
+
+} // namespace
 
 AppController::AppController(QObject* parent)
     : QObject(parent) {
@@ -649,6 +676,30 @@ void AppController::toggleWindow() {
     }
 }
 
+void AppController::resetFloatingWindowPosition() {
+    if (!m_window) {
+        return;
+    }
+
+    m_cfg.windowRect = resetFloatingWindowRect();
+    m_window->setGeometry(m_cfg.windowRect);
+    m_window->show();
+    m_window->raise();
+    m_window->activateWindow();
+
+    ConfigManager::saveConfig(m_cfg);
+    qInfo() << "Floating window position reset to" << m_cfg.windowRect;
+
+    if (m_tray) {
+        m_tray->showMessage(
+            i18n::t("app.name", m_resolvedLanguage),
+            i18n::t("tray.resetPosition.done", m_resolvedLanguage),
+            QSystemTrayIcon::Information,
+            2500
+        );
+    }
+}
+
 void AppController::openSettings() {
     qInfo() << "Open settings dialog.";
 
@@ -968,6 +1019,9 @@ void AppController::setupTray() {
     QMenu* menu = new QMenu;
 
     menu->addAction(i18n::t("tray.toggle", m_resolvedLanguage), this, [this]() { toggleWindow(); });
+    menu->addAction(i18n::t("tray.resetPosition", m_resolvedLanguage), this, [this]() {
+        resetFloatingWindowPosition();
+    });
     menu->addAction(i18n::t("tray.settings", m_resolvedLanguage), this, [this]() { openSettings(); });
     menu->addAction(i18n::t("tray.reload", m_resolvedLanguage), this, [this]() { reloadStocksFromYaml(); });
     menu->addSeparator();

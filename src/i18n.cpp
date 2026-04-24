@@ -14,6 +14,8 @@ const TranslationMap& translations() {
             {
                 {"app.name", "myStocks"},
                 {"tray.toggle", "Show/Hide floating window"},
+                {"tray.resetPosition", "Reset floating window position"},
+                {"tray.resetPosition.done", "Floating window moved back to the primary screen."},
                 {"tray.settings", "Settings"},
                 {"tray.reload", "Reload config"},
                 {"tray.quit", "Quit"},
@@ -150,6 +152,8 @@ const TranslationMap& translations() {
             {
                 {"app.name", "myStocks"},
                 {"tray.toggle", "显示/隐藏悬浮窗"},
+                {"tray.resetPosition", "重置悬浮窗位置"},
+                {"tray.resetPosition.done", "已将悬浮窗移回主屏幕。"},
                 {"tray.settings", "设置"},
                 {"tray.reload", "重新加载配置"},
                 {"tray.quit", "退出"},
