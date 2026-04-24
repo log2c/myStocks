@@ -6,6 +6,7 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDoubleSpinBox>
+#include <QFontComboBox>
 #include <QHash>
 #include <QKeySequenceEdit>
 #include <QLabel>
@@ -101,6 +102,9 @@ private:
     QLabel* m_transparentOpacityLabel = nullptr;
     QLineEdit* m_proxyPasswordEdit = nullptr;
     QComboBox* m_languageCombo = nullptr;
+    QFontComboBox* m_fontFamilyCombo = nullptr;
+    QSpinBox* m_fontSizeSpin = nullptr;
+    QCheckBox* m_fontBoldCheck = nullptr;
 
     QPushButton* m_bgBtn = nullptr;
     QPushButton* m_textBtn = nullptr;

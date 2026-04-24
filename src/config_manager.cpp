@@ -6,6 +6,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QFile>
+#include <QFont>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
@@ -300,6 +301,18 @@ AppConfig ConfigManager::loadConfig() {
         "ui/transparentBackgroundOpacity",
         cfg.transparentBackgroundOpacity
     ).toInt();
+    cfg.floatingWindowFontFamily = s.value(
+        "ui/floatingWindowFontFamily",
+        cfg.floatingWindowFontFamily
+    ).toString().trimmed();
+    cfg.floatingWindowFontSize = s.value(
+        "ui/floatingWindowFontSize",
+        cfg.floatingWindowFontSize
+    ).toInt();
+    const QVariant floatingWindowFontBoldValue = s.value("ui/floatingWindowFontBold");
+    cfg.floatingWindowFontBold = floatingWindowFontBoldValue.isValid()
+        ? floatingWindowFontBoldValue.toBool()
+        : (s.value("ui/floatingWindowFontWeight", 0).toInt() >= QFont::DemiBold);
 
     cfg.hoverReadingEnabled = s.value("ui/hoverReadingEnabled", cfg.hoverReadingEnabled).toBool();
     cfg.hoverReadingDelaySecs = s.value("ui/hoverReadingDelaySecs", cfg.hoverReadingDelaySecs).toDouble();
@@ -381,6 +394,7 @@ AppConfig ConfigManager::loadConfig() {
     }
 
     cfg.transparentBackgroundOpacity = qBound(0, cfg.transparentBackgroundOpacity, 100);
+    cfg.floatingWindowFontSize = qBound(0, cfg.floatingWindowFontSize, 72);
     cfg.hoverReadingDelaySecs = qBound(0.1, cfg.hoverReadingDelaySecs, 60.0);
     cfg.hoverReadingUiMode = normalizeHoverReadingUiMode(cfg.hoverReadingUiMode);
     cfg.floatingWindowPaddingPx = qMax(0.0, cfg.floatingWindowPaddingPx);
@@ -470,6 +484,10 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         "ui/transparentBackgroundOpacity",
         qBound(0, cfg.transparentBackgroundOpacity, 100)
     );
+    s.setValue("ui/floatingWindowFontFamily", cfg.floatingWindowFontFamily.trimmed());
+    s.setValue("ui/floatingWindowFontSize", qBound(0, cfg.floatingWindowFontSize, 72));
+    s.setValue("ui/floatingWindowFontBold", cfg.floatingWindowFontBold);
+    s.remove("ui/floatingWindowFontWeight");
     s.setValue("ui/hoverReadingEnabled", cfg.hoverReadingEnabled);
     s.setValue("ui/hoverReadingDelaySecs", qBound(0.1, cfg.hoverReadingDelaySecs, 60.0));
     s.setValue("ui/hoverReadingUiMode", normalizeHoverReadingUiMode(cfg.hoverReadingUiMode));

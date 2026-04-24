@@ -165,6 +165,26 @@ QString tableCellPaddingStyle(const AppConfig& cfg) {
         .arg(QString::number(rawPadding, 'f', 1));
 }
 
+QFont effectiveFloatingWindowFont(const AppConfig& cfg, const QFont& baseFont) {
+    QFont font(baseFont);
+
+    const QString family = cfg.floatingWindowFontFamily.trimmed();
+    if (!family.isEmpty()) {
+        font.setFamily(family);
+    } else {
+        const QString defaultFamily = defaultFloatingWindowFontFamily();
+        if (!defaultFamily.isEmpty()) {
+            font.setFamily(defaultFamily);
+        }
+    }
+    if (cfg.floatingWindowFontSize > 0) {
+        font.setPointSize(cfg.floatingWindowFontSize);
+    }
+    font.setBold(cfg.floatingWindowFontBold);
+
+    return font;
+}
+
 class BottomGridTableView : public QTableView {
 public:
     using QTableView::QTableView;
@@ -485,6 +505,19 @@ void FloatingWindow::applyConfig(const AppConfig& cfg) {
 
     setWindowOpacity(configuredWindowOpacity(m_cfg));
 
+    const QFont baseTableFont = m_table ? m_table->font() : font();
+    const QFont tableFont = effectiveFloatingWindowFont(m_cfg, baseTableFont);
+    m_panel->setFont(tableFont);
+    m_table->setFont(tableFont);
+    m_table->viewport()->setFont(tableFont);
+
+    const QFont baseHeaderFont = m_table->horizontalHeader()
+        ? m_table->horizontalHeader()->font()
+        : tableFont;
+    const QFont headerFont = effectiveFloatingWindowFont(m_cfg, baseHeaderFont);
+    m_table->horizontalHeader()->setFont(headerFont);
+    m_table->horizontalHeader()->viewport()->setFont(headerFont);
+
     // Reset hover reading state when config is reloaded
     if (m_hoverTimer) {
         m_hoverTimer->stop();
@@ -630,7 +663,6 @@ void FloatingWindow::applyStyle() {
         "background: transparent;"
         "border: none;"
         "%16"
-        "font-weight: 600;"
         "color: rgb(%9,%10,%11);"
         "}"
         "QAbstractItemView::item{"
@@ -714,7 +746,6 @@ void FloatingWindow::applyHoverReadingStyle() {
         "background-color: rgba(%20,%21,%22,%23);"
         "border: none;"
         "%24"
-        "font-weight: 600;"
         "color: rgb(%9,%10,%11);"
         "}"
         "QAbstractItemView::item{"
@@ -865,7 +896,6 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
         "background-color: rgba(%20,%21,%22,%23);"
         "border: none;"
         "%28"
-        "font-weight: 600;"
         "color: rgb(%9,%10,%11);"
         "}"
         "QAbstractItemView::item{"

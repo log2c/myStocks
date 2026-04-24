@@ -546,6 +546,26 @@ AppConfig SettingsDialog::config() const {
     out.logLevel = app_logging::normalizeLogLevel(m_logLevelCombo->currentData().toString());
     out.transparentBackgroundEnabled = m_transparentBackgroundCheck->isChecked();
     out.transparentBackgroundOpacity = m_transparentOpacitySlider->value();
+    {
+        QFont defaultFont = font();
+        const QString defaultFamily = defaultFloatingWindowFontFamily();
+        if (!defaultFamily.isEmpty()) {
+            defaultFont.setFamily(defaultFamily);
+        }
+        const QString selectedFamily = m_fontFamilyCombo
+            ? m_fontFamilyCombo->currentFont().family().trimmed()
+            : QString();
+        out.floatingWindowFontFamily =
+            (selectedFamily.isEmpty() || selectedFamily == defaultFont.family())
+            ? defaultFont.family()
+            : selectedFamily;
+        out.floatingWindowFontSize = m_fontSizeSpin
+            ? ((m_fontSizeSpin->value() == qMax(1, defaultFont.pointSize()))
+                ? 0
+                : qBound(0, m_fontSizeSpin->value(), 72))
+            : out.floatingWindowFontSize;
+        out.floatingWindowFontBold = m_fontBoldCheck && m_fontBoldCheck->isChecked();
+    }
     out.proxyPassword = m_proxyPasswordEdit->text();
     out.language = m_languageCombo->currentData().toString();
 
@@ -725,7 +745,12 @@ QColor SettingsDialog::buttonColor(QPushButton* btn) {
 
 QWidget* SettingsDialog::buildGeneralTab() {
     QWidget* w = new QWidget(this);
-    QFormLayout* form = new QFormLayout(w);
+    QVBoxLayout* root = new QVBoxLayout(w);
+    root->setContentsMargins(6, 6, 6, 6);
+    root->setSpacing(6);
+
+    QWidget* baseSection = new QWidget(w);
+    QFormLayout* form = new QFormLayout(baseSection);
     applyCompactFormLayout(form);
 
     m_pollSpin = new QSpinBox(w);
@@ -994,6 +1019,59 @@ QWidget* SettingsDialog::buildGeneralTab() {
     syncTokenRowVisibility();
 
     form->addRow(trText("settings.general.language"), m_languageCombo);
+    root->addWidget(baseSection);
+
+    QGroupBox* fontGroup = new QGroupBox(trText("settings.general.groupFont"), w);
+    QFormLayout* fontForm = new QFormLayout(fontGroup);
+    applyCompactFormLayout(fontForm);
+    fontForm->setContentsMargins(6, 6, 6, 6);
+    fontForm->setVerticalSpacing(5);
+
+    QFont effectiveBaseFont = w->font();
+    const QString defaultFamily = defaultFloatingWindowFontFamily();
+    if (!defaultFamily.isEmpty()) {
+        effectiveBaseFont.setFamily(defaultFamily);
+    }
+    m_fontFamilyCombo = new QFontComboBox(fontGroup);
+    if (!m_cfg.floatingWindowFontFamily.trimmed().isEmpty()) {
+        m_fontFamilyCombo->setCurrentFont(QFont(m_cfg.floatingWindowFontFamily));
+    } else {
+        m_fontFamilyCombo->setCurrentFont(effectiveBaseFont);
+    }
+
+    m_fontSizeSpin = new QSpinBox(fontGroup);
+    m_fontSizeSpin->setRange(6, 72);
+    m_fontSizeSpin->setValue(
+        qBound(6, m_cfg.floatingWindowFontSize > 0
+            ? m_cfg.floatingWindowFontSize
+            : qMax(6, effectiveBaseFont.pointSize()), 72)
+    );
+
+    m_fontBoldCheck = new QCheckBox(trText("settings.general.fontBold"), fontGroup);
+    m_fontBoldCheck->setChecked(m_cfg.floatingWindowFontBold);
+
+    QPushButton* resetFontButton = new QPushButton(
+        trText("settings.general.resetFont"),
+        fontGroup
+    );
+    connect(resetFontButton, &QPushButton::clicked, this, [this, effectiveBaseFont]() {
+        if (m_fontFamilyCombo) {
+            m_fontFamilyCombo->setCurrentFont(effectiveBaseFont);
+        }
+        if (m_fontSizeSpin) {
+            m_fontSizeSpin->setValue(qMax(6, effectiveBaseFont.pointSize()));
+        }
+        if (m_fontBoldCheck) {
+            m_fontBoldCheck->setChecked(false);
+        }
+    });
+
+    fontForm->addRow(trText("settings.general.fontFamily"), m_fontFamilyCombo);
+    fontForm->addRow(trText("settings.general.fontSize"), m_fontSizeSpin);
+    addCompactFormRow(fontForm, m_fontBoldCheck);
+    addCompactFormRow(fontForm, resetFontButton);
+    root->addWidget(fontGroup);
+    root->addStretch(1);
 
     return w;
 }

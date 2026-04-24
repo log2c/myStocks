@@ -40,6 +40,16 @@ inline QString defaultChrome100UserAgent() {
     );
 }
 
+inline QString defaultFloatingWindowFontFamily() {
+#if defined(Q_OS_MACOS)
+    return QStringLiteral("PingFang SC");
+#elif defined(Q_OS_WIN)
+    return QStringLiteral("Microsoft YaHei");
+#else
+    return QString();
+#endif
+}
+
 struct AppConfig {
     int pollMs = 3000;
     double opacity = 0.9;
@@ -68,6 +78,9 @@ struct AppConfig {
 
     bool transparentBackgroundEnabled = false;
     int transparentBackgroundOpacity = 100;
+    QString floatingWindowFontFamily = defaultFloatingWindowFontFamily();
+    int floatingWindowFontSize = 0;
+    bool floatingWindowFontBold = false;
 
     bool showHeader = true;
     bool showGrid = false;
