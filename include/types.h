@@ -55,7 +55,7 @@ struct AppConfig {
     double opacity = 0.9;
     QString hotkey = "Ctrl+Alt+S";
     bool startupShowFloatingWindow = true;
-    QString apiSource = "tencent";
+    QString apiSource = "eastmoney";
     QString xtickToken;
     QString language = "auto";
 
