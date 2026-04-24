@@ -443,8 +443,8 @@ void applyCompactFormLayout(QFormLayout* form) {
 
     form->setContentsMargins(10, 8, 10, 8);
     form->setHorizontalSpacing(10);
-    form->setVerticalSpacing(6);
-    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    form->setVerticalSpacing(9);
+    form->setFieldGrowthPolicy(QFormLayout::FieldsStayAtSizeHint);
     form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
     form->setFormAlignment(Qt::AlignTop);
 }
@@ -504,7 +504,7 @@ SettingsDialog::SettingsDialog(
     tabs->addTab(makeScrollableTab(buildNetworkTab(), tabs), trText("settings.tab.network"));
     tabs->addTab(makeScrollableTab(buildDisplayTab(), tabs), trText("settings.tab.display"));
     tabs->addTab(makeScrollableTab(buildStocksTab(), tabs), trText("settings.tab.stocks"));
-    tabs->addTab(makeScrollableTab(buildIndexSectorTab(), tabs), trText("settings.tab.indexSector"));
+    tabs->addTab(buildIndexSectorTab(), trText("settings.tab.indexSector"));
     tabs->addTab(makeScrollableTab(buildOtherTab(), tabs), trText("settings.tab.other"));
     tabs->addTab(makeScrollableTab(buildAboutTab(), tabs), trText("settings.tab.about"));
     root->addWidget(tabs);
@@ -754,8 +754,9 @@ QWidget* SettingsDialog::buildGeneralTab() {
     applyCompactFormLayout(form);
 
     m_pollSpin = new QSpinBox(w);
-    m_pollSpin->setRange(500, 60000);
-    m_pollSpin->setValue(m_cfg.pollMs);
+    m_pollSpin->setRange(3000, 60000);
+    m_pollSpin->setSingleStep(10);
+    m_pollSpin->setValue(qMax(3000, m_cfg.pollMs));
 
     m_hotkeyEdit = new QKeySequenceEdit(QKeySequence(m_cfg.hotkey), w);
     m_hotkeyEdit->setToolTip(trText("settings.general.hotkeyHint"));
@@ -1025,7 +1026,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
     QFormLayout* fontForm = new QFormLayout(fontGroup);
     applyCompactFormLayout(fontForm);
     fontForm->setContentsMargins(6, 6, 6, 6);
-    fontForm->setVerticalSpacing(5);
+    fontForm->setVerticalSpacing(8);
 
     QFont effectiveBaseFont = w->font();
     const QString defaultFamily = defaultFloatingWindowFontFamily();
@@ -1127,19 +1128,19 @@ QWidget* SettingsDialog::buildDisplayTab() {
     QFormLayout* windowForm = new QFormLayout(windowGroup);
     applyCompactFormLayout(windowForm);
     windowForm->setContentsMargins(6, 6, 6, 6);
-    windowForm->setVerticalSpacing(5);
+    windowForm->setVerticalSpacing(8);
 
     QGroupBox* interactionGroup = new QGroupBox(trText("settings.display.groupInteraction"), w);
     QFormLayout* interactionForm = new QFormLayout(interactionGroup);
     applyCompactFormLayout(interactionForm);
     interactionForm->setContentsMargins(6, 6, 6, 6);
-    interactionForm->setVerticalSpacing(5);
+    interactionForm->setVerticalSpacing(8);
 
     QGroupBox* columnsGroup = new QGroupBox(trText("settings.display.groupColumns"), w);
     QFormLayout* columnsForm = new QFormLayout(columnsGroup);
     applyCompactFormLayout(columnsForm);
     columnsForm->setContentsMargins(6, 6, 6, 6);
-    columnsForm->setVerticalSpacing(5);
+    columnsForm->setVerticalSpacing(8);
 
     m_floatingTopMostCheck = new QCheckBox(trText("settings.display.alwaysOnTop"), w);
     m_floatingTopMostCheck->setChecked(m_cfg.floatingWindowAlwaysOnTop);
@@ -1711,7 +1712,7 @@ QWidget* SettingsDialog::buildStocksTab() {
 QWidget* SettingsDialog::buildIndexSectorTab() {
     QWidget* w = new QWidget(this);
     QVBoxLayout* root = new QVBoxLayout(w);
-    root->setSpacing(6);
+    root->setSpacing(8);
     root->setContentsMargins(6, 6, 6, 6);
 
     // --- Index section ---
@@ -1730,7 +1731,7 @@ QWidget* SettingsDialog::buildIndexSectorTab() {
     m_indexList->setDragEnabled(true);
     m_indexList->setAcceptDrops(true);
     m_indexList->setDropIndicatorShown(true);
-    m_indexList->setMinimumHeight(160);
+    m_indexList->setMinimumHeight(120);
 
     QSet<QString> checkedKeys;
     QStringList orderedKeys;
@@ -1815,7 +1816,7 @@ QWidget* SettingsDialog::buildIndexSectorTab() {
         trText("settings.stocks.colName"),
         trText("settings.stocks.colDel")
     });
-    table->setMinimumHeight(180);
+    table->setMinimumHeight(140);
 
     for (const StockItem& sector : m_sectors) {
         const QString code = normalizeSectorCode(sector.code);
