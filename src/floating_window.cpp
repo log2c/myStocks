@@ -5,6 +5,7 @@
 #include <QEnterEvent>
 #include <QEvent>
 #include <QFontMetrics>
+#include <QGuiApplication>
 #include <QHeaderView>
 #include <QLayout>
 #include <QMouseEvent>
@@ -20,6 +21,11 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(Q_OS_MACOS)
+#include <Carbon/Carbon.h>
+#include <CoreGraphics/CoreGraphics.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
 #endif
 
 namespace {
@@ -61,14 +67,6 @@ struct HoverReadingTheme {
     QColor border;
     QColor textPrimary;
 };
-
-QString normalizeHoverReadingUiMode(const QString& rawMode) {
-    const QString mode = rawMode.trimmed().toLower();
-    if (mode == QLatin1String("light") || mode == QLatin1String("dark")) {
-        return mode;
-    }
-    return QStringLiteral("dark");
-}
 
 HoverReadingTheme hoverReadingThemeForMode(const QString& rawMode, bool transparentBackgroundEnabled) {
     const QString mode = normalizeHoverReadingUiMode(rawMode);
@@ -184,6 +182,85 @@ QFont effectiveFloatingWindowFont(const AppConfig& cfg, const QFont& baseFont) {
 
     return font;
 }
+
+#if defined(WIN32)
+bool isVirtualKeyPressed(int virtualKey) {
+    return (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+}
+#elif defined(Q_OS_MACOS)
+bool isMacKeyPressed(CGKeyCode keycode) {
+    return CGEventSourceKeyState(kCGEventSourceStateCombinedSessionState, keycode);
+}
+#endif
+
+bool isActivationKeyPressed(const QString& rawKey) {
+    const QString key = normalizeMousePassthroughActivationKey(rawKey);
+
+#if defined(WIN32)
+    if (key == QLatin1String("ctrl")) {
+        return isVirtualKeyPressed(VK_LCONTROL) || isVirtualKeyPressed(VK_RCONTROL);
+    }
+    if (key == QLatin1String("shift")) {
+        return isVirtualKeyPressed(VK_LSHIFT) || isVirtualKeyPressed(VK_RSHIFT);
+    }
+    if (key == QLatin1String("alt")) {
+        return isVirtualKeyPressed(VK_LMENU) || isVirtualKeyPressed(VK_RMENU);
+    }
+    return false;
+#elif defined(Q_OS_MACOS)
+    if (key == QLatin1String("ctrl")) {
+        return isMacKeyPressed(kVK_Control) || isMacKeyPressed(kVK_RightControl);
+    }
+    if (key == QLatin1String("shift")) {
+        return isMacKeyPressed(kVK_Shift) || isMacKeyPressed(kVK_RightShift);
+    }
+    if (key == QLatin1String("alt")) {
+        return isMacKeyPressed(kVK_Option) || isMacKeyPressed(kVK_RightOption);
+    }
+    if (key == QLatin1String("command")) {
+        return isMacKeyPressed(kVK_Command) || isMacKeyPressed(kVK_RightCommand);
+    }
+    return false;
+#else
+    const Qt::KeyboardModifiers modifiers = QGuiApplication::queryKeyboardModifiers();
+    if (key == QLatin1String("ctrl")) {
+        return modifiers.testFlag(Qt::ControlModifier);
+    }
+    if (key == QLatin1String("shift")) {
+        return modifiers.testFlag(Qt::ShiftModifier);
+    }
+    if (key == QLatin1String("alt")) {
+        return modifiers.testFlag(Qt::AltModifier);
+    }
+    return false;
+#endif
+}
+
+#if defined(Q_OS_MACOS)
+void* macWindowHandleForWidget(const QWidget* widget) {
+    if (!widget) {
+        return nullptr;
+    }
+
+    void* nsView = reinterpret_cast<void*>(widget->winId());
+    if (!nsView) {
+        return nullptr;
+    }
+
+    auto sendObjectMessage = reinterpret_cast<void* (*)(void*, SEL)>(objc_msgSend);
+    return sendObjectMessage(nsView, sel_registerName("window"));
+}
+
+void setMacWindowIgnoresMouseEvents(const QWidget* widget, bool ignore) {
+    void* nsWindow = macWindowHandleForWidget(widget);
+    if (!nsWindow) {
+        return;
+    }
+
+    auto sendBoolMessage = reinterpret_cast<void (*)(void*, SEL, bool)>(objc_msgSend);
+    sendBoolMessage(nsWindow, sel_registerName("setIgnoresMouseEvents:"), ignore);
+}
+#endif
 
 class BottomGridTableView : public QTableView {
 public:
@@ -369,6 +446,12 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
         setHoverReadingActive(true, true);
     });
 
+    m_mousePassthroughTimer = new QTimer(this);
+    m_mousePassthroughTimer->setInterval(30);
+    connect(m_mousePassthroughTimer, &QTimer::timeout, this, [this]() {
+        refreshMousePassthroughState();
+    });
+
     m_styleAnimation = new QVariantAnimation(this);
     m_styleAnimation->setDuration(180);
     m_styleAnimation->setEasingCurve(QEasingCurve::InOutCubic);
@@ -382,8 +465,52 @@ bool FloatingWindow::isCursorInsideWindow() const {
     return frameGeometry().contains(QCursor::pos());
 }
 
+bool FloatingWindow::isInteractionActivationPressed() const {
+    return isActivationKeyPressed(m_cfg.mousePassthroughActivationKey);
+}
+
+bool FloatingWindow::shouldCaptureMouseInteraction() const {
+    if (m_dragging) {
+        return true;
+    }
+    return isInteractionActivationPressed() && isCursorInsideWindow();
+}
+
+bool FloatingWindow::shouldAllowMouseInteraction() const {
+    if (!m_cfg.mousePassthroughEnabled) {
+        return true;
+    }
+    return shouldCaptureMouseInteraction();
+}
+
+bool FloatingWindow::isDragTriggerButton(Qt::MouseButton button) const {
+    if (button == Qt::LeftButton) {
+        return true;
+    }
+#if defined(Q_OS_MACOS)
+    if (button == Qt::RightButton
+        && m_cfg.mousePassthroughEnabled
+        && normalizeMousePassthroughActivationKey(m_cfg.mousePassthroughActivationKey)
+            == QLatin1String("ctrl")) {
+        return true;
+    }
+#endif
+    return false;
+}
+
+bool FloatingWindow::isCurrentDragButtonHeld(Qt::MouseButtons buttons) const {
+    if (m_dragButton == Qt::NoButton) {
+        return false;
+    }
+    return buttons.testFlag(m_dragButton);
+}
+
 void FloatingWindow::scheduleHoverReadingTimer() {
-    if (!m_hoverTimer || !m_cfg.hoverReadingEnabled || m_hoverReadingActive || m_dragging) {
+    if (!m_hoverTimer
+        || !m_cfg.hoverReadingEnabled
+        || m_hoverReadingActive
+        || m_dragging
+        || !shouldAllowMouseInteraction()) {
         return;
     }
     if (!isCursorInsideWindow()) {
@@ -395,6 +522,14 @@ void FloatingWindow::scheduleHoverReadingTimer() {
 }
 
 void FloatingWindow::updateHoverReadingState(bool animated) {
+    if (m_cfg.mousePassthroughEnabled && !shouldAllowMouseInteraction()) {
+        if (m_hoverTimer) {
+            m_hoverTimer->stop();
+        }
+        setHoverReadingActive(false, animated);
+        return;
+    }
+
     if (!m_cfg.hoverReadingEnabled) {
         if (m_hoverTimer) {
             m_hoverTimer->stop();
@@ -404,6 +539,15 @@ void FloatingWindow::updateHoverReadingState(bool animated) {
     }
 
     if (isCursorInsideWindow()) {
+        if (m_cfg.mousePassthroughEnabled) {
+            if (m_hoverTimer) {
+                m_hoverTimer->stop();
+            }
+            if (!m_dragging) {
+                setHoverReadingActive(true, animated);
+            }
+            return;
+        }
         if (m_hoverReadingActive) {
             if (m_hoverTimer) {
                 m_hoverTimer->stop();
@@ -420,6 +564,63 @@ void FloatingWindow::updateHoverReadingState(bool animated) {
     setHoverReadingActive(false, animated);
 }
 
+void FloatingWindow::refreshMousePassthroughState(bool force) {
+    const bool shouldPassthrough = m_cfg.mousePassthroughEnabled
+        && !shouldCaptureMouseInteraction();
+    if (!force && shouldPassthrough == m_mousePassthroughActive) {
+        return;
+    }
+
+    const bool stateChanged = setMousePassthroughActive(shouldPassthrough);
+
+    if (shouldPassthrough) {
+        if (m_hoverTimer) {
+            m_hoverTimer->stop();
+        }
+        setHoverReadingActive(false, true);
+        return;
+    }
+
+    if (stateChanged) {
+        QTimer::singleShot(0, this, [this]() {
+            if (!m_mousePassthroughActive) {
+                updateHoverReadingState(false);
+            }
+        });
+        return;
+    }
+
+    updateHoverReadingState(false);
+}
+
+bool FloatingWindow::setMousePassthroughActive(bool active) {
+    const bool stateChanged = m_mousePassthroughActive != active;
+    m_mousePassthroughActive = active;
+
+#if defined(Q_OS_MACOS)
+    if (isVisible()) {
+        setMacWindowIgnoresMouseEvents(this, active);
+    }
+    return stateChanged;
+#else
+    if (!stateChanged
+        && windowFlags().testFlag(Qt::WindowTransparentForInput) == active) {
+        return false;
+    }
+
+    const QRect oldGeometry = geometry();
+    const bool wasVisible = isVisible();
+    setWindowFlag(Qt::WindowTransparentForInput, active);
+    if (wasVisible) {
+        show();
+        if (geometry() != oldGeometry) {
+            setGeometry(oldGeometry);
+        }
+    }
+    return true;
+#endif
+}
+
 bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
     switch (event->type()) {
     case QEvent::Enter:
@@ -429,6 +630,13 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
             || watched == m_table
             || watched == m_table->viewport()
             || watched == m_table->horizontalHeader()) {
+            if (!shouldAllowMouseInteraction()) {
+                if (m_hoverTimer) {
+                    m_hoverTimer->stop();
+                }
+                setHoverReadingActive(false, false);
+                return false;
+            }
             updateHoverReadingState(false);
         }
         break;
@@ -443,17 +651,19 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
         break;
     case QEvent::MouseButtonPress: {
         auto* mouseEvent = static_cast<QMouseEvent*>(event);
-        if (mouseEvent->button() == Qt::LeftButton) {
+        if (isDragTriggerButton(mouseEvent->button()) && shouldAllowMouseInteraction()) {
             m_dragging = true;
+            m_dragButton = mouseEvent->button();
             m_dragOffset = mouseEvent->globalPosition().toPoint() - frameGeometry().topLeft();
             grabMouse();
+            refreshMousePassthroughState();
             return true;
         }
         break;
     }
     case QEvent::MouseMove: {
         auto* mouseEvent = static_cast<QMouseEvent*>(event);
-        if (m_dragging && (mouseEvent->buttons() & Qt::LeftButton)) {
+        if (m_dragging && isCurrentDragButtonHeld(mouseEvent->buttons())) {
             move(mouseEvent->globalPosition().toPoint() - m_dragOffset);
             updateHoverReadingState(false);
             return true;
@@ -462,11 +672,13 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
     }
     case QEvent::MouseButtonRelease: {
         auto* mouseEvent = static_cast<QMouseEvent*>(event);
-        if (mouseEvent->button() == Qt::LeftButton) {
+        if (mouseEvent->button() == m_dragButton) {
             m_dragging = false;
+            m_dragButton = Qt::NoButton;
             releaseMouse();
             enforceWindowLevel(false);
             updateHoverReadingState(true);
+            refreshMousePassthroughState();
             return true;
         }
         break;
@@ -523,9 +735,20 @@ void FloatingWindow::applyConfig(const AppConfig& cfg) {
         m_hoverTimer->stop();
     }
     setHoverReadingActive(false, false);
+    m_dragging = false;
+    m_dragButton = Qt::NoButton;
 
     applyStyle();
     applyColumns();
+
+    if (m_mousePassthroughTimer) {
+        if (m_cfg.mousePassthroughEnabled) {
+            m_mousePassthroughTimer->start();
+        } else {
+            m_mousePassthroughTimer->stop();
+        }
+    }
+    refreshMousePassthroughState(true);
 
     if (isVisible()) {
         enforceWindowLevel(false);
@@ -534,16 +757,18 @@ void FloatingWindow::applyConfig(const AppConfig& cfg) {
 }
 
 void FloatingWindow::mousePressEvent(QMouseEvent* event) {
-    if (event->button() == Qt::LeftButton) {
+    if (isDragTriggerButton(event->button()) && shouldAllowMouseInteraction()) {
         m_dragging = true;
+        m_dragButton = event->button();
         m_dragOffset = event->globalPosition().toPoint() - frameGeometry().topLeft();
         grabMouse();
+        refreshMousePassthroughState();
     }
     QWidget::mousePressEvent(event);
 }
 
 void FloatingWindow::mouseMoveEvent(QMouseEvent* event) {
-    if (m_dragging && (event->buttons() & Qt::LeftButton)) {
+    if (m_dragging && isCurrentDragButtonHeld(event->buttons())) {
         move(event->globalPosition().toPoint() - m_dragOffset);
         updateHoverReadingState(false);
         return;
@@ -552,11 +777,13 @@ void FloatingWindow::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void FloatingWindow::mouseReleaseEvent(QMouseEvent* event) {
-    if (event->button() == Qt::LeftButton) {
+    if (event->button() == m_dragButton) {
         m_dragging = false;
+        m_dragButton = Qt::NoButton;
         releaseMouse();
         enforceWindowLevel(false);
         updateHoverReadingState(true);
+        refreshMousePassthroughState();
     }
     QWidget::mouseReleaseEvent(event);
 }
@@ -565,16 +792,19 @@ void FloatingWindow::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
 
     enforceWindowLevel(true);
+    refreshMousePassthroughState(true);
     updateHoverReadingState(false);
 }
 
 void FloatingWindow::enterEvent(QEnterEvent* event) {
     QWidget::enterEvent(event);
+    refreshMousePassthroughState();
     updateHoverReadingState(false);
 }
 
 void FloatingWindow::leaveEvent(QEvent* event) {
     QWidget::leaveEvent(event);
+    refreshMousePassthroughState();
     updateHoverReadingState(true);
 }
 

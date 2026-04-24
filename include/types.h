@@ -50,6 +50,29 @@ inline QString defaultFloatingWindowFontFamily() {
 #endif
 }
 
+inline QString normalizeMousePassthroughActivationKey(const QString& rawKey) {
+    const QString key = rawKey.trimmed().toLower();
+    if (key == QLatin1String("ctrl")
+        || key == QLatin1String("shift")
+        || key == QLatin1String("alt")) {
+        return key;
+    }
+#if defined(Q_OS_MACOS)
+    if (key == QLatin1String("command")) {
+        return key;
+    }
+#endif
+    return QStringLiteral("ctrl");
+}
+
+inline QString normalizeHoverReadingUiMode(const QString& rawMode) {
+    const QString mode = rawMode.trimmed().toLower();
+    if (mode == QLatin1String("light") || mode == QLatin1String("dark")) {
+        return mode;
+    }
+    return QStringLiteral("dark");
+}
+
 struct AppConfig {
     int pollMs = 3000;
     double opacity = 0.9;
@@ -123,6 +146,8 @@ struct AppConfig {
     double hoverReadingDelaySecs = 1.0;
     QString hoverReadingUiMode = "dark";
     bool hoverReadingTransparentBackgroundEnabled = true;
+    bool mousePassthroughEnabled = false;
+    QString mousePassthroughActivationKey = "ctrl";
     double floatingWindowPaddingPx = static_cast<double>(kFloatingWindowPaddingPx);
 
     QMap<int, int> columnWidths;

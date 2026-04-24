@@ -364,14 +364,6 @@ QKeySequence normalizedHotkeySequence(const QKeySequence& sequence) {
     return sequence;
 }
 
-QString normalizeHoverReadingUiMode(const QString& rawMode) {
-    const QString mode = rawMode.trimmed().toLower();
-    if (mode == QLatin1String("light") || mode == QLatin1String("dark")) {
-        return mode;
-    }
-    return QStringLiteral("dark");
-}
-
 QStringList normalizeSinaCodesForMarket(const QString& rawCode, const QString& marketFilter) {
     const QString code = rawCode.trimmed().toLower();
     if (code.isEmpty()) {
@@ -593,6 +585,13 @@ AppConfig SettingsDialog::config() const {
     out.hoverReadingTransparentBackgroundEnabled = m_hoverReadingTransparentBackgroundCheck
         ? m_hoverReadingTransparentBackgroundCheck->isChecked()
         : out.hoverReadingTransparentBackgroundEnabled;
+    out.mousePassthroughEnabled = m_mousePassthroughCheck
+        && m_mousePassthroughCheck->isChecked();
+    out.mousePassthroughActivationKey = normalizeMousePassthroughActivationKey(
+        m_mousePassthroughKeyCombo
+            ? m_mousePassthroughKeyCombo->currentData().toString()
+            : out.mousePassthroughActivationKey
+    );
 
     for (int i = 0; i < ColCount; ++i) {
         out.visibleColumns[i] = false;
@@ -1269,7 +1268,9 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_hoverReadingDelaySpin->setDecimals(1);
     m_hoverReadingDelaySpin->setSuffix(trText("settings.display.hoverReadingDelaySuffix"));
     m_hoverReadingDelaySpin->setValue(qBound(0.1, m_cfg.hoverReadingDelaySecs, 60.0));
-    m_hoverReadingDelaySpin->setEnabled(m_cfg.hoverReadingEnabled);
+    m_hoverReadingDelaySpin->setEnabled(
+        m_cfg.hoverReadingEnabled && !m_cfg.mousePassthroughEnabled
+    );
 
     m_hoverReadingModeCombo = new QComboBox(w);
     m_hoverReadingModeCombo->addItem(trText("settings.display.hoverReadingModeLight"), "light");
@@ -1294,21 +1295,65 @@ QWidget* SettingsDialog::buildDisplayTab() {
     );
     m_hoverReadingTransparentBackgroundCheck->setEnabled(m_cfg.hoverReadingEnabled);
 
+    m_mousePassthroughCheck = new QCheckBox(trText("settings.display.mousePassthrough"), w);
+    m_mousePassthroughCheck->setChecked(m_cfg.mousePassthroughEnabled);
+    addCompactFormRow(interactionForm, m_mousePassthroughCheck);
+
+    m_mousePassthroughKeyCombo = new QComboBox(w);
+    m_mousePassthroughKeyCombo->addItem(
+        trText("settings.display.mousePassthroughKeyCtrl"),
+        QStringLiteral("ctrl")
+    );
+    m_mousePassthroughKeyCombo->addItem(
+        trText("settings.display.mousePassthroughKeyShift"),
+        QStringLiteral("shift")
+    );
+#if defined(Q_OS_MACOS)
+    m_mousePassthroughKeyCombo->addItem(
+        trText("settings.display.mousePassthroughKeyCommand"),
+        QStringLiteral("command")
+    );
+#endif
+    m_mousePassthroughKeyCombo->addItem(
+        trText("settings.display.mousePassthroughKeyAlt"),
+        QStringLiteral("alt")
+    );
+    int mousePassthroughKeyIndex = m_mousePassthroughKeyCombo->findData(
+        normalizeMousePassthroughActivationKey(m_cfg.mousePassthroughActivationKey)
+    );
+    if (mousePassthroughKeyIndex < 0) {
+        mousePassthroughKeyIndex = m_mousePassthroughKeyCombo->findData(QStringLiteral("ctrl"));
+    }
+    if (mousePassthroughKeyIndex >= 0) {
+        m_mousePassthroughKeyCombo->setCurrentIndex(mousePassthroughKeyIndex);
+    }
+    m_mousePassthroughKeyCombo->setEnabled(m_cfg.mousePassthroughEnabled);
+
+    interactionForm->addRow(
+        trText("settings.display.mousePassthroughTrigger"),
+        m_mousePassthroughKeyCombo
+    );
     interactionForm->addRow(trText("settings.display.hoverReadingDelay"), m_hoverReadingDelaySpin);
     interactionForm->addRow(trText("settings.display.hoverReadingMode"), m_hoverReadingModeCombo);
     addCompactFormRow(interactionForm, m_hoverReadingTransparentBackgroundCheck);
 
     QWidget* hoverReadingDelayLabel = interactionForm->labelForField(m_hoverReadingDelaySpin);
     QWidget* hoverReadingModeLabel = interactionForm->labelForField(m_hoverReadingModeCombo);
+    QWidget* mousePassthroughKeyLabel = interactionForm->labelForField(m_mousePassthroughKeyCombo);
     if (hoverReadingDelayLabel) {
-        hoverReadingDelayLabel->setEnabled(m_cfg.hoverReadingEnabled);
+        hoverReadingDelayLabel->setEnabled(
+            m_cfg.hoverReadingEnabled && !m_cfg.mousePassthroughEnabled
+        );
     }
     if (hoverReadingModeLabel) {
         hoverReadingModeLabel->setEnabled(m_cfg.hoverReadingEnabled);
     }
+    if (mousePassthroughKeyLabel) {
+        mousePassthroughKeyLabel->setEnabled(m_cfg.mousePassthroughEnabled);
+    }
 
     connect(m_hoverReadingCheck, &QCheckBox::toggled, this, [this](bool checked) {
-        m_hoverReadingDelaySpin->setEnabled(checked);
+        m_hoverReadingDelaySpin->setEnabled(checked && !m_cfg.mousePassthroughEnabled);
         if (m_hoverReadingModeCombo) {
             m_hoverReadingModeCombo->setEnabled(checked);
         }
@@ -1316,9 +1361,13 @@ QWidget* SettingsDialog::buildDisplayTab() {
             m_hoverReadingTransparentBackgroundCheck->setEnabled(checked);
         }
     });
-    connect(m_hoverReadingCheck, &QCheckBox::toggled, this, [hoverReadingDelayLabel](bool checked) {
+    connect(
+        m_hoverReadingCheck,
+        &QCheckBox::toggled,
+        this,
+        [this, hoverReadingDelayLabel](bool checked) {
         if (hoverReadingDelayLabel) {
-            hoverReadingDelayLabel->setEnabled(checked);
+            hoverReadingDelayLabel->setEnabled(checked && !m_cfg.mousePassthroughEnabled);
         }
     });
     connect(m_hoverReadingCheck, &QCheckBox::toggled, this, [hoverReadingModeLabel](bool checked) {
@@ -1326,6 +1375,31 @@ QWidget* SettingsDialog::buildDisplayTab() {
             hoverReadingModeLabel->setEnabled(checked);
         }
     });
+    connect(m_mousePassthroughCheck, &QCheckBox::toggled, this, [this](bool checked) {
+        m_cfg.mousePassthroughEnabled = checked;
+        if (m_hoverReadingDelaySpin) {
+            const bool hoverReadingEnabled = m_hoverReadingCheck && m_hoverReadingCheck->isChecked();
+            m_hoverReadingDelaySpin->setEnabled(hoverReadingEnabled && !checked);
+        }
+        if (m_mousePassthroughKeyCombo) {
+            m_mousePassthroughKeyCombo->setEnabled(checked);
+        }
+    });
+    connect(
+        m_mousePassthroughCheck,
+        &QCheckBox::toggled,
+        this,
+        [this, hoverReadingDelayLabel, mousePassthroughKeyLabel](bool checked) {
+            if (hoverReadingDelayLabel) {
+                const bool hoverReadingEnabled = m_hoverReadingCheck
+                    && m_hoverReadingCheck->isChecked();
+                hoverReadingDelayLabel->setEnabled(hoverReadingEnabled && !checked);
+            }
+            if (mousePassthroughKeyLabel) {
+                mousePassthroughKeyLabel->setEnabled(checked);
+            }
+        }
+    );
 
     const QStringList names = i18n::columnNames(m_uiLanguage);
     const QVector<int> columnOrder = normalizedColumnOrder(m_cfg.columnOrder);

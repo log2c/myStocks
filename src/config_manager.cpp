@@ -41,14 +41,6 @@ QVector<int> normalizedColumnOrder(const QVector<int>& order) {
     return out;
 }
 
-QString normalizeHoverReadingUiMode(const QString& rawMode) {
-    const QString mode = rawMode.trimmed().toLower();
-    if (mode == QLatin1String("light") || mode == QLatin1String("dark")) {
-        return mode;
-    }
-    return QStringLiteral("dark");
-}
-
 QString settingsStatusToString(QSettings::Status status) {
     switch (status) {
     case QSettings::NoError:
@@ -323,6 +315,16 @@ AppConfig ConfigManager::loadConfig() {
         "ui/hoverReadingTransparentBackgroundEnabled",
         cfg.hoverReadingTransparentBackgroundEnabled
     ).toBool();
+    cfg.mousePassthroughEnabled = s.value(
+        "ui/mousePassthroughEnabled",
+        cfg.mousePassthroughEnabled
+    ).toBool();
+    cfg.mousePassthroughActivationKey = normalizeMousePassthroughActivationKey(
+        s.value(
+            "ui/mousePassthroughActivationKey",
+            cfg.mousePassthroughActivationKey
+        ).toString()
+    );
     cfg.floatingWindowPaddingPx = s.value(
         "ui/floatingWindowPaddingPx",
         cfg.floatingWindowPaddingPx
@@ -397,6 +399,9 @@ AppConfig ConfigManager::loadConfig() {
     cfg.floatingWindowFontSize = qBound(0, cfg.floatingWindowFontSize, 72);
     cfg.hoverReadingDelaySecs = qBound(0.1, cfg.hoverReadingDelaySecs, 60.0);
     cfg.hoverReadingUiMode = normalizeHoverReadingUiMode(cfg.hoverReadingUiMode);
+    cfg.mousePassthroughActivationKey = normalizeMousePassthroughActivationKey(
+        cfg.mousePassthroughActivationKey
+    );
     cfg.floatingWindowPaddingPx = qMax(0.0, cfg.floatingWindowPaddingPx);
 
         qInfo() << "ConfigManager::loadConfig"
@@ -494,6 +499,11 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue(
         "ui/hoverReadingTransparentBackgroundEnabled",
         cfg.hoverReadingTransparentBackgroundEnabled
+    );
+    s.setValue("ui/mousePassthroughEnabled", cfg.mousePassthroughEnabled);
+    s.setValue(
+        "ui/mousePassthroughActivationKey",
+        normalizeMousePassthroughActivationKey(cfg.mousePassthroughActivationKey)
     );
     s.setValue("ui/floatingWindowPaddingPx", qMax(0.0, cfg.floatingWindowPaddingPx));
     s.setValue("ui/windowRect", cfg.windowRect);

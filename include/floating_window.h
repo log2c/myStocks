@@ -28,8 +28,15 @@ protected:
 
 private:
     bool isCursorInsideWindow() const;
+    bool isInteractionActivationPressed() const;
+    bool shouldCaptureMouseInteraction() const;
+    bool shouldAllowMouseInteraction() const;
+    bool isDragTriggerButton(Qt::MouseButton button) const;
+    bool isCurrentDragButtonHeld(Qt::MouseButtons buttons) const;
     void scheduleHoverReadingTimer();
     void updateHoverReadingState(bool animated);
+    void refreshMousePassthroughState(bool force = false);
+    bool setMousePassthroughActive(bool active);
     void enforceWindowLevel(bool activate = false);
     void applyStyle();
     void applyHoverReadingStyle();
@@ -47,9 +54,12 @@ private:
     AppConfig m_cfg;
     bool m_dragging = false;
     QPoint m_dragOffset;
+    Qt::MouseButton m_dragButton = Qt::NoButton;
 
     QTimer* m_hoverTimer = nullptr;
+    QTimer* m_mousePassthroughTimer = nullptr;
     QVariantAnimation* m_styleAnimation = nullptr;
     bool m_hoverReadingActive = false;
     qreal m_hoverReadingProgress = 0.0;
+    bool m_mousePassthroughActive = false;
 };
