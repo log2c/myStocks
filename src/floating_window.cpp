@@ -530,7 +530,7 @@ void FloatingWindow::applyStyle() {
         "border: 1px solid rgba(%5,%6,%7,%8);"
         "}"
         "QTableView{"
-        "background: transparent;"
+        "background-color: rgba(%1,%2,%3,%4);"
         "border: none;"
         "border-radius: 8px;"
         "color: rgb(%9,%10,%11);"
@@ -571,7 +571,7 @@ void FloatingWindow::applyStyle() {
 #ifdef WIN32
     // Sync palette so Fusion style picks up the correct text / base colors.
     QPalette pal = m_table->palette();
-    pal.setColor(QPalette::Base, Qt::transparent);
+    pal.setColor(QPalette::Base, b);
     pal.setColor(QPalette::Text, t);
     pal.setColor(QPalette::WindowText, t);
     m_table->setPalette(pal);
@@ -712,7 +712,7 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
     const QColor normalGrid = m_cfg.gridColor;
     const QColor normalBorder(0, 0, 0, 0);
     const QColor normalHeaderBg(0, 0, 0, 0);
-    const QColor normalTableBg(0, 0, 0, 0);
+    const QColor normalTableBg = normalBg;
     const QColor normalTableBorder(0, 0, 0, 0);
 
     const bool transparentBg = m_cfg.hoverReadingEnabled
