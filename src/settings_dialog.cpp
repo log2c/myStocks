@@ -7,6 +7,7 @@
 #include "network_utils.h"
 
 #include <QAbstractItemView>
+#include <QApplication>
 #include <QColorDialog>
 #include <QDesktopServices>
 #include <QDialogButtonBox>
@@ -131,6 +132,39 @@ bool isPredefinedIndexCode(const QString& rawCode) {
         return false;
     }
     return predefinedIndexAliases().contains(code);
+}
+
+QIcon dialogWindowIcon(QWidget* parent) {
+    if (parent && !parent->windowIcon().isNull()) {
+        return parent->windowIcon();
+    }
+    if (qApp && !qApp->windowIcon().isNull()) {
+        return qApp->windowIcon();
+    }
+    return {};
+}
+
+QMessageBox::StandardButton showIconMessageBox(
+    QWidget* parent,
+    QMessageBox::Icon icon,
+    const QString& title,
+    const QString& text,
+    QMessageBox::StandardButtons buttons = QMessageBox::Ok,
+    QMessageBox::StandardButton defaultButton = QMessageBox::NoButton
+) {
+    QMessageBox box(icon, title, text, buttons, parent);
+    const QIcon windowIcon = dialogWindowIcon(parent);
+    if (!windowIcon.isNull()) {
+        box.setWindowIcon(windowIcon);
+        box.setIconPixmap(windowIcon.pixmap(36, 36));
+    }
+#if QT_VERSION >= QT_VERSION_CHECK(6, 6, 0)
+    box.setOption(QMessageBox::Option::DontUseNativeDialog, true);
+#endif
+    if (defaultButton != QMessageBox::NoButton) {
+        box.setDefaultButton(defaultButton);
+    }
+    return static_cast<QMessageBox::StandardButton>(box.exec());
 }
 
 class StockTableWidget : public QTableWidget {
@@ -483,6 +517,10 @@ SettingsDialog::SettingsDialog(
     , m_dataYamlPath(dataYamlPath)
     , m_uiLanguage(i18n::resolveLanguage(cfg.language)) {
     setWindowTitle(trText("settings.title"));
+    const QIcon windowIcon = dialogWindowIcon(this);
+    if (!windowIcon.isNull()) {
+        setWindowIcon(windowIcon);
+    }
     setWindowFlags(windowFlags() & ~Qt::WindowMaximizeButtonHint);
     setFixedSize(700, 560);
 
@@ -727,7 +765,16 @@ QPushButton* SettingsDialog::createColorButton(
 
     QObject::connect(btn, &QPushButton::clicked, parent, [btn, parent, pickTitle]() {
         const QColor current = btn->property("pickColor").value<QColor>();
-        const QColor picked = QColorDialog::getColor(current, parent, pickTitle);
+        QColorDialog dialog(current, parent);
+        dialog.setWindowTitle(pickTitle);
+        const QIcon windowIcon = dialogWindowIcon(parent);
+        if (!windowIcon.isNull()) {
+            dialog.setWindowIcon(windowIcon);
+        }
+        if (dialog.exec() != QDialog::Accepted) {
+            return;
+        }
+        const QColor picked = dialog.selectedColor();
         if (!picked.isValid()) {
             return;
         }
@@ -841,8 +888,9 @@ QWidget* SettingsDialog::buildGeneralTab() {
 
         const QString token = m_tokenEdit->text().trimmed();
         if (token.isEmpty()) {
-            QMessageBox::warning(
+            showIconMessageBox(
                 this,
+                QMessageBox::Warning,
                 trText("app.name"),
                 trText("settings.general.tokenEmpty")
             );
@@ -905,8 +953,9 @@ QWidget* SettingsDialog::buildGeneralTab() {
             m_tokenCheckBtn->setText(trText("settings.general.tokenCheck"));
 
             if (!netError.isEmpty()) {
-                QMessageBox::warning(
+                showIconMessageBox(
                     this,
+                    QMessageBox::Warning,
                     trText("app.name"),
                     trText("settings.general.tokenCheckFailedFmt").arg(netError)
                 );
@@ -916,8 +965,9 @@ QWidget* SettingsDialog::buildGeneralTab() {
             QJsonParseError parseError;
             const QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
             if (parseError.error != QJsonParseError::NoError) {
-                QMessageBox::warning(
+                showIconMessageBox(
                     this,
+                    QMessageBox::Warning,
                     trText("app.name"),
                     trText("settings.general.tokenCheckFailedFmt")
                         .arg(QStringLiteral("json parse error: ") + parseError.errorString())
@@ -961,7 +1011,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
                     ? trText("settings.general.tokenValidWithQuota")
                     : trText("settings.general.tokenValid");
                 qInfo() << "[TokenCheck] valid token result quotaExceeded=" << quotaExceeded;
-                QMessageBox::information(this, trText("app.name"), resultMessage);
+                showIconMessageBox(this, QMessageBox::Information, trText("app.name"), resultMessage);
                 return;
             }
 
@@ -969,8 +1019,9 @@ QWidget* SettingsDialog::buildGeneralTab() {
                 ? QString::fromUtf8(body).trimmed()
                 : message;
             const QString fallback = trText("settings.general.tokenInvalid");
-            QMessageBox::warning(
+            showIconMessageBox(
                 this,
+                QMessageBox::Warning,
                 trText("app.name"),
                 trText("settings.general.tokenCheckFailedFmt").arg(
                     detail.isEmpty() ? fallback : detail
@@ -1560,8 +1611,9 @@ QWidget* SettingsDialog::buildStocksTab() {
 
     m_stockTable = table;
     table->setConfirmDelete([this](const QString& display) -> bool {
-        const int ret = QMessageBox::question(
+        const QMessageBox::StandardButton ret = showIconMessageBox(
             this,
+            QMessageBox::Question,
             trText("app.name"),
             trText("settings.stocks.delConfirm").arg(display),
             QMessageBox::Yes | QMessageBox::No,
@@ -1698,8 +1750,9 @@ QWidget* SettingsDialog::buildStocksTab() {
 
         StockTableWidget* tbl = static_cast<StockTableWidget*>(m_stockTable);
         if (tbl->containsCode(code)) {
-            QMessageBox::information(
+            showIconMessageBox(
                 this,
+                QMessageBox::Information,
                 trText("app.name"),
                 trText("settings.stocks.duplicate")
             );
@@ -1716,7 +1769,12 @@ QWidget* SettingsDialog::buildStocksTab() {
     connect(saveBtn, &QPushButton::clicked, this, [this]() {
         if (m_dataYamlPath.isEmpty()) {
             qWarning() << "[StocksTab] save failed: empty yaml path.";
-            QMessageBox::warning(this, trText("app.name"), trText("settings.stocks.saveFail"));
+            showIconMessageBox(
+                this,
+                QMessageBox::Warning,
+                trText("app.name"),
+                trText("settings.stocks.saveFail")
+            );
             return;
         }
         const QVector<StockItem> stocks =
@@ -1724,10 +1782,20 @@ QWidget* SettingsDialog::buildStocksTab() {
         qInfo() << "[StocksTab] save requested path=" << m_dataYamlPath << "count=" << stocks.size();
         if (ConfigManager::saveStocksToYaml(m_dataYamlPath, stocks)) {
             qInfo() << "[StocksTab] save success path=" << m_dataYamlPath;
-            QMessageBox::information(this, trText("app.name"), trText("settings.stocks.saveOk"));
+            showIconMessageBox(
+                this,
+                QMessageBox::Information,
+                trText("app.name"),
+                trText("settings.stocks.saveOk")
+            );
         } else {
             qWarning() << "[StocksTab] save failed path=" << m_dataYamlPath;
-            QMessageBox::warning(this, trText("app.name"), trText("settings.stocks.saveFail"));
+            showIconMessageBox(
+                this,
+                QMessageBox::Warning,
+                trText("app.name"),
+                trText("settings.stocks.saveFail")
+            );
         }
     });
 
@@ -1771,8 +1839,9 @@ QWidget* SettingsDialog::buildStocksTab() {
 
         ignoredIndexes.removeDuplicates();
         if (!ignoredIndexes.isEmpty()) {
-            QMessageBox::information(
+            showIconMessageBox(
                 this,
+                QMessageBox::Information,
                 trText("app.name"),
                 trText("settings.indexSector.ignoreYamlIndexFmt")
                     .arg(ignoredIndexes.join(QStringLiteral(", ")))
@@ -1902,8 +1971,9 @@ QWidget* SettingsDialog::buildIndexSectorTab() {
 
     m_sectorTable = table;
     table->setConfirmDelete([this](const QString& display) -> bool {
-        const int ret = QMessageBox::question(
+        const QMessageBox::StandardButton ret = showIconMessageBox(
             this,
+            QMessageBox::Question,
             trText("app.name"),
             trText("settings.indexSector.sectorDelConfirm").arg(display),
             QMessageBox::Yes | QMessageBox::No,
@@ -2018,8 +2088,9 @@ QWidget* SettingsDialog::buildIndexSectorTab() {
 
         StockTableWidget* tbl = static_cast<StockTableWidget*>(m_sectorTable);
         if (tbl->containsCode(code)) {
-            QMessageBox::information(
+            showIconMessageBox(
                 this,
+                QMessageBox::Information,
                 trText("app.name"),
                 trText("settings.indexSector.sectorDuplicate")
             );
