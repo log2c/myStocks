@@ -722,6 +722,9 @@ void FloatingWindow::applyHoverReadingStyle() {
     const QColor hoverGridColor = lightMode ? lightGridColor : theme.border;
     const QColor grid = m_cfg.showGrid ? hoverGridColor : QColor(0, 0, 0, 0);
     const QColor transparentBorder(0, 0, 0, 0);
+    const QColor tableChromeBackground = transparentBg
+        ? QColor(0, 0, 0, 0)
+        : tableBackground;
 
     const QString css = QString(
         "QFrame#panel{"
@@ -730,7 +733,7 @@ void FloatingWindow::applyHoverReadingStyle() {
         "border: 1px solid rgba(%5,%6,%7,%8);"
         "}"
         "QTableView{"
-        "background-color: rgba(%1,%2,%3,%4);"
+        "background-color: rgba(%16,%17,%18,%19);"
         "border: 1px solid rgba(%16,%17,%18,%19);"
         "border-radius: 8px;"
         "color: rgb(%9,%10,%11);"
@@ -767,10 +770,10 @@ void FloatingWindow::applyHoverReadingStyle() {
         .arg(grid.green())
         .arg(grid.blue())
         .arg(grid.alpha())
-        .arg(transparentBorder.red())
-        .arg(transparentBorder.green())
-        .arg(transparentBorder.blue())
-        .arg(transparentBorder.alpha())
+        .arg(tableChromeBackground.red())
+        .arg(tableChromeBackground.green())
+        .arg(tableChromeBackground.blue())
+        .arg(tableChromeBackground.alpha())
         .arg(theme.surface.red())
         .arg(theme.surface.green())
         .arg(theme.surface.blue())
@@ -864,13 +867,21 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
     const QColor lightGridColor(QStringLiteral("#d4d4d4"));
     const QColor hoverGridColor = lightMode ? lightGridColor : theme.border;
     const QColor hoverGrid = m_cfg.showGrid ? hoverGridColor : QColor(0, 0, 0, 0);
+    const QColor hoverTableChromeBackground = transparentBg
+        ? QColor(0, 0, 0, 0)
+        : hoverTableBackground;
 
     const QColor bg = mixColor(normalBg, hoverTableBackground, progress);
     const QColor border = mixColor(normalBorder, QColor(0, 0, 0, 0), progress);
     const QColor text = mixColor(normalText, theme.textPrimary, progress);
     const QColor grid = mixColor(normalGrid, hoverGrid, progress);
     const QColor headerBg = mixColor(normalHeaderBg, theme.surface, progress);
-    const QColor tableBg = mixColor(normalTableBg, hoverTableBackground, progress);
+    const QColor tableViewportBg = mixColor(normalTableBg, hoverTableBackground, progress);
+    const QColor tableChromeBg = mixColor(
+        normalTableBg,
+        hoverTableChromeBackground,
+        progress
+    );
     const QColor tableBorder = mixColor(normalTableBorder, QColor(0, 0, 0, 0), progress);
 
     const QString css = QString(
@@ -887,7 +898,7 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
         "gridline-color: rgba(%12,%13,%14,%15);"
         "}"
         "QWidget#tableViewport{"
-        "background-color: rgba(%16,%17,%18,%19);"
+        "background-color: rgba(%28,%29,%30,%31);"
         "}"
         "QWidget#tableHeaderViewport{"
         "background-color: rgba(%20,%21,%22,%23);"
@@ -895,11 +906,11 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
         "QHeaderView::section{"
         "background-color: rgba(%20,%21,%22,%23);"
         "border: none;"
-        "%28"
+        "%32"
         "color: rgb(%9,%10,%11);"
         "}"
         "QAbstractItemView::item{"
-        "%28"
+        "%32"
         "}"
     )
         .arg(bg.red())
@@ -917,10 +928,10 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
         .arg(grid.green())
         .arg(grid.blue())
         .arg(grid.alpha())
-        .arg(tableBg.red())
-        .arg(tableBg.green())
-        .arg(tableBg.blue())
-        .arg(tableBg.alpha())
+        .arg(tableChromeBg.red())
+        .arg(tableChromeBg.green())
+        .arg(tableChromeBg.blue())
+        .arg(tableChromeBg.alpha())
         .arg(headerBg.red())
         .arg(headerBg.green())
         .arg(headerBg.blue())
@@ -929,6 +940,10 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
         .arg(tableBorder.green())
         .arg(tableBorder.blue())
         .arg(tableBorder.alpha())
+        .arg(tableViewportBg.red())
+        .arg(tableViewportBg.green())
+        .arg(tableViewportBg.blue())
+        .arg(tableViewportBg.alpha())
         .arg(tableCellPaddingStyle(m_cfg));
 
     m_panel->setStyleSheet(css);
@@ -939,7 +954,7 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
 
 #ifdef WIN32
     QPalette pal = m_table->palette();
-    pal.setColor(QPalette::Base, tableBg);
+    pal.setColor(QPalette::Base, tableViewportBg);
     pal.setColor(QPalette::Text, text);
     pal.setColor(QPalette::WindowText, text);
     m_table->setPalette(pal);
