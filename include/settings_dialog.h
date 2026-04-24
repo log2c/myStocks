@@ -32,7 +32,6 @@ public:
         const QVector<StockItem>& sectors,
         const QHash<QString, QString>& apiNamesByCode,
         const QString& dataYamlPath,
-        std::function<void()> onWriteStockNames,
         QWidget* parent = nullptr
     );
 
@@ -73,7 +72,6 @@ private:
     QVector<StockItem> m_sectors;
     QHash<QString, QString> m_apiNamesByCode;
     QString m_dataYamlPath;
-    std::function<void()> m_onWriteStockNames;
     QString m_uiLanguage;
 
     QSpinBox* m_pollSpin = nullptr;
@@ -97,7 +95,6 @@ private:
     QCheckBox* m_logEnabledCheck = nullptr;
     QComboBox* m_logLevelCombo = nullptr;
     QPushButton* m_openLogDirButton = nullptr;
-    QPushButton* m_writeStockNamesButton = nullptr;
 
     QCheckBox* m_transparentBackgroundCheck = nullptr;
     QSlider* m_transparentOpacitySlider = nullptr;

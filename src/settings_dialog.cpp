@@ -480,7 +480,6 @@ SettingsDialog::SettingsDialog(
     const QVector<StockItem>& sectors,
     const QHash<QString, QString>& apiNamesByCode,
     const QString& dataYamlPath,
-    std::function<void()> onWriteStockNames,
     QWidget* parent
 )
     : QDialog(parent)
@@ -490,7 +489,6 @@ SettingsDialog::SettingsDialog(
     , m_sectors(sectors)
     , m_apiNamesByCode(apiNamesByCode)
     , m_dataYamlPath(dataYamlPath)
-    , m_onWriteStockNames(std::move(onWriteStockNames))
     , m_uiLanguage(i18n::resolveLanguage(cfg.language)) {
     setWindowTitle(trText("settings.title"));
     setWindowFlags(windowFlags() & ~Qt::WindowMaximizeButtonHint);
@@ -1341,19 +1339,6 @@ QWidget* SettingsDialog::buildOtherTab() {
         QDesktopServices::openUrl(QUrl::fromLocalFile(logDir));
     });
 
-    m_writeStockNamesButton = new QPushButton(trText("settings.other.writeStockNames"), w);
-    connect(m_writeStockNamesButton, &QPushButton::clicked, this, [this]() {
-        if (!m_onWriteStockNames) {
-            QMessageBox::warning(
-                this,
-                trText("app.name"),
-                trText("settings.other.writeStockNamesUnavailable")
-            );
-            return;
-        }
-        m_onWriteStockNames();
-    });
-
     connect(m_logEnabledCheck, &QCheckBox::toggled, this, [this](bool enabled) {
         m_logLevelCombo->setEnabled(enabled);
     });
@@ -1364,7 +1349,6 @@ QWidget* SettingsDialog::buildOtherTab() {
     addCompactFormRow(form, m_logEnabledCheck);
     form->addRow(trText("settings.other.logLevel"), m_logLevelCombo);
     addCompactFormRow(form, m_openLogDirButton);
-    addCompactFormRow(form, m_writeStockNamesButton);
 
     return w;
 }

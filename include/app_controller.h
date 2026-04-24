@@ -37,7 +37,6 @@ private:
     void setupHotkey();
 #endif
     void rebuildProvider();
-    int writeApiNamesToDataYaml();
     QHash<QString, QString> currentApiNamesByCode() const;
     void loadExtraWatchItems();
     void saveExtraWatchItems() const;

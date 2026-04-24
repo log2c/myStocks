@@ -8,6 +8,7 @@
 #include <QHeaderView>
 #include <QLayout>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QPalette>
 #include <QSignalBlocker>
 #include <QShowEvent>
@@ -140,6 +141,13 @@ HoverReadingTheme hoverReadingThemeForMode(const QString& rawMode, bool transpar
     };
 }
 
+QColor hoverReadingTableBackgroundColor(const HoverReadingTheme& theme, const QString& rawMode) {
+    if (normalizeHoverReadingUiMode(rawMode) == QLatin1String("light")) {
+        return theme.surface;
+    }
+    return theme.background;
+}
+
 qreal configuredWindowOpacity(const AppConfig& cfg) {
     const double effectiveOpacity = cfg.transparentBackgroundEnabled
         ? static_cast<double>(qBound(0, cfg.transparentBackgroundOpacity, 100)) / 100.0
@@ -156,6 +164,76 @@ QString tableCellPaddingStyle(const AppConfig& cfg) {
     return QStringLiteral("padding: 0 %1px;")
         .arg(QString::number(rawPadding, 'f', 1));
 }
+
+class BottomGridTableView : public QTableView {
+public:
+    using QTableView::QTableView;
+
+    void setBottomGridVisible(bool visible) {
+        if (m_bottomGridVisible == visible) {
+            return;
+        }
+        m_bottomGridVisible = visible;
+        viewport()->update();
+    }
+
+    void setBottomGridColor(const QColor& color) {
+        if (m_bottomGridColor == color) {
+            return;
+        }
+        m_bottomGridColor = color;
+        if (m_bottomGridVisible) {
+            viewport()->update();
+        }
+    }
+
+protected:
+    void paintEvent(QPaintEvent* event) override {
+        QTableView::paintEvent(event);
+
+        if (!m_bottomGridVisible || !model()) {
+            return;
+        }
+
+        int lastVisibleRow = -1;
+        const int rowCount = model()->rowCount(rootIndex());
+        for (int row = rowCount - 1; row >= 0; --row) {
+            if (!isRowHidden(row)) {
+                lastVisibleRow = row;
+                break;
+            }
+        }
+
+        if (lastVisibleRow <= 0) {
+            return;
+        }
+
+        const QRect clipRect = event ? event->rect() : viewport()->rect();
+        QPainter painter(viewport());
+        QPen pen(m_bottomGridColor);
+        pen.setCosmetic(true);
+        painter.setPen(pen);
+
+        const int left = 0;
+        const int right = qMax(0, viewport()->width() - 1);
+        for (int row = 0; row < lastVisibleRow; ++row) {
+            if (isRowHidden(row)) {
+                continue;
+            }
+
+            const int y = rowViewportPosition(row) + rowHeight(row) - 1;
+            if (y < clipRect.top() || y > clipRect.bottom()) {
+                continue;
+            }
+
+            painter.drawLine(left, y, right, y);
+        }
+    }
+
+private:
+    bool m_bottomGridVisible = false;
+    QColor m_bottomGridColor = QColor(255, 255, 255, 80);
+};
 
 } // namespace
 
@@ -183,6 +261,7 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
 
     m_panel = new QFrame(this);
     m_panel->setObjectName("panel");
+    m_panel->setAttribute(Qt::WA_StyledBackground, true);
 
     QVBoxLayout* panelLayout = new QVBoxLayout(m_panel);
     const int initialPadding = floatingWindowPaddingPx(m_cfg);
@@ -193,7 +272,7 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
         initialPadding
     );
 
-    m_table = new QTableView(m_panel);
+    m_table = new BottomGridTableView(m_panel);
     m_table->setModel(m_model);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setSelectionMode(QAbstractItemView::NoSelection);
@@ -203,6 +282,8 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
     m_table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_table->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_table->setFrameShape(QFrame::NoFrame);
+    m_table->viewport()->setObjectName("tableViewport");
+    m_table->viewport()->setAttribute(Qt::WA_StyledBackground, true);
 
 #ifdef WIN32
     // Windows native style (QWindowsVistaStyle) ignores stylesheet color and
@@ -217,6 +298,8 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
     m_table->verticalHeader()->setDefaultSectionSize(26);
 
     QHeaderView* header = m_table->horizontalHeader();
+    header->viewport()->setObjectName("tableHeaderViewport");
+    header->viewport()->setAttribute(Qt::WA_StyledBackground, true);
     header->setSectionsMovable(false);
     header->setStretchLastSection(false);
     header->setMinimumSectionSize(0);
@@ -516,6 +599,7 @@ void FloatingWindow::enforceWindowLevel(bool activate) {
 }
 
 void FloatingWindow::applyStyle() {
+    auto* table = static_cast<BottomGridTableView*>(m_table);
     const QColor b = m_cfg.transparentBackgroundEnabled
         ? QColor(0, 0, 0, 0)
         : m_cfg.bgColor;
@@ -535,6 +619,12 @@ void FloatingWindow::applyStyle() {
         "border-radius: 8px;"
         "color: rgb(%9,%10,%11);"
         "gridline-color: rgba(%12,%13,%14,%15);"
+        "}"
+        "QWidget#tableViewport{"
+        "background-color: rgba(%1,%2,%3,%4);"
+        "}"
+        "QWidget#tableHeaderViewport{"
+        "background-color: rgba(%1,%2,%3,%4);"
         "}"
         "QHeaderView::section{"
         "background: transparent;"
@@ -565,7 +655,9 @@ void FloatingWindow::applyStyle() {
         .arg(tableCellPaddingStyle(m_cfg));
 
     m_panel->setStyleSheet(css);
-    m_table->setShowGrid(m_cfg.showGrid);
+    table->setBottomGridVisible(m_cfg.showGrid);
+    table->setBottomGridColor(g);
+    m_table->setShowGrid(false);
     m_table->horizontalHeader()->setVisible(m_cfg.showHeader);
 
 #ifdef WIN32
@@ -581,6 +673,7 @@ void FloatingWindow::applyStyle() {
 }
 
 void FloatingWindow::applyHoverReadingStyle() {
+    auto* table = static_cast<BottomGridTableView*>(m_table);
     const bool transparentBg = m_cfg.hoverReadingEnabled
         && m_cfg.hoverReadingTransparentBackgroundEnabled;
     const HoverReadingTheme theme = hoverReadingThemeForMode(
@@ -589,13 +682,14 @@ void FloatingWindow::applyHoverReadingStyle() {
     );
     const bool lightMode = normalizeHoverReadingUiMode(m_cfg.hoverReadingUiMode)
         == QLatin1String("light");
+    const QColor tableBackground = hoverReadingTableBackgroundColor(
+        theme,
+        m_cfg.hoverReadingUiMode
+    );
     const QColor lightGridColor(QStringLiteral("#d4d4d4"));
-    const QColor darkTableBorderColor(QStringLiteral("#2F3338"));
     const QColor hoverGridColor = lightMode ? lightGridColor : theme.border;
     const QColor grid = m_cfg.showGrid ? hoverGridColor : QColor(0, 0, 0, 0);
-    const QColor tableBorder = m_cfg.showGrid
-        ? (lightMode ? hoverGridColor : darkTableBorderColor)
-        : QColor(0, 0, 0, 0);
+    const QColor transparentBorder(0, 0, 0, 0);
 
     const QString css = QString(
         "QFrame#panel{"
@@ -610,6 +704,12 @@ void FloatingWindow::applyHoverReadingStyle() {
         "color: rgb(%9,%10,%11);"
         "gridline-color: rgba(%12,%13,%14,%15);"
         "}"
+        "QWidget#tableViewport{"
+        "background-color: rgba(%1,%2,%3,%4);"
+        "}"
+        "QWidget#tableHeaderViewport{"
+        "background-color: rgba(%20,%21,%22,%23);"
+        "}"
         "QHeaderView::section{"
         "background-color: rgba(%20,%21,%22,%23);"
         "border: none;"
@@ -621,14 +721,14 @@ void FloatingWindow::applyHoverReadingStyle() {
         "%24"
         "}"
     )
-        .arg(theme.background.red())
-        .arg(theme.background.green())
-        .arg(theme.background.blue())
-        .arg(theme.background.alpha())
-        .arg(theme.border.red())
-        .arg(theme.border.green())
-        .arg(theme.border.blue())
-        .arg(theme.border.alpha())
+        .arg(tableBackground.red())
+        .arg(tableBackground.green())
+        .arg(tableBackground.blue())
+        .arg(tableBackground.alpha())
+        .arg(transparentBorder.red())
+        .arg(transparentBorder.green())
+        .arg(transparentBorder.blue())
+        .arg(transparentBorder.alpha())
         .arg(theme.textPrimary.red())
         .arg(theme.textPrimary.green())
         .arg(theme.textPrimary.blue())
@@ -636,10 +736,10 @@ void FloatingWindow::applyHoverReadingStyle() {
         .arg(grid.green())
         .arg(grid.blue())
         .arg(grid.alpha())
-        .arg(tableBorder.red())
-        .arg(tableBorder.green())
-        .arg(tableBorder.blue())
-        .arg(tableBorder.alpha())
+        .arg(transparentBorder.red())
+        .arg(transparentBorder.green())
+        .arg(transparentBorder.blue())
+        .arg(transparentBorder.alpha())
         .arg(theme.surface.red())
         .arg(theme.surface.green())
         .arg(theme.surface.blue())
@@ -647,12 +747,14 @@ void FloatingWindow::applyHoverReadingStyle() {
         .arg(tableCellPaddingStyle(m_cfg));
 
     m_panel->setStyleSheet(css);
-    m_table->setShowGrid(m_cfg.showGrid);
+    table->setBottomGridVisible(m_cfg.showGrid);
+    table->setBottomGridColor(grid);
+    m_table->setShowGrid(false);
     m_table->horizontalHeader()->setVisible(m_cfg.showHeader);
 
 #ifdef WIN32
     QPalette pal = m_table->palette();
-    pal.setColor(QPalette::Base, theme.background);
+    pal.setColor(QPalette::Base, tableBackground);
     pal.setColor(QPalette::Text, theme.textPrimary);
     pal.setColor(QPalette::WindowText, theme.textPrimary);
     m_table->setPalette(pal);
@@ -701,6 +803,7 @@ void FloatingWindow::setHoverReadingActive(bool active, bool animated) {
 }
 
 void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
+    auto* table = static_cast<BottomGridTableView*>(m_table);
     const qreal progress = qBound(0.0, hoverProgress, 1.0);
     const qreal normalOpacity = configuredWindowOpacity(m_cfg);
     setWindowOpacity(normalOpacity + (1.0 - normalOpacity) * progress);
@@ -723,21 +826,21 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
     );
     const bool lightMode = normalizeHoverReadingUiMode(m_cfg.hoverReadingUiMode)
         == QLatin1String("light");
+    const QColor hoverTableBackground = hoverReadingTableBackgroundColor(
+        theme,
+        m_cfg.hoverReadingUiMode
+    );
     const QColor lightGridColor(QStringLiteral("#d4d4d4"));
-    const QColor darkTableBorderColor(QStringLiteral("#2F3338"));
     const QColor hoverGridColor = lightMode ? lightGridColor : theme.border;
     const QColor hoverGrid = m_cfg.showGrid ? hoverGridColor : QColor(0, 0, 0, 0);
-    const QColor hoverTableBorder = m_cfg.showGrid
-        ? (lightMode ? hoverGridColor : darkTableBorderColor)
-        : QColor(0, 0, 0, 0);
 
-    const QColor bg = mixColor(normalBg, theme.background, progress);
-    const QColor border = mixColor(normalBorder, theme.border, progress);
+    const QColor bg = mixColor(normalBg, hoverTableBackground, progress);
+    const QColor border = mixColor(normalBorder, QColor(0, 0, 0, 0), progress);
     const QColor text = mixColor(normalText, theme.textPrimary, progress);
     const QColor grid = mixColor(normalGrid, hoverGrid, progress);
     const QColor headerBg = mixColor(normalHeaderBg, theme.surface, progress);
-    const QColor tableBg = mixColor(normalTableBg, theme.background, progress);
-    const QColor tableBorder = mixColor(normalTableBorder, hoverTableBorder, progress);
+    const QColor tableBg = mixColor(normalTableBg, hoverTableBackground, progress);
+    const QColor tableBorder = mixColor(normalTableBorder, QColor(0, 0, 0, 0), progress);
 
     const QString css = QString(
         "QFrame#panel{"
@@ -751,6 +854,12 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
         "border-radius: 8px;"
         "color: rgb(%9,%10,%11);"
         "gridline-color: rgba(%12,%13,%14,%15);"
+        "}"
+        "QWidget#tableViewport{"
+        "background-color: rgba(%16,%17,%18,%19);"
+        "}"
+        "QWidget#tableHeaderViewport{"
+        "background-color: rgba(%20,%21,%22,%23);"
         "}"
         "QHeaderView::section{"
         "background-color: rgba(%20,%21,%22,%23);"
@@ -793,7 +902,9 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
         .arg(tableCellPaddingStyle(m_cfg));
 
     m_panel->setStyleSheet(css);
-    m_table->setShowGrid(m_cfg.showGrid);
+    table->setBottomGridVisible(m_cfg.showGrid);
+    table->setBottomGridColor(grid);
+    m_table->setShowGrid(false);
     m_table->horizontalHeader()->setVisible(m_cfg.showHeader);
 
 #ifdef WIN32
