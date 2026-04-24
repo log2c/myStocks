@@ -561,6 +561,9 @@ AppConfig SettingsDialog::config() const {
     out.showGrid = m_showGridCheck->isChecked();
     out.gridColor = buttonColor(m_gridColorBtn);
     out.floatingWindowAlwaysOnTop = m_floatingTopMostCheck->isChecked();
+    out.floatingWindowPaddingPx = m_windowPaddingSpin
+        ? qMax(0.0, m_windowPaddingSpin->value())
+        : out.floatingWindowPaddingPx;
     out.simpleModeEnabled = m_simpleModeCheck->isChecked();
     out.blinkReminderEnabled = m_blinkReminderCheck->isChecked();
     out.trayTooltipEnabled = m_trayTooltipCheck->isChecked();
@@ -1079,6 +1082,14 @@ QWidget* SettingsDialog::buildDisplayTab() {
     });
     addCompactFormRow(windowForm, m_showGridCheck);
     windowForm->addRow(trText("settings.display.gridColor"), m_gridColorBtn);
+
+    m_windowPaddingSpin = new QDoubleSpinBox(w);
+    m_windowPaddingSpin->setRange(0.0, 120.0);
+    m_windowPaddingSpin->setSingleStep(0.5);
+    m_windowPaddingSpin->setDecimals(1);
+    m_windowPaddingSpin->setSuffix(trText("settings.display.pxSuffix"));
+    m_windowPaddingSpin->setValue(qMax(0.0, m_cfg.floatingWindowPaddingPx));
+    windowForm->addRow(trText("settings.display.padding"), m_windowPaddingSpin);
 
     m_transparentBackgroundCheck = new QCheckBox(
         trText("settings.general.transparentBackground"),

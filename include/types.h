@@ -17,7 +17,7 @@ enum QuoteColumn {
     ColCount
 };
 
-inline constexpr int kFloatingWindowPaddingPx = 10;
+inline constexpr int kFloatingWindowPaddingPx = 6;
 
 struct StockItem {
     QString code;
@@ -110,6 +110,7 @@ struct AppConfig {
     double hoverReadingDelaySecs = 1.0;
     QString hoverReadingUiMode = "dark";
     bool hoverReadingTransparentBackgroundEnabled = true;
+    double floatingWindowPaddingPx = static_cast<double>(kFloatingWindowPaddingPx);
 
     QMap<int, int> columnWidths;
     QRect windowRect = QRect(120, 120, 760, 280);

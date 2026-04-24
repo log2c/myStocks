@@ -122,6 +122,7 @@ private:
     QDoubleSpinBox* m_hoverReadingDelaySpin = nullptr;
     QComboBox* m_hoverReadingModeCombo = nullptr;
     QCheckBox* m_hoverReadingTransparentBackgroundCheck = nullptr;
+    QDoubleSpinBox* m_windowPaddingSpin = nullptr;
     QListWidget* m_columnList = nullptr;
     QVector<QSpinBox*> m_columnMaxWidthSpins;
     bool m_normalizingHotkeySequence = false;

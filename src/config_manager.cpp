@@ -310,6 +310,10 @@ AppConfig ConfigManager::loadConfig() {
         "ui/hoverReadingTransparentBackgroundEnabled",
         cfg.hoverReadingTransparentBackgroundEnabled
     ).toBool();
+    cfg.floatingWindowPaddingPx = s.value(
+        "ui/floatingWindowPaddingPx",
+        cfg.floatingWindowPaddingPx
+    ).toDouble();
 
     cfg.showHeader = s.value("ui/showHeader", cfg.showHeader).toBool();
     cfg.showGrid = s.value("ui/showGrid", cfg.showGrid).toBool();
@@ -379,6 +383,7 @@ AppConfig ConfigManager::loadConfig() {
     cfg.transparentBackgroundOpacity = qBound(0, cfg.transparentBackgroundOpacity, 100);
     cfg.hoverReadingDelaySecs = qBound(0.1, cfg.hoverReadingDelaySecs, 60.0);
     cfg.hoverReadingUiMode = normalizeHoverReadingUiMode(cfg.hoverReadingUiMode);
+    cfg.floatingWindowPaddingPx = qMax(0.0, cfg.floatingWindowPaddingPx);
 
         qInfo() << "ConfigManager::loadConfig"
             << "settingsFile=" << s.fileName()
@@ -472,6 +477,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         "ui/hoverReadingTransparentBackgroundEnabled",
         cfg.hoverReadingTransparentBackgroundEnabled
     );
+    s.setValue("ui/floatingWindowPaddingPx", qMax(0.0, cfg.floatingWindowPaddingPx));
     s.setValue("ui/windowRect", cfg.windowRect);
 
     for (int i = 0; i < ColCount; ++i) {

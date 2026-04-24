@@ -6,6 +6,7 @@
 #include <QEvent>
 #include <QFontMetrics>
 #include <QHeaderView>
+#include <QLayout>
 #include <QMouseEvent>
 #include <QPalette>
 #include <QSignalBlocker>
@@ -146,6 +147,16 @@ qreal configuredWindowOpacity(const AppConfig& cfg) {
     return qBound(0.0, effectiveOpacity, 1.0);
 }
 
+int floatingWindowPaddingPx(const AppConfig& cfg) {
+    return qMax(0, qRound(qMax(0.0, cfg.floatingWindowPaddingPx)));
+}
+
+QString tableCellPaddingStyle(const AppConfig& cfg) {
+    const double rawPadding = qMax(0.0, cfg.floatingWindowPaddingPx);
+    return QStringLiteral("padding: 0 %1px;")
+        .arg(QString::number(rawPadding, 'f', 1));
+}
+
 } // namespace
 
 FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
@@ -174,11 +185,12 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
     m_panel->setObjectName("panel");
 
     QVBoxLayout* panelLayout = new QVBoxLayout(m_panel);
+    const int initialPadding = floatingWindowPaddingPx(m_cfg);
     panelLayout->setContentsMargins(
-        kFloatingWindowPaddingPx,
-        kFloatingWindowPaddingPx,
-        kFloatingWindowPaddingPx,
-        kFloatingWindowPaddingPx
+        initialPadding,
+        initialPadding,
+        initialPadding,
+        initialPadding
     );
 
     m_table = new QTableView(m_panel);
@@ -366,6 +378,11 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
 void FloatingWindow::applyConfig(const AppConfig& cfg) {
     m_cfg = cfg;
 
+    if (QLayout* panelLayout = m_panel ? m_panel->layout() : nullptr) {
+        const int padding = floatingWindowPaddingPx(m_cfg);
+        panelLayout->setContentsMargins(padding, padding, padding, padding);
+    }
+
     const bool topFlagChanged =
         windowFlags().testFlag(Qt::WindowStaysOnTopHint) != m_cfg.floatingWindowAlwaysOnTop;
     const bool bottomFlagChanged =
@@ -545,7 +562,7 @@ void FloatingWindow::applyStyle() {
         .arg(g.green())
         .arg(g.blue())
         .arg(g.alpha())
-        .arg(QStringLiteral("padding: 0 %1px;").arg(kFloatingWindowPaddingPx));
+        .arg(tableCellPaddingStyle(m_cfg));
 
     m_panel->setStyleSheet(css);
     m_table->setShowGrid(m_cfg.showGrid);
@@ -627,7 +644,7 @@ void FloatingWindow::applyHoverReadingStyle() {
         .arg(theme.surface.green())
         .arg(theme.surface.blue())
         .arg(theme.surface.alpha())
-        .arg(QStringLiteral("padding: 0 %1px;").arg(kFloatingWindowPaddingPx));
+        .arg(tableCellPaddingStyle(m_cfg));
 
     m_panel->setStyleSheet(css);
     m_table->setShowGrid(m_cfg.showGrid);
@@ -773,7 +790,7 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
         .arg(tableBorder.green())
         .arg(tableBorder.blue())
         .arg(tableBorder.alpha())
-        .arg(QStringLiteral("padding: 0 %1px;").arg(kFloatingWindowPaddingPx));
+        .arg(tableCellPaddingStyle(m_cfg));
 
     m_panel->setStyleSheet(css);
     m_table->setShowGrid(m_cfg.showGrid);
@@ -842,8 +859,9 @@ void FloatingWindow::adjustWindowSize() {
     }
     totalHeight += m_model->rowCount() * m_table->verticalHeader()->defaultSectionSize();
 
-    const int horizontalPadding = kFloatingWindowPaddingPx * 2;
-    const int verticalPadding = kFloatingWindowPaddingPx * 2;
+    const int padding = floatingWindowPaddingPx(m_cfg);
+    const int horizontalPadding = padding * 2;
+    const int verticalPadding = padding * 2;
     const int safeWidth = qMax(totalWidth + horizontalPadding, 1);
     const int safeHeight = qMax(totalHeight + verticalPadding, 1);
     setFixedSize(safeWidth, safeHeight);
