@@ -43,6 +43,7 @@ qt_add_executable(MyStocks
     src/app_logging.cpp
     src/app_controller.cpp
     src/config_manager.cpp
+    src/crash_logging.cpp
     src/floating_window.cpp
     src/i18n.cpp
     src/network_logger.cpp
@@ -53,6 +54,7 @@ qt_add_executable(MyStocks
     include/app_logging.h
     include/app_controller.h
     include/config_manager.h
+    include/crash_logging.h
     include/floating_window.h
     include/i18n.h
     include/network_logger.h
@@ -75,6 +77,8 @@ if(WIN32 OR APPLE)
 endif()
 
 if(WIN32)
+    target_link_libraries(MyStocks PRIVATE Dbghelp)
+
     # Build as a GUI app so startup does not show a transient console window.
     set_target_properties(MyStocks PROPERTIES WIN32_EXECUTABLE TRUE)
 

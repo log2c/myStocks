@@ -1,4 +1,5 @@
 #include "app_logging.h"
+#include "crash_logging.h"
 
 #include <QDate>
 #include <QDateTime>
@@ -95,6 +96,7 @@ QString resolvedLogDirectoryPath() {
 void fileMessageHandler(QtMsgType type, const QMessageLogContext&, const QString& msg) {
     if (!shouldWrite(type)) {
         if (type == QtFatalMsg) {
+            crash_logging::appendCurrentStackTrace(QStringLiteral("Qt Fatal Message"), msg);
             std::abort();
         }
         return;
@@ -106,16 +108,19 @@ void fileMessageHandler(QtMsgType type, const QMessageLogContext&, const QString
         .arg(msg)
         .toUtf8();
 
-    QMutexLocker locker(&g_logMutex);
-    if (g_logFile.isOpen()) {
-        g_logFile.write(line);
-        g_logFile.flush();
+    {
+        QMutexLocker locker(&g_logMutex);
+        if (g_logFile.isOpen()) {
+            g_logFile.write(line);
+            g_logFile.flush();
+        }
     }
 
     // Always mirror to stderr so terminal output works during development.
     std::fputs(line.constData(), stderr);
 
     if (type == QtFatalMsg) {
+        crash_logging::appendCurrentStackTrace(QStringLiteral("Qt Fatal Message"), msg);
         std::abort();
     }
 }

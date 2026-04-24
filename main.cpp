@@ -8,6 +8,7 @@
 #include "app_controller.h"
 #include "app_logging.h"
 #include "config_manager.h"
+#include "crash_logging.h"
 
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
@@ -19,6 +20,7 @@ int main(int argc, char* argv[]) {
     QApplication::setOrganizationName("myStocks");
     QApplication::setApplicationName("myStocks");
     app.setQuitOnLastWindowClosed(false);
+    crash_logging::installCrashHandlers();
 
     const QString instanceKey = QString("%1.%2.singleton")
         .arg(QApplication::organizationName())
