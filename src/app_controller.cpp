@@ -12,6 +12,7 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QDesktopServices>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -34,6 +35,7 @@
 #include <QSystemTrayIcon>
 #include <QTimer>
 #include <QTimeZone>
+#include <QUrl>
 
 #include <memory>
 
@@ -58,6 +60,16 @@ QRect resetFloatingWindowRect() {
     rect.moveLeft(available.left() + qMax(0, (available.width() - rect.width()) / 2));
     rect.moveTop(available.top() + qMax(0, (available.height() - rect.height()) / 2));
     return rect;
+}
+
+bool openDirectoryPath(const QString& dirPath) {
+    const QString cleaned = QDir::cleanPath(dirPath.trimmed());
+    if (cleaned.isEmpty()) {
+        return false;
+    }
+
+    QDir().mkpath(cleaned);
+    return QDesktopServices::openUrl(QUrl::fromLocalFile(cleaned));
 }
 
 } // namespace
@@ -1094,18 +1106,60 @@ void AppController::setupTray() {
 
     m_tray = new QSystemTrayIcon(icon, this);
     QMenu* menu = new QMenu;
+    QAction* toggleAction = menu->addAction(QString(), this, [this]() { toggleWindow(); });
+    const auto updateToggleActionText = [this, toggleAction]() {
+        if (!toggleAction) {
+            return;
+        }
 
-    menu->addAction(i18n::t("tray.toggle", m_resolvedLanguage), this, [this]() { toggleWindow(); });
-    menu->addAction(i18n::t("tray.resetPosition", m_resolvedLanguage), this, [this]() {
+        const bool isWindowVisible = m_window && m_window->isVisible();
+        toggleAction->setText(
+            i18n::t(isWindowVisible ? "tray.hideWindow" : "tray.showWindow", m_resolvedLanguage)
+        );
+    };
+    updateToggleActionText();
+
+    menu->addSeparator();
+    QMenu* settingsMenu = menu->addMenu(i18n::t("tray.settingsGroup", m_resolvedLanguage));
+    settingsMenu->addAction(i18n::t("tray.settings", m_resolvedLanguage), this, [this]() {
+        openSettings();
+    });
+    settingsMenu->addAction(i18n::t("tray.resetPosition", m_resolvedLanguage), this, [this]() {
         resetFloatingWindowPosition();
     });
-    menu->addAction(i18n::t("tray.settings", m_resolvedLanguage), this, [this]() { openSettings(); });
-    menu->addAction(i18n::t("tray.reload", m_resolvedLanguage), this, [this]() { reloadStocksFromYaml(); });
+    settingsMenu->addAction(i18n::t("tray.reload", m_resolvedLanguage), this, [this]() {
+        reloadStocksFromYaml();
+    });
+    QMenu* otherMenu = menu->addMenu(i18n::t("tray.other", m_resolvedLanguage));
+    otherMenu->addAction(i18n::t("tray.openDataDir", m_resolvedLanguage), this, [this]() {
+        const QString dataPath = findDataYaml();
+        const QString dataDir =
+            dataPath.isEmpty() ? QString() : QFileInfo(dataPath).absoluteDir().absolutePath();
+        if (!openDirectoryPath(dataDir)) {
+            qWarning() << "Failed to open data directory for path" << dataPath;
+        }
+    });
+    otherMenu->addAction(i18n::t("tray.openLogDir", m_resolvedLanguage), this, [this]() {
+        const QString logDir = app_logging::logDirectoryPath();
+        if (!openDirectoryPath(logDir)) {
+            qWarning() << "Failed to open log directory" << logDir;
+        }
+    });
+    otherMenu->addAction(i18n::t("tray.openConfigDir", m_resolvedLanguage), this, [this]() {
+        const QString settingsPath = ConfigManager::appSettingsFilePath();
+        const QString configDir =
+            settingsPath.isEmpty() ? QString() : QFileInfo(settingsPath).absoluteDir().absolutePath();
+        if (!openDirectoryPath(configDir)) {
+            qWarning() << "Failed to open config directory for path" << settingsPath;
+        }
+    });
     menu->addSeparator();
     menu->addAction(i18n::t("tray.quit", m_resolvedLanguage), qApp, &QCoreApplication::quit);
 
     m_tray->setContextMenu(menu);
     m_tray->show();
+
+    connect(menu, &QMenu::aboutToShow, this, updateToggleActionText);
 
     connect(m_tray, &QSystemTrayIcon::activated, this,
         [this](QSystemTrayIcon::ActivationReason reason) {
