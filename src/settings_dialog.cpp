@@ -77,6 +77,20 @@ QString watchCodeKey(const QString& code) {
     return code.trimmed().toLower();
 }
 
+bool isDigitsOnly(const QString& text) {
+    if (text.isEmpty()) {
+        return false;
+    }
+
+    for (const QChar ch : text) {
+        if (!ch.isDigit()) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 QString normalizeSectorCode(const QString& rawCode) {
     QString code = rawCode.trimmed();
     if (code.isEmpty()) {
@@ -92,6 +106,47 @@ QString normalizeSectorCode(const QString& rawCode) {
     }
 
     return {};
+}
+
+QString normalizeFutureCode(const QString& rawCode) {
+    const QString raw = rawCode.trimmed();
+    if (raw.isEmpty()) {
+        return {};
+    }
+
+    const int dot = raw.indexOf(QLatin1Char('.'));
+    if (dot <= 0 || dot >= raw.size() - 1) {
+        return {};
+    }
+
+    const QString market = raw.left(dot).trimmed();
+    const QString symbol = raw.mid(dot + 1).trimmed().toUpper();
+    if (!isDigitsOnly(market) || symbol.isEmpty()) {
+        return {};
+    }
+
+    if (market == QStringLiteral("0")
+        || market == QStringLiteral("1")
+        || market == QStringLiteral("90")
+        || market == QStringLiteral("100")
+        || market == QStringLiteral("116")
+        || market == QStringLiteral("124")
+        || market == QStringLiteral("128")) {
+        return {};
+    }
+
+    bool hasLetter = false;
+    for (const QChar ch : symbol) {
+        if (ch.isLetter()) {
+            hasLetter = true;
+            break;
+        }
+    }
+    if (!hasLetter) {
+        return {};
+    }
+
+    return market + QStringLiteral(".") + symbol;
 }
 
 const QSet<QString>& predefinedIndexAliases() {
@@ -504,6 +559,7 @@ SettingsDialog::SettingsDialog(
     const QVector<StockItem>& stocks,
     const QVector<StockItem>& indexes,
     const QVector<StockItem>& sectors,
+    const QVector<StockItem>& futures,
     const QHash<QString, QString>& apiNamesByCode,
     const QString& dataYamlPath,
     QWidget* parent
@@ -513,6 +569,7 @@ SettingsDialog::SettingsDialog(
     , m_stocks(stocks)
     , m_indexes(indexes)
     , m_sectors(sectors)
+    , m_futures(futures)
     , m_apiNamesByCode(apiNamesByCode)
     , m_dataYamlPath(dataYamlPath)
     , m_uiLanguage(i18n::resolveLanguage(cfg.language)) {
@@ -535,6 +592,7 @@ SettingsDialog::SettingsDialog(
     tabs->addTab(makeScrollableTab(buildDisplayTab(), tabs), trText("settings.tab.display"));
     tabs->addTab(makeScrollableTab(buildStocksTab(), tabs), trText("settings.tab.stocks"));
     tabs->addTab(buildIndexSectorTab(), trText("settings.tab.indexSector"));
+    tabs->addTab(buildFuturesTab(), trText("settings.tab.futures"));
     tabs->addTab(makeScrollableTab(buildOtherTab(), tabs), trText("settings.tab.other"));
     tabs->addTab(makeScrollableTab(buildAboutTab(), tabs), trText("settings.tab.about"));
     root->addWidget(tabs);
@@ -714,6 +772,34 @@ QVector<StockItem> SettingsDialog::selectedSectors() const {
         seen.insert(key);
 
         const QString name = sector.name.trimmed();
+        out.push_back({code, name.isEmpty() ? code : name});
+    }
+
+    return out;
+}
+
+QVector<StockItem> SettingsDialog::selectedFutures() const {
+    if (!m_futureTable) {
+        return m_futures;
+    }
+
+    QVector<StockItem> out;
+    QSet<QString> seen;
+
+    const QVector<StockItem> futures = static_cast<StockTableWidget*>(m_futureTable)->stocks();
+    for (const StockItem& future : futures) {
+        const QString code = normalizeFutureCode(future.code);
+        if (code.isEmpty()) {
+            continue;
+        }
+
+        const QString key = watchCodeKey(code);
+        if (seen.contains(key)) {
+            continue;
+        }
+        seen.insert(key);
+
+        const QString name = future.name.trimmed();
         out.push_back({code, name.isEmpty() ? code : name});
     }
 
@@ -2106,6 +2192,194 @@ QWidget* SettingsDialog::buildIndexSectorTab() {
     return w;
 }
 
+QWidget* SettingsDialog::buildFuturesTab() {
+    QWidget* w = new QWidget(this);
+    QVBoxLayout* root = new QVBoxLayout(w);
+    root->setSpacing(8);
+    root->setContentsMargins(6, 6, 6, 6);
+
+    QGroupBox* futureGroup = new QGroupBox(trText("settings.futures.group"), w);
+    QVBoxLayout* futureLayout = new QVBoxLayout(futureGroup);
+    futureLayout->setContentsMargins(6, 6, 6, 6);
+    futureLayout->setSpacing(5);
+
+    QLabel* futureHint = new QLabel(trText("settings.futures.hint"), futureGroup);
+    futureHint->setWordWrap(true);
+    futureLayout->addWidget(futureHint);
+
+    QWidget* searchRow = new QWidget(futureGroup);
+    QHBoxLayout* searchLayout = new QHBoxLayout(searchRow);
+    searchLayout->setContentsMargins(0, 0, 0, 0);
+    searchLayout->setSpacing(5);
+
+    m_futureSearchEdit = new QLineEdit(searchRow);
+    m_futureSearchEdit->setPlaceholderText(trText("settings.futures.searchPlaceholder"));
+    m_futureSearchBtn = new QPushButton(trText("settings.stocks.search"), searchRow);
+    m_futureSearchBtn->setMinimumWidth(76);
+
+    searchLayout->addWidget(m_futureSearchEdit, 1);
+    searchLayout->addWidget(m_futureSearchBtn);
+    futureLayout->addWidget(searchRow);
+
+    m_futureSuggestList = new QListWidget(this);
+    m_futureSuggestList->setMaximumHeight(180);
+    m_futureSuggestList->setFrameShape(QFrame::StyledPanel);
+    m_futureSuggestList->hide();
+
+    StockTableWidget* table = new StockTableWidget(futureGroup);
+    table->setHorizontalHeaderLabels({
+        trText("settings.stocks.colSeq"),
+        trText("settings.stocks.colCode"),
+        trText("settings.stocks.colName"),
+        trText("settings.stocks.colDel")
+    });
+    table->setMinimumHeight(180);
+
+    for (const StockItem& future : m_futures) {
+        const QString code = normalizeFutureCode(future.code);
+        if (code.isEmpty() || table->containsCode(code)) {
+            continue;
+        }
+        table->addStockRow(code, future.name);
+    }
+
+    m_futureTable = table;
+    table->setConfirmDelete([this](const QString& display) -> bool {
+        const QMessageBox::StandardButton ret = showIconMessageBox(
+            this,
+            QMessageBox::Question,
+            trText("app.name"),
+            trText("settings.futures.delConfirm").arg(display),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No
+        );
+        return ret == QMessageBox::Yes;
+    });
+
+    QWidget* tableArea = new QWidget(futureGroup);
+    QHBoxLayout* tableAreaLayout = new QHBoxLayout(tableArea);
+    tableAreaLayout->setContentsMargins(0, 0, 0, 0);
+    tableAreaLayout->setSpacing(6);
+    tableAreaLayout->addWidget(m_futureTable, 1);
+
+    QWidget* orderBtnCol = new QWidget(tableArea);
+    QVBoxLayout* orderBtnLayout = new QVBoxLayout(orderBtnCol);
+    orderBtnLayout->setContentsMargins(0, 0, 0, 0);
+    orderBtnLayout->setSpacing(5);
+
+    auto makeOrderBtn = [&](const QString& label) -> QPushButton* {
+        QPushButton* btn = new QPushButton(label, orderBtnCol);
+        btn->setFixedWidth(56);
+        return btn;
+    };
+
+    QPushButton* btnTop = makeOrderBtn(trText("settings.stocks.moveTop"));
+    QPushButton* btnUp = makeOrderBtn(trText("settings.stocks.moveUp"));
+    QPushButton* btnDown = makeOrderBtn(trText("settings.stocks.moveDown"));
+    QPushButton* btnBottom = makeOrderBtn(trText("settings.stocks.moveBottom"));
+
+    orderBtnLayout->addStretch();
+    orderBtnLayout->addWidget(btnTop);
+    orderBtnLayout->addWidget(btnUp);
+    orderBtnLayout->addWidget(btnDown);
+    orderBtnLayout->addWidget(btnBottom);
+    orderBtnLayout->addStretch();
+
+    tableAreaLayout->addWidget(orderBtnCol);
+    futureLayout->addWidget(tableArea, 1);
+    root->addWidget(futureGroup, 1);
+
+    m_futureSearchNam = new QNetworkAccessManager(this);
+    m_futureSearchNam->setProxy(network_utils::proxyFromConfig(m_cfg));
+
+    m_futureSearchDebounce = new QTimer(this);
+    m_futureSearchDebounce->setSingleShot(true);
+    m_futureSearchDebounce->setInterval(400);
+
+    auto currentTableRow = [this]() -> int {
+        return m_futureTable ? m_futureTable->currentRow() : -1;
+    };
+    connect(btnTop, &QPushButton::clicked, this, [this, currentTableRow]() {
+        const int newRow = static_cast<StockTableWidget*>(m_futureTable)->moveRowTop(currentTableRow());
+        m_futureTable->setCurrentCell(newRow, 0);
+    });
+    connect(btnUp, &QPushButton::clicked, this, [this, currentTableRow]() {
+        const int newRow = static_cast<StockTableWidget*>(m_futureTable)->moveRowUp(currentTableRow());
+        m_futureTable->setCurrentCell(newRow, 0);
+    });
+    connect(btnDown, &QPushButton::clicked, this, [this, currentTableRow]() {
+        const int newRow = static_cast<StockTableWidget*>(m_futureTable)->moveRowDown(currentTableRow());
+        m_futureTable->setCurrentCell(newRow, 0);
+    });
+    connect(btnBottom, &QPushButton::clicked, this, [this, currentTableRow]() {
+        const int newRow = static_cast<StockTableWidget*>(m_futureTable)->moveRowBottom(currentTableRow());
+        m_futureTable->setCurrentCell(newRow, 0);
+    });
+
+    connect(m_futureSearchEdit, &QLineEdit::textEdited, this, [this](const QString& rawText) {
+        QString text = rawText;
+        text.remove(QLatin1Char(' '));
+        if (text != rawText) {
+            m_futureSearchEdit->setText(text);
+        }
+
+        if (text.length() < 2) {
+            m_futureSearchDebounce->stop();
+            if (m_futureSearchReply) {
+                m_futureSearchReply->abort();
+                m_futureSearchReply->deleteLater();
+                m_futureSearchReply = nullptr;
+            }
+            m_futureSuggestList->clear();
+            m_futureSuggestList->hide();
+            return;
+        }
+
+        m_futureSearchDebounce->start();
+    });
+
+    connect(m_futureSearchBtn, &QPushButton::clicked, this, [this]() {
+        if (m_futureSearchDebounce) {
+            m_futureSearchDebounce->stop();
+        }
+        doFutureSearch(true);
+    });
+
+    connect(m_futureSearchDebounce, &QTimer::timeout, this, [this]() {
+        doFutureSearch();
+    });
+
+    connect(m_futureSuggestList, &QListWidget::itemClicked, this, [this](QListWidgetItem* listItem) {
+        if (!listItem) {
+            return;
+        }
+
+        const QString code = normalizeFutureCode(listItem->data(Qt::UserRole).toString());
+        const QString name = listItem->data(Qt::UserRole + 1).toString().trimmed();
+        if (code.isEmpty()) {
+            return;
+        }
+
+        StockTableWidget* tbl = static_cast<StockTableWidget*>(m_futureTable);
+        if (tbl->containsCode(code)) {
+            showIconMessageBox(
+                this,
+                QMessageBox::Information,
+                trText("app.name"),
+                trText("settings.futures.duplicate")
+            );
+        } else {
+            tbl->addStockRow(code, name);
+        }
+
+        m_futureSuggestList->clear();
+        m_futureSuggestList->hide();
+        m_futureSearchEdit->clear();
+    });
+
+    return w;
+}
+
 void SettingsDialog::parseSectorSuggestResult(const QByteArray& data) {
     if (!m_sectorSuggestList || !m_sectorSearchEdit || !m_sectorSearchBtn) {
         return;
@@ -2202,11 +2476,14 @@ void SettingsDialog::doSectorSearch(bool forceSearch) {
     QUrl url(QStringLiteral("https://searchapi.eastmoney.com/api/suggest/get"));
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("input"), keyword);
-    query.addQueryItem(QStringLiteral("type"), QStringLiteral("14"));
+    query.addQueryItem(
+        QStringLiteral("type"),
+        QString::fromLatin1(QUrl::toPercentEncoding(QStringLiteral("14")))
+    );
     query.addQueryItem(QStringLiteral("count"), QString::number(kSectorSearchCount));
     url.setQuery(query);
 
-    qInfo() << "[SectorSearch] GET" << url.toString();
+    qInfo().noquote() << "[SectorSearch] GET" << url.toString(QUrl::FullyEncoded);
 
     QNetworkRequest req(url);
     req.setHeader(
@@ -2245,6 +2522,155 @@ void SettingsDialog::doSectorSearch(bool forceSearch) {
         }
 
         parseSectorSuggestResult(data);
+    });
+}
+
+void SettingsDialog::parseFutureSuggestResult(const QByteArray& data) {
+    if (!m_futureSuggestList || !m_futureSearchEdit || !m_futureSearchBtn) {
+        return;
+    }
+
+    if (data.isEmpty()) {
+        m_futureSuggestList->clear();
+        m_futureSuggestList->hide();
+        return;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        qWarning() << "[FutureSearch] parse failed:" << parseError.errorString();
+        m_futureSuggestList->clear();
+        m_futureSuggestList->hide();
+        return;
+    }
+
+    const QJsonObject root = doc.object();
+    const QJsonObject tableObj = root.value(QStringLiteral("QuotationCodeTable")).toObject();
+    const QJsonArray items = tableObj.value(QStringLiteral("Data")).toArray();
+
+    m_futureSuggestList->clear();
+
+    QSet<QString> addedCodes;
+    for (const QJsonValue& value : items) {
+        if (!value.isObject()) {
+            continue;
+        }
+
+        static const QSet<QString> kFutureSecurityTypes {
+            QStringLiteral("12"),
+            QStringLiteral("13"),
+        };
+
+        const QJsonObject obj = value.toObject();
+        if (!kFutureSecurityTypes.contains(obj.value(QStringLiteral("SecurityType")).toString())) {
+            continue;
+        }
+
+        const QString code = normalizeFutureCode(obj.value(QStringLiteral("QuoteID")).toString());
+        const QString name = obj.value(QStringLiteral("Name")).toString().trimmed();
+        if (code.isEmpty()) {
+            continue;
+        }
+
+        const QString key = watchCodeKey(code);
+        if (addedCodes.contains(key)) {
+            continue;
+        }
+        addedCodes.insert(key);
+
+        const QString displayText = name.isEmpty()
+            ? code
+            : (code + QStringLiteral(" - ") + name);
+        QListWidgetItem* item = new QListWidgetItem(displayText, m_futureSuggestList);
+        item->setData(Qt::UserRole, code);
+        item->setData(Qt::UserRole + 1, name);
+    }
+
+    if (m_futureSuggestList->count() > 0) {
+        const QPoint topLeft = m_futureSearchEdit->mapTo(this,
+            QPoint(0, m_futureSearchEdit->height() + 2));
+        const int w = m_futureSearchEdit->width() + 6 + m_futureSearchBtn->width();
+        const int itemH = m_futureSuggestList->sizeHintForRow(0);
+        const int h = qMin(m_futureSuggestList->count() * (itemH > 0 ? itemH : 22) + 6, 180);
+        m_futureSuggestList->setGeometry(topLeft.x(), topLeft.y(), w, h);
+        m_futureSuggestList->raise();
+        m_futureSuggestList->setVisible(true);
+    } else {
+        m_futureSuggestList->setVisible(false);
+    }
+}
+
+void SettingsDialog::doFutureSearch(bool forceSearch) {
+    if (!m_futureSearchEdit || !m_futureSearchNam) {
+        return;
+    }
+
+    const QString keyword = m_futureSearchEdit->text().trimmed();
+    if (!forceSearch && keyword.length() < 2) {
+        return;
+    }
+    if (keyword.isEmpty()) {
+        return;
+    }
+
+    if (m_futureSearchReply) {
+        m_futureSearchReply->abort();
+        m_futureSearchReply->deleteLater();
+        m_futureSearchReply = nullptr;
+    }
+
+    static constexpr int kFutureSearchCount = 10;
+
+    QUrl url(QStringLiteral("https://searchapi.eastmoney.com/api/suggest/get"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("input"), keyword);
+    query.addQueryItem(
+        QStringLiteral("type"),
+        QString::fromLatin1(QUrl::toPercentEncoding(QStringLiteral("14")))
+    );
+    query.addQueryItem(QStringLiteral("count"), QString::number(kFutureSearchCount));
+    url.setQuery(query);
+
+    qInfo().noquote() << "[FutureSearch] GET" << url.toString(QUrl::FullyEncoded);
+
+    QNetworkRequest req(url);
+    req.setHeader(
+        QNetworkRequest::UserAgentHeader,
+        network_utils::effectiveUserAgent(m_cfg)
+    );
+    req.setRawHeader("Referer", "https://quote.eastmoney.com");
+    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
+
+    const network_logger::RequestTrace trace = network_logger::logRequestStart(
+        "eastmoney-future-search",
+        "GET",
+        req,
+        m_futureSearchNam->proxy()
+    );
+
+    m_futureSearchReply = m_futureSearchNam->get(req);
+    connect(m_futureSearchReply, &QNetworkReply::finished, this, [this, trace]() {
+        if (!m_futureSearchReply) {
+            return;
+        }
+
+        const QNetworkReply::NetworkError netErr = m_futureSearchReply->error();
+        const QByteArray data = m_futureSearchReply->readAll();
+
+        network_logger::logRequestFinish(trace, m_futureSearchReply, data.size(), data);
+
+        m_futureSearchReply->deleteLater();
+        m_futureSearchReply = nullptr;
+
+        if (netErr != QNetworkReply::NoError) {
+            qWarning() << "[FutureSearch] network error" << netErr;
+            m_futureSuggestList->clear();
+            m_futureSuggestList->hide();
+            return;
+        }
+
+        parseFutureSuggestResult(data);
     });
 }
 
@@ -2370,7 +2796,7 @@ void SettingsDialog::doStockSearch(bool forceSearch) {
         + QStringLiteral("&name=suggestvalue")
     );
 
-    qInfo() << "[StockSearch] GET" << url.toString();
+    qInfo().noquote() << "[StockSearch] GET" << url.toString(QUrl::FullyEncoded);
 
     QNetworkRequest req(url);
     req.setHeader(

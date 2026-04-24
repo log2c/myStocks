@@ -46,8 +46,10 @@ private:
         QStringList* ignoredCodes = nullptr
     ) const;
     static bool isSectorCode(const QString& code);
+    static bool isFutureCode(const QString& code);
     bool shouldPollNow();
     bool hasHongKongStocks() const;
+    bool hasHongKongTradingScheduleItems() const;
     bool isWithinTradingSession(const QDateTime& bjNow) const;
     bool isWithinHongKongTradingSession(const QDateTime& bjNow) const;
     bool probeTradingDay(const QDate& bjDate);
@@ -60,6 +62,7 @@ private:
     QVector<StockItem> m_stocks;
     QVector<StockItem> m_indexes;
     QVector<StockItem> m_sectors;
+    QVector<StockItem> m_futures;
     QHash<QString, QString> m_apiNamesByCode;
     QStringList m_lastIgnoredYamlIndexCodes;
     QString m_lastTrayErrorMessage;

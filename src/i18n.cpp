@@ -122,6 +122,7 @@ const TranslationMap& translations() {
                 {"reload.config.success", "Reloaded %1 stocks from data.yaml."},
                 {"reload.config.failed", "Failed to reload data.yaml or no valid stocks found."},
                 {"settings.tab.stocks", "Stocks"},
+                {"settings.tab.futures", "Futures"},
                 {"settings.stocks.market1", "A-Share"},
                 {"settings.stocks.market2", "HK Stock"},
                 {"settings.stocks.market3", "US Stock"},
@@ -152,7 +153,12 @@ const TranslationMap& translations() {
                 {"settings.indexSector.sectorSearchPlaceholder", "Type 2+ chars to search sector"},
                 {"settings.indexSector.sectorDuplicate", "Sector already exists in the list."},
                 {"settings.indexSector.sectorDelConfirm", "Remove '%1' from the sector list?"},
-                {"settings.indexSector.ignoreYamlIndexFmt", "Ignored index codes in data.yaml: %1"}
+                {"settings.indexSector.ignoreYamlIndexFmt", "Ignored index codes in data.yaml: %1"},
+                {"settings.futures.group", "Futures"},
+                {"settings.futures.hint", "Search, add, delete, and reorder futures. They are shown after stocks in the floating window."},
+                {"settings.futures.searchPlaceholder", "Type 2+ chars to search futures"},
+                {"settings.futures.duplicate", "Future already exists in the list."},
+                {"settings.futures.delConfirm", "Remove '%1' from the futures list?"}
             }
         },
         {
@@ -268,6 +274,7 @@ const TranslationMap& translations() {
                 {"reload.config.success", "已从 data.yaml 重新加载 %1 条股票。"},
                 {"reload.config.failed", "重新加载 data.yaml 失败或没有有效股票。"},
                 {"settings.tab.stocks", "股票"},
+                {"settings.tab.futures", "期货"},
                 {"settings.stocks.market1", "A股"},
                 {"settings.stocks.market2", "港股"},
                 {"settings.stocks.market3", "美股"},
@@ -298,7 +305,12 @@ const TranslationMap& translations() {
                 {"settings.indexSector.sectorSearchPlaceholder", "输入2个以上字符搜索板块"},
                 {"settings.indexSector.sectorDuplicate", "该板块已在列表中。"},
                 {"settings.indexSector.sectorDelConfirm", "确认从板块列表移除 '%1'？"},
-                {"settings.indexSector.ignoreYamlIndexFmt", "已忽略 data.yaml 中的指数代码：%1"}
+                {"settings.indexSector.ignoreYamlIndexFmt", "已忽略 data.yaml 中的指数代码：%1"},
+                {"settings.futures.group", "期货"},
+                {"settings.futures.hint", "可搜索、添加、删除、排序期货，悬浮窗会显示在个股之后。"},
+                {"settings.futures.searchPlaceholder", "输入2个以上字符搜索期货"},
+                {"settings.futures.duplicate", "该期货已在列表中。"},
+                {"settings.futures.delConfirm", "确认从期货列表移除 '%1'？"}
             }
         }
     };

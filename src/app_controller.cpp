@@ -97,6 +97,7 @@ AppController::AppController(QObject* parent)
             << "stocks=" << m_stocks.size()
             << "indexes=" << m_indexes.size()
             << "sectors=" << m_sectors.size()
+            << "futures=" << m_futures.size()
             << "merged=" << merged.size();
 
     m_model = new QuoteModel(this);
@@ -436,6 +437,47 @@ QString normalizeSectorCode(const QString& rawCode) {
     return {};
 }
 
+QString normalizeFutureCode(const QString& rawCode) {
+    const QString raw = rawCode.trimmed();
+    if (raw.isEmpty()) {
+        return {};
+    }
+
+    const int dot = raw.indexOf(QLatin1Char('.'));
+    if (dot <= 0 || dot >= raw.size() - 1) {
+        return {};
+    }
+
+    const QString market = raw.left(dot).trimmed();
+    const QString symbol = raw.mid(dot + 1).trimmed().toUpper();
+    if (!isDigitsOnly(market) || symbol.isEmpty()) {
+        return {};
+    }
+
+    if (market == QStringLiteral("0")
+        || market == QStringLiteral("1")
+        || market == QStringLiteral("90")
+        || market == QStringLiteral("100")
+        || market == QStringLiteral("116")
+        || market == QStringLiteral("124")
+        || market == QStringLiteral("128")) {
+        return {};
+    }
+
+    bool hasLetter = false;
+    for (const QChar ch : symbol) {
+        if (ch.isLetter()) {
+            hasLetter = true;
+            break;
+        }
+    }
+    if (!hasLetter) {
+        return {};
+    }
+
+    return market + QStringLiteral(".") + symbol;
+}
+
 QString normalizeHongKongIndexCode(const QString& rawCode) {
     const QString code = rawCode.trimmed().toLower();
     if (code.isEmpty()) {
@@ -530,6 +572,10 @@ bool AppController::isSectorCode(const QString& code) {
     return !normalizeSectorCode(code).isEmpty();
 }
 
+bool AppController::isFutureCode(const QString& code) {
+    return !normalizeFutureCode(code).isEmpty();
+}
+
 QVector<StockItem> AppController::filterYamlStocks(
     const QVector<StockItem>& loaded,
     QStringList* ignoredCodes
@@ -569,7 +615,7 @@ QVector<StockItem> AppController::filterYamlStocks(
 
 QVector<StockItem> AppController::mergedWatchItems() const {
     QVector<StockItem> out;
-    out.reserve(m_indexes.size() + m_sectors.size() + m_stocks.size());
+    out.reserve(m_indexes.size() + m_sectors.size() + m_stocks.size() + m_futures.size());
 
     QSet<QString> seen;
     const auto appendUnique = [&out, &seen](const StockItem& item) {
@@ -599,6 +645,14 @@ QVector<StockItem> AppController::mergedWatchItems() const {
 
     for (const StockItem& item : m_stocks) {
         appendUnique(item);
+    }
+
+    for (const StockItem& item : m_futures) {
+        const QString futureCode = normalizeFutureCode(item.code);
+        if (futureCode.isEmpty()) {
+            continue;
+        }
+        appendUnique({futureCode, item.name});
     }
 
     return out;
@@ -638,6 +692,26 @@ void AppController::loadExtraWatchItems() {
 
         m_sectors.push_back({code, sector.name.trimmed()});
     }
+
+    QVector<StockItem> decodedFutures = decodeWatchItems(s.value("watch/futures").toStringList());
+    m_futures.clear();
+    m_futures.reserve(decodedFutures.size());
+
+    QSet<QString> futureSeen;
+    for (const StockItem& future : decodedFutures) {
+        const QString code = normalizeFutureCode(future.code);
+        if (code.isEmpty()) {
+            continue;
+        }
+
+        const QString key = watchCodeKey(code);
+        if (futureSeen.contains(key)) {
+            continue;
+        }
+        futureSeen.insert(key);
+
+        m_futures.push_back({code, future.name.trimmed()});
+    }
 }
 
 void AppController::saveExtraWatchItems() const {
@@ -655,6 +729,7 @@ void AppController::saveExtraWatchItems() const {
 
     s.setValue("watch/indexes", encodeWatchItems(m_indexes));
     s.setValue("watch/sectors", encodeWatchItems(m_sectors));
+    s.setValue("watch/futures", encodeWatchItems(m_futures));
     s.sync();
 }
 
@@ -709,6 +784,7 @@ void AppController::openSettings() {
             m_stocks,
             m_indexes,
             m_sectors,
+            m_futures,
             currentApiNamesByCode(),
             findDataYaml(),
             m_window
@@ -718,6 +794,7 @@ void AppController::openSettings() {
             updatedCfg = dlg.config();
             m_indexes = dlg.selectedIndexes();
             m_sectors = dlg.selectedSectors();
+            m_futures = dlg.selectedFutures();
             saveExtraWatchItems();
         }
     }
@@ -894,7 +971,7 @@ void AppController::refreshQuotes(bool force) {
 
     const QVector<StockItem> merged = mergedWatchItems();
 
-    // EastMoney source now supports mixed batch quotes (index + sector + stock)
+    // EastMoney source now supports mixed batch quotes (index + sector + future + stock)
     // via ulist endpoint, so avoid splitting into separate requests.
     if (m_cfg.apiSource == QStringLiteral("eastmoney")) {
         QVector<StockItem> allItems;
@@ -927,15 +1004,26 @@ void AppController::refreshQuotes(bool force) {
     sectorItems.reserve(merged.size());
 
     for (const StockItem& item : merged) {
+        if (isPredefinedIndexCode(item.code)) {
+            sectorItems.push_back(item);
+            continue;
+        }
+
         const QString sectorCode = normalizeSectorCode(item.code);
         if (!sectorCode.isEmpty()) {
             sectorItems.push_back({sectorCode, item.name});
             continue;
         }
 
+        const QString futureCode = normalizeFutureCode(item.code);
+        if (!futureCode.isEmpty()) {
+            sectorItems.push_back({futureCode, item.name});
+            continue;
+        }
+
         const QString hkIndexCode = normalizeHongKongIndexCode(item.code);
         if (!hkIndexCode.isEmpty()) {
-            // Hang Seng family indexes should be fetched with EastMoney sector batch.
+            // Hang Seng family indexes should be fetched with EastMoney mixed batch.
             sectorItems.push_back({hkIndexCode, item.name});
             continue;
         }
@@ -1107,8 +1195,8 @@ void AppController::rebuildProvider() {
     m_provider->setLanguage(m_resolvedLanguage);
     m_provider->applyConfig(m_cfg);
 
-    // Sector(BKxxxx) quotes are always fetched from EastMoney so they can work
-    // even when the primary provider is Tencent/Sina/XTick.
+    // Index/sector/future quotes are fetched from EastMoney mixed batch when the
+    // primary provider is not EastMoney, so special watch items keep working.
     // When primary source is EastMoney, m_provider already fetches everything in batch.
     if (m_cfg.apiSource != "eastmoney") {
         m_sectorProvider = new EastMoneyQuoteProvider(this);
@@ -1248,8 +1336,18 @@ bool AppController::hasHongKongStocks() const {
     return false;
 }
 
+bool AppController::hasHongKongTradingScheduleItems() const {
+    const QVector<StockItem> merged = mergedWatchItems();
+    for (const StockItem& item : merged) {
+        if (isHongKongCode(item.code) || isFutureCode(item.code)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool AppController::isWithinTradingSession(const QDateTime& bjNow) const {
-    if (hasHongKongStocks()) {
+    if (hasHongKongTradingScheduleItems()) {
         return isWithinHongKongTradingSession(bjNow);
     }
 
@@ -1285,7 +1383,7 @@ bool AppController::isWithinHongKongTradingSession(const QDateTime& bjNow) const
 }
 
 bool AppController::probeTradingDay(const QDate& bjDate) {
-    const bool useHongKongProbe = hasHongKongStocks();
+    const bool useHongKongProbe = hasHongKongTradingScheduleItems();
 
     const QNetworkProxy proxy = network_utils::proxyFromConfig(m_cfg);
     m_probeNam.setProxy(proxy);

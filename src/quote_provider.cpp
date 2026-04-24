@@ -296,6 +296,51 @@ QString normalizedSectorCode(const QString& rawCode) {
     return {};
 }
 
+QString normalizedFutureSecId(const QString& rawCode) {
+    const QString raw = rawCode.trimmed();
+    if (raw.isEmpty()) {
+        return {};
+    }
+
+    const int dot = raw.indexOf(QLatin1Char('.'));
+    if (dot <= 0 || dot >= raw.size() - 1) {
+        return {};
+    }
+
+    const QString market = raw.left(dot).trimmed();
+    const QString symbol = raw.mid(dot + 1).trimmed().toUpper();
+    if (!isDigitsOnly(market) || symbol.isEmpty()) {
+        return {};
+    }
+
+    if (market == QStringLiteral("0")
+        || market == QStringLiteral("1")
+        || market == QStringLiteral("90")
+        || market == QStringLiteral("100")
+        || market == QStringLiteral("116")
+        || market == QStringLiteral("124")
+        || market == QStringLiteral("128")) {
+        return {};
+    }
+
+    bool hasLetter = false;
+    for (const QChar ch : symbol) {
+        if (ch.isLetter()) {
+            hasLetter = true;
+            break;
+        }
+    }
+    if (!hasLetter) {
+        return {};
+    }
+
+    return market + QStringLiteral(".") + symbol;
+}
+
+bool isFutureSecIdLike(const QString& rawCode) {
+    return !normalizedFutureSecId(rawCode).isEmpty();
+}
+
 QString normalizeHongKongIndexSecId(const QString& rawCode) {
     const QString code = rawCode.trimmed().toLower();
     if (code.isEmpty()) {
@@ -1045,6 +1090,11 @@ QString EastMoneyQuoteProvider::toSecId(const QString& rawCode) {
         return "90." + sector;
     }
 
+    const QString futureSecId = normalizedFutureSecId(rawCode);
+    if (!futureSecId.isEmpty()) {
+        return futureSecId;
+    }
+
     const QString raw = rawCode.trimmed();
     if (raw.isEmpty()) {
         return {};
@@ -1057,6 +1107,11 @@ QString EastMoneyQuoteProvider::toSecId(const QString& rawCode) {
     if (dot > 0 && dot < lower.size() - 1) {
         const QString market = lower.left(dot);
         const QString symbolPart = raw.mid(dot + 1).trimmed();
+
+        const QString directFutureSecId = normalizedFutureSecId(raw);
+        if (!directFutureSecId.isEmpty()) {
+            return directFutureSecId;
+        }
 
         if (market == QStringLiteral("90")) {
             const QString directSector = normalizedSectorCode(symbolPart);
@@ -1187,6 +1242,7 @@ void EastMoneyQuoteProvider::handleResponse(
                         continue;
                     }
 
+                    const bool isFuture = isFutureSecIdLike(stock.code);
                     const double lastRaw = firstNumber(row, {"f2", "f43"});
                     double preRaw = firstNumber(row, {"f18", "f60"});
                     const double pctRaw = firstNumber(row, {"f3", "f170"});
@@ -1201,8 +1257,8 @@ void EastMoneyQuoteProvider::handleResponse(
                         preRaw = lastRaw;
                     }
 
-                    const double last = normalizeEastMoneyPrice(lastRaw);
-                    const double pre = normalizeEastMoneyPrice(preRaw);
+                    const double last = isFuture ? lastRaw : normalizeEastMoneyPrice(lastRaw);
+                    const double pre = isFuture ? preRaw : normalizeEastMoneyPrice(preRaw);
 
                     if (std::isnan(last) || std::isnan(pre)) {
                         m_errors << QString("%1: eastmoney invalid price fields").arg(stock.code);
@@ -1221,10 +1277,10 @@ void EastMoneyQuoteProvider::handleResponse(
                     q.price = last;
                     q.change = std::isnan(changeRaw)
                         ? derivedChange
-                        : chooseRawOrDiv100(changeRaw, 30.0, derivedChange);
+                        : (isFuture ? changeRaw : chooseRawOrDiv100(changeRaw, 30.0, derivedChange));
                     q.pct = std::isnan(pctRaw)
                         ? derivedPct
-                        : chooseRawOrDiv100(pctRaw, 30.0, derivedPct);
+                        : (isFuture ? pctRaw : chooseRawOrDiv100(pctRaw, 30.0, derivedPct));
 
                     m_buffer.insert(q.code, q);
                 }

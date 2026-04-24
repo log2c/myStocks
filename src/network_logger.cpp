@@ -38,6 +38,10 @@ QString compactBodyPreview(const QByteArray& body) {
     return preview;
 }
 
+QString encodedUrlForLog(const QUrl& url) {
+    return url.toString(QUrl::FullyEncoded);
+}
+
 } // namespace
 
 namespace network_logger {
@@ -66,7 +70,7 @@ RequestTrace logRequestStart(
         .arg(trace.id)
         .arg(trace.source)
         .arg(trace.method)
-        .arg(trace.url.toString())
+        .arg(encodedUrlForLog(trace.url))
         .arg(timeoutText)
         .arg(proxyToString(proxy))
         .arg(ua.isEmpty() ? QString("<empty>") : ua);
