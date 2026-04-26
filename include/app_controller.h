@@ -12,6 +12,7 @@
 #include <QVector>
 
 class FloatingWindow;
+class EastMoneyHotRankProvider;
 class IQuoteProvider;
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
 class QHotkey;
@@ -37,6 +38,7 @@ private:
     void setupHotkey();
 #endif
     void rebuildProvider();
+    void rebuildHotRankProvider();
     QHash<QString, QString> currentApiNamesByCode() const;
     void loadExtraWatchItems();
     void saveExtraWatchItems() const;
@@ -52,7 +54,11 @@ private:
     bool hasHongKongTradingScheduleItems() const;
     bool isWithinTradingSession(const QDateTime& bjNow) const;
     bool isWithinHongKongTradingSession(const QDateTime& bjNow) const;
+    bool isWithinAshareTradingSession(const QDateTime& bjNow) const;
     bool probeTradingDay(const QDate& bjDate);
+    bool probeTradingDay(const QDate& bjDate, bool useHongKongProbe);
+    bool shouldPollHotRanksNow();
+    void refreshHotRanks(bool force = false);
     QString probeTradingDateText(const QByteArray& body) const;
     void updateTrayTooltip();
 
@@ -72,14 +78,19 @@ private:
     FloatingWindow* m_window = nullptr;
     IQuoteProvider* m_provider = nullptr;
     IQuoteProvider* m_sectorProvider = nullptr;
+    EastMoneyHotRankProvider* m_hotRankProvider = nullptr;
 
     QTimer* m_timer = nullptr;
+    QTimer* m_hotRankTimer = nullptr;
     QSystemTrayIcon* m_tray = nullptr;
 
     QNetworkAccessManager m_probeNam;
     QDate m_probeDate;
     QDateTime m_probeCheckedAt;
     bool m_probeTradingDay = true;
+    QDate m_hotProbeDate;
+    QDateTime m_hotProbeCheckedAt;
+    bool m_hotProbeTradingDay = true;
 
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     QHotkey* m_hotkey = nullptr;

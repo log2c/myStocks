@@ -14,6 +14,7 @@
 #include <QUrl>
 #include <QUrlQuery>
 
+#include <algorithm>
 #include <cmath>
 
 #ifdef Q_OS_WIN
@@ -407,6 +408,56 @@ double chooseRawOrDiv100(double raw, double threshold, double reference) {
     }
 
     return (std::fabs(raw) > threshold) ? scaled : direct;
+}
+
+double normalizeEastMoneyPercent(double raw) {
+    if (!std::isfinite(raw)) {
+        return qQNaN();
+    }
+
+    return (std::fabs(raw) > 30.0) ? (raw / 100.0) : raw;
+}
+
+QVector<QJsonObject> extractDiffObjects(const QJsonValue& diffValue) {
+    QVector<QJsonObject> out;
+
+    if (diffValue.isArray()) {
+        const QJsonArray array = diffValue.toArray();
+        out.reserve(array.size());
+        for (const QJsonValue& value : array) {
+            if (value.isObject()) {
+                out.push_back(value.toObject());
+            }
+        }
+        return out;
+    }
+
+    if (!diffValue.isObject()) {
+        return out;
+    }
+
+    const QJsonObject object = diffValue.toObject();
+    QStringList keys = object.keys();
+    std::sort(keys.begin(), keys.end(), [](const QString& lhs, const QString& rhs) {
+        bool lhsOk = false;
+        bool rhsOk = false;
+        const int lhsInt = lhs.toInt(&lhsOk);
+        const int rhsInt = rhs.toInt(&rhsOk);
+        if (lhsOk && rhsOk) {
+            return lhsInt < rhsInt;
+        }
+        return lhs < rhs;
+    });
+
+    out.reserve(keys.size());
+    for (const QString& key : keys) {
+        const QJsonValue value = object.value(key);
+        if (value.isObject()) {
+            out.push_back(value.toObject());
+        }
+    }
+
+    return out;
 }
 
 } // namespace
@@ -1214,14 +1265,9 @@ void EastMoneyQuoteProvider::handleResponse(
                 m_errors << QStringLiteral("eastmoney data missing");
             } else {
                 const QJsonObject data = root.value("data").toObject();
-                const QJsonArray diff = data.value("diff").toArray();
+                const QVector<QJsonObject> diff = extractDiffObjects(data.value("diff"));
 
-                for (const QJsonValue& rowValue : diff) {
-                    if (!rowValue.isObject()) {
-                        continue;
-                    }
-
-                    const QJsonObject row = rowValue.toObject();
+                for (const QJsonObject& row : diff) {
                     const QString secKey = secIdKeyFromDiffItem(row);
                     StockItem stock = requestMap.value(secKey);
 
@@ -1298,5 +1344,152 @@ void EastMoneyQuoteProvider::handleResponse(
             emit error("eastmoney: " + m_errors.join(" | "));
         }
         emit quotesReady(toVector(m_buffer));
+    }
+}
+
+EastMoneyHotRankProvider::EastMoneyHotRankProvider(QObject* parent)
+    : QObject(parent) {}
+
+void EastMoneyHotRankProvider::applyConfig(const AppConfig& cfg) {
+    m_userAgent = network_utils::effectiveUserAgent(cfg);
+    m_proxy = network_utils::proxyFromConfig(cfg);
+}
+
+void EastMoneyHotRankProvider::fetchHotSectors(
+    int limit,
+    const QString& sortField,
+    const QString& sortOrder
+) {
+    fetchHotList(false, limit, sortField, sortOrder);
+}
+
+void EastMoneyHotRankProvider::fetchHotConcepts(
+    int limit,
+    const QString& sortField,
+    const QString& sortOrder
+) {
+    fetchHotList(true, limit, sortField, sortOrder);
+}
+
+void EastMoneyHotRankProvider::fetchHotList(
+    bool concept,
+    int limit,
+    const QString& sortField,
+    const QString& sortOrder
+) {
+    m_nam.setProxy(m_proxy);
+
+    const QString normalizedSortField = normalizeHotRankSortField(sortField);
+    const QString normalizedSortOrder = normalizeHotRankSortOrder(sortOrder);
+    const QString fid = normalizedSortField == QLatin1String("pct")
+        ? QStringLiteral("f3")
+        : QStringLiteral("f62");
+    const QString fs = concept
+        ? QStringLiteral("m:90+t:3")
+        : QStringLiteral("m:90+t:2");
+
+    QUrl url(QStringLiteral("https://push2delay.eastmoney.com/api/qt/clist/get"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("pn"), QStringLiteral("1"));
+    query.addQueryItem(QStringLiteral("pz"), QString::number(qMax(1, limit)));
+    query.addQueryItem(
+        QStringLiteral("po"),
+        normalizedSortOrder == QLatin1String("asc") ? QStringLiteral("0") : QStringLiteral("1")
+    );
+    query.addQueryItem(QStringLiteral("np"), QStringLiteral("1"));
+    query.addQueryItem(QStringLiteral("fltt"), QStringLiteral("2"));
+    query.addQueryItem(QStringLiteral("invt"), QStringLiteral("2"));
+    query.addQueryItem(QStringLiteral("fid"), fid);
+    query.addQueryItem(QStringLiteral("fs"), fs);
+    query.addQueryItem(QStringLiteral("fields"), QStringLiteral("f12,f14,f3,f62"));
+    url.setQuery(query);
+
+    QNetworkRequest req(url);
+    req.setRawHeader("User-Agent", m_userAgent.toUtf8());
+    req.setRawHeader("Referer", "https://quote.eastmoney.com/");
+    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
+
+    const network_logger::RequestTrace trace = network_logger::logRequestStart(
+        concept ? QStringLiteral("eastmoney-hot-concept") : QStringLiteral("eastmoney-hot-sector"),
+        QStringLiteral("GET"),
+        req,
+        m_proxy
+    );
+
+    QNetworkReply* reply = m_nam.get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, concept, trace]() {
+        const QString err = (reply->error() == QNetworkReply::NoError)
+            ? QString()
+            : reply->errorString();
+        const QByteArray body = reply->readAll();
+
+        network_logger::logRequestFinish(trace, reply, body.size(), body);
+
+        reply->deleteLater();
+        handleHotListResponse(concept, body, err);
+    });
+}
+
+void EastMoneyHotRankProvider::handleHotListResponse(
+    bool concept,
+    const QByteArray& body,
+    const QString& errorText
+) {
+    QString errorMessage;
+    QVector<HotRankItem> items;
+
+    if (!errorText.isEmpty()) {
+        errorMessage = QStringLiteral("eastmoney hot list request failed: %1").arg(errorText);
+    } else {
+        QJsonParseError parseError;
+        const QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
+        if (parseError.error != QJsonParseError::NoError) {
+            errorMessage = QStringLiteral("eastmoney hot list json parse error: %1")
+                .arg(parseError.errorString());
+        } else if (!doc.isObject()) {
+            errorMessage = QStringLiteral("eastmoney hot list invalid payload");
+        } else {
+            const QJsonObject root = doc.object();
+            const int rc = root.value(QStringLiteral("rc")).toInt(0);
+            if (root.contains(QStringLiteral("rc")) && rc != 0) {
+                const QString rcMsg = firstNonEmptyStringFromObject(root, {"msg", "message"});
+                const QString suffix = rcMsg.isEmpty() ? QString() : (QStringLiteral(" msg=") + rcMsg);
+                errorMessage = QStringLiteral("eastmoney hot list rc=%1%2").arg(rc).arg(suffix);
+            } else if (!root.value(QStringLiteral("data")).isObject()) {
+                errorMessage = QStringLiteral("eastmoney hot list data missing");
+            } else {
+                const QJsonObject data = root.value(QStringLiteral("data")).toObject();
+                const QVector<QJsonObject> diff = extractDiffObjects(data.value(QStringLiteral("diff")));
+                items.reserve(diff.size());
+
+                for (const QJsonObject& row : diff) {
+                    HotRankItem item;
+                    item.code = row.value(QStringLiteral("f12")).toString().trimmed();
+                    item.name = row.value(QStringLiteral("f14")).toString().trimmed();
+                    item.pct = normalizeEastMoneyPercent(
+                        firstNumberFromObject(row, {QStringLiteral("f3")})
+                    );
+                    item.mainNetInflow = firstNumberFromObject(row, {QStringLiteral("f62")});
+                    if (!item.code.isEmpty() && !item.name.isEmpty()) {
+                        items.push_back(item);
+                    }
+                }
+            }
+        }
+    }
+
+    if (!errorMessage.isEmpty()) {
+        if (errorMessage != m_lastError) {
+            emit error(errorMessage);
+            m_lastError = errorMessage;
+        }
+        return;
+    }
+
+    m_lastError.clear();
+    if (concept) {
+        emit hotConceptsReady(items);
+    } else {
+        emit hotSectorsReady(items);
     }
 }

@@ -153,11 +153,19 @@ AppController::AppController(QObject* parent)
     setupHotkey();
 #endif
     rebuildProvider();
+    rebuildHotRankProvider();
 
     m_timer = new QTimer(this);
     m_timer->setInterval(qMax(500, m_cfg.pollMs));
     connect(m_timer, &QTimer::timeout, this, [this]() { refreshQuotes(); });
     m_timer->start();
+
+    m_hotRankTimer = new QTimer(this);
+    m_hotRankTimer->setInterval(qMax(10000, m_cfg.hotRankPollSecs * 1000));
+    connect(m_hotRankTimer, &QTimer::timeout, this, [this]() { refreshHotRanks(); });
+    if (m_cfg.hotRankEnabled) {
+        m_hotRankTimer->start();
+    }
 
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() {
         qInfo() << "Application aboutToQuit. Persisting runtime config.";
@@ -168,6 +176,7 @@ AppController::AppController(QObject* parent)
     });
 
     refreshQuotes(true);
+    refreshHotRanks(true);
 }
 
 namespace {
@@ -889,14 +898,23 @@ void AppController::openSettings() {
     if (m_timer) {
         m_timer->setInterval(qMax(500, m_cfg.pollMs));
     }
+    if (m_hotRankTimer) {
+        m_hotRankTimer->setInterval(qMax(10000, m_cfg.hotRankPollSecs * 1000));
+    }
+
+    m_hotProbeDate = QDate();
+    m_hotProbeCheckedAt = QDateTime();
+    m_hotProbeTradingDay = true;
 
     setupTray();
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     setupHotkey();
 #endif
     rebuildProvider();
+    rebuildHotRankProvider();
     updateTrayTooltip();
     refreshQuotes(true);
+    refreshHotRanks(true);
 }
 
 void AppController::reloadStocksFromYaml() {
@@ -1048,6 +1066,44 @@ void AppController::refreshQuotes(bool force) {
     }
     if (m_sectorProvider && !sectorItems.isEmpty()) {
         m_sectorProvider->fetchQuotes(sectorItems);
+    }
+}
+
+void AppController::refreshHotRanks(bool force) {
+    if (!m_hotRankProvider || !m_cfg.hotRankEnabled) {
+        if (m_model) {
+            m_model->setHotSectors({});
+            m_model->setHotConcepts({});
+        }
+        return;
+    }
+
+    if (!force && !shouldPollHotRanksNow()) {
+        return;
+    }
+
+    if (!m_cfg.hotSectorVisible) {
+        if (m_model) {
+            m_model->setHotSectors({});
+        }
+    } else {
+        m_hotRankProvider->fetchHotSectors(
+            m_cfg.hotSectorCount,
+            m_cfg.hotSectorSortField,
+            m_cfg.hotSectorSortOrder
+        );
+    }
+
+    if (!m_cfg.hotConceptVisible) {
+        if (m_model) {
+            m_model->setHotConcepts({});
+        }
+    } else {
+        m_hotRankProvider->fetchHotConcepts(
+            m_cfg.hotConceptCount,
+            m_cfg.hotConceptSortField,
+            m_cfg.hotConceptSortOrder
+        );
     }
 }
 
@@ -1304,6 +1360,74 @@ void AppController::rebuildProvider() {
     }
 }
 
+void AppController::rebuildHotRankProvider() {
+    if (m_hotRankProvider) {
+        disconnect(m_hotRankProvider, nullptr, this, nullptr);
+        m_hotRankProvider->deleteLater();
+        m_hotRankProvider = nullptr;
+    }
+
+    if (m_hotRankTimer) {
+        m_hotRankTimer->setInterval(qMax(10000, m_cfg.hotRankPollSecs * 1000));
+    }
+
+    if (!m_cfg.hotRankEnabled) {
+        if (m_hotRankTimer) {
+            m_hotRankTimer->stop();
+        }
+        if (m_model) {
+            m_model->setHotSectors({});
+            m_model->setHotConcepts({});
+        }
+        return;
+    }
+
+    m_hotRankProvider = new EastMoneyHotRankProvider(this);
+    m_hotRankProvider->applyConfig(m_cfg);
+
+    connect(
+        m_hotRankProvider,
+        &EastMoneyHotRankProvider::hotSectorsReady,
+        this,
+        [this](const QVector<HotRankItem>& items) {
+            if (m_model) {
+                m_model->setHotSectors(items);
+            }
+        }
+    );
+    connect(
+        m_hotRankProvider,
+        &EastMoneyHotRankProvider::hotConceptsReady,
+        this,
+        [this](const QVector<HotRankItem>& items) {
+            if (m_model) {
+                m_model->setHotConcepts(items);
+            }
+        }
+    );
+    connect(
+        m_hotRankProvider,
+        &EastMoneyHotRankProvider::error,
+        this,
+        [this](const QString& msg) {
+            onProviderError(msg);
+        }
+    );
+
+    if (m_model) {
+        if (!m_cfg.hotSectorVisible) {
+            m_model->setHotSectors({});
+        }
+        if (!m_cfg.hotConceptVisible) {
+            m_model->setHotConcepts({});
+        }
+    }
+
+    if (m_hotRankTimer) {
+        m_hotRankTimer->start();
+    }
+}
+
 QHash<QString, QString> AppController::currentApiNamesByCode() const {
     QHash<QString, QString> out;
     out.reserve(m_apiNamesByCode.size());
@@ -1320,6 +1444,9 @@ QHash<QString, QString> AppController::currentApiNamesByCode() const {
     if (out.isEmpty() && m_model) {
         const int rows = m_model->rowCount();
         for (int row = 0; row < rows; ++row) {
+            if (m_model->rowKind(row) != QuoteModel::RowKindQuote) {
+                continue;
+            }
             const QString code = m_model->data(
                 m_model->index(row, ColCode),
                 Qt::DisplayRole
@@ -1373,11 +1500,43 @@ bool AppController::shouldPollNow() {
         || m_probeCheckedAt.secsTo(bjNow) >= 300;
 
     if (needProbe) {
-        m_probeTradingDay = probeTradingDay(today);
+        m_probeTradingDay = probeTradingDay(today, hasHongKongTradingScheduleItems());
         m_probeCheckedAt = bjNow;
     }
 
     return m_probeTradingDay;
+}
+
+bool AppController::shouldPollHotRanksNow() {
+    if (m_cfg.debugIgnoreTradingTime) {
+        return true;
+    }
+
+    const QTimeZone bjZone("Asia/Shanghai");
+    if (!bjZone.isValid()) {
+        return true;
+    }
+
+    const QDateTime bjNow = QDateTime::currentDateTimeUtc().toTimeZone(bjZone);
+    if (!isWithinAshareTradingSession(bjNow)) {
+        return false;
+    }
+
+    const QDate today = bjNow.date();
+    if (m_hotProbeDate != today) {
+        m_hotProbeDate = today;
+        m_hotProbeCheckedAt = QDateTime();
+        m_hotProbeTradingDay = true;
+    }
+
+    const bool needProbe = !m_hotProbeCheckedAt.isValid()
+        || m_hotProbeCheckedAt.secsTo(bjNow) >= 300;
+    if (needProbe) {
+        m_hotProbeTradingDay = probeTradingDay(today, false);
+        m_hotProbeCheckedAt = bjNow;
+    }
+
+    return m_hotProbeTradingDay;
 }
 
 bool AppController::hasHongKongStocks() const {
@@ -1404,6 +1563,11 @@ bool AppController::isWithinTradingSession(const QDateTime& bjNow) const {
     if (hasHongKongTradingScheduleItems()) {
         return isWithinHongKongTradingSession(bjNow);
     }
+
+    return isWithinAshareTradingSession(bjNow);
+}
+
+bool AppController::isWithinAshareTradingSession(const QDateTime& bjNow) const {
 
     if (!bjNow.isValid()) {
         return true;
@@ -1437,8 +1601,10 @@ bool AppController::isWithinHongKongTradingSession(const QDateTime& bjNow) const
 }
 
 bool AppController::probeTradingDay(const QDate& bjDate) {
-    const bool useHongKongProbe = hasHongKongTradingScheduleItems();
+    return probeTradingDay(bjDate, hasHongKongTradingScheduleItems());
+}
 
+bool AppController::probeTradingDay(const QDate& bjDate, bool useHongKongProbe) {
     const QNetworkProxy proxy = network_utils::proxyFromConfig(m_cfg);
     m_probeNam.setProxy(proxy);
 

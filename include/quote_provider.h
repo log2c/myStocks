@@ -121,3 +121,33 @@ private:
     QStringList m_errors;
     QHash<QString, QuoteItem> m_buffer;
 };
+
+class EastMoneyHotRankProvider : public QObject {
+    Q_OBJECT
+public:
+    explicit EastMoneyHotRankProvider(QObject* parent = nullptr);
+
+    void applyConfig(const AppConfig& cfg);
+    void fetchHotSectors(int limit, const QString& sortField, const QString& sortOrder);
+    void fetchHotConcepts(int limit, const QString& sortField, const QString& sortOrder);
+
+signals:
+    void hotSectorsReady(const QVector<HotRankItem>& items);
+    void hotConceptsReady(const QVector<HotRankItem>& items);
+    void error(const QString& message);
+
+private:
+    void fetchHotList(
+        bool concept,
+        int limit,
+        const QString& sortField,
+        const QString& sortOrder
+    );
+    void handleHotListResponse(bool concept, const QByteArray& body, const QString& errorText);
+
+private:
+    QString m_userAgent = defaultChrome100UserAgent();
+    QNetworkProxy m_proxy = QNetworkProxy(QNetworkProxy::NoProxy);
+    QNetworkAccessManager m_nam;
+    QString m_lastError;
+};

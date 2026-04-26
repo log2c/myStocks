@@ -8,6 +8,30 @@
 
 namespace {
 
+QVector<int> visibleLogicalColumns(const AppConfig& cfg) {
+    QVector<int> columns;
+    columns.reserve(ColCount);
+
+    for (int logical : cfg.columnOrder) {
+        if (logical < 0 || logical >= ColCount) {
+            continue;
+        }
+        if (!cfg.visibleColumns.value(logical, true) || columns.contains(logical)) {
+            continue;
+        }
+        columns.push_back(logical);
+    }
+
+    for (int logical = 0; logical < ColCount; ++logical) {
+        if (!cfg.visibleColumns.value(logical, true) || columns.contains(logical)) {
+            continue;
+        }
+        columns.push_back(logical);
+    }
+
+    return columns;
+}
+
 bool isHongKongCode(const QString& rawCode) {
     return rawCode.trimmed().toLower().startsWith("hk");
 }
@@ -76,6 +100,20 @@ QString withHongKongNamePrefix(const QString& code, const QString& name) {
     return "H " + trimmed;
 }
 
+QString formatNetInflowYi(double value) {
+    if (!std::isfinite(value)) {
+        return QStringLiteral("--");
+    }
+
+    const double yi = value / 100000000.0;
+    QString text = QString::number(yi, 'f', 2);
+    if (yi > 0.0) {
+        text.prepend('+');
+    }
+    text.append(QStringLiteral("亿"));
+    return text;
+}
+
 } // namespace
 
 QuoteModel::QuoteModel(QObject* parent)
@@ -105,7 +143,9 @@ int QuoteModel::rowCount(const QModelIndex& parent) const {
     if (parent.isValid()) {
         return 0;
     }
-    return m_rows.size();
+    return m_rows.size()
+        + (hasHotSectorRow() ? 1 : 0)
+        + (hasHotConceptRow() ? 1 : 0);
 }
 
 int QuoteModel::columnCount(const QModelIndex& parent) const {
@@ -131,7 +171,48 @@ QVariant QuoteModel::headerData(int section, Qt::Orientation orientation, int ro
 }
 
 QVariant QuoteModel::data(const QModelIndex& index, int role) const {
-    if (!index.isValid() || index.row() < 0 || index.row() >= m_rows.size()) {
+    if (!index.isValid() || index.row() < 0 || index.row() >= rowCount()) {
+        return {};
+    }
+
+    const RowKind kind = rowKind(index.row());
+    if (kind != RowKindQuote) {
+        const int labelCol = firstVisibleLogicalColumn();
+        const int contentCol = firstContentLogicalColumn();
+        const QString label = specialRowLabel(index.row());
+        const QString text = specialRowText(index.row());
+
+        if (role == Qt::DisplayRole) {
+            if (index.column() == labelCol) {
+                if (contentCol == labelCol && !text.isEmpty()) {
+                    return QStringLiteral("%1 %2").arg(label, text);
+                }
+                return label;
+            }
+            if (contentCol != labelCol && index.column() == contentCol) {
+                return {};
+            }
+            return {};
+        }
+
+        if (role == Qt::TextAlignmentRole) {
+            if (index.column() == labelCol) {
+                return static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter);
+            }
+            return specialRowHasData(index.row())
+                ? static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter)
+                : static_cast<int>(Qt::AlignCenter);
+        }
+
+        if (role == Qt::ForegroundRole) {
+            const bool lightHoverText = m_hoverReadingVisualActive
+                && m_cfg.hoverReadingEnabled
+                && m_cfg.hoverReadingUiMode.compare(QStringLiteral("light"), Qt::CaseInsensitive) == 0;
+            return lightHoverText
+                ? QColor(QStringLiteral("#1F1F1F"))
+                : m_cfg.textColor;
+        }
+
         return {};
     }
 
@@ -264,11 +345,31 @@ void QuoteModel::updateQuotes(const QVector<QuoteItem>& quotes) {
     }
 }
 
+void QuoteModel::setHotSectors(const QVector<HotRankItem>& items) {
+    m_hotSectors = items;
+    emitSpecialRowsChanged();
+}
+
+void QuoteModel::setHotConcepts(const QVector<HotRankItem>& items) {
+    m_hotConcepts = items;
+    emitSpecialRowsChanged();
+}
+
 void QuoteModel::setConfig(const AppConfig& cfg) {
+    const bool hadHotSectorRow = hasHotSectorRow();
+    const bool hadHotConceptRow = hasHotConceptRow();
     m_cfg = cfg;
+    const bool rowCountChanged = hadHotSectorRow != hasHotSectorRow()
+        || hadHotConceptRow != hasHotConceptRow();
+    if (rowCountChanged) {
+        beginResetModel();
+        endResetModel();
+        return;
+    }
     if (!m_rows.isEmpty()) {
         emit dataChanged(index(0, 0), index(m_rows.size() - 1, ColCount - 1), {Qt::ForegroundRole});
     }
+    emitSpecialRowsChanged();
 }
 
 void QuoteModel::setHoverReadingVisualState(bool active) {
@@ -302,6 +403,113 @@ QString QuoteModel::trayTooltipText() const {
     return lines.join('\n');
 }
 
+QuoteModel::RowKind QuoteModel::rowKind(int row) const {
+    if (row < 0 || row >= rowCount()) {
+        return RowKindQuote;
+    }
+    if (row < m_rows.size()) {
+        return RowKindQuote;
+    }
+    if (hasHotSectorRow() && row == hotSectorRowIndex()) {
+        return RowKindHotSector;
+    }
+    if (hasHotConceptRow() && row == hotConceptRowIndex()) {
+        return RowKindHotConcept;
+    }
+    return RowKindQuote;
+}
+
+QString QuoteModel::specialRowLabel(int row) const {
+    switch (rowKind(row)) {
+    case RowKindHotSector:
+        return i18n::t("quote.hotSector", m_language);
+    case RowKindHotConcept:
+        return i18n::t("quote.hotConcept", m_language);
+    case RowKindQuote:
+    default:
+        return {};
+    }
+}
+
+QString QuoteModel::specialRowText(int row) const {
+    const QStringList entries = specialRowEntries(row);
+    if (entries.isEmpty()) {
+        return i18n::t("quote.noData", m_language);
+    }
+
+    return entries.join(QStringLiteral("    "));
+}
+
+QStringList QuoteModel::specialRowEntries(int row) const {
+    switch (rowKind(row)) {
+    case RowKindHotSector:
+        return formatHotRankEntries(m_hotSectors);
+    case RowKindHotConcept:
+        return formatHotRankEntries(m_hotConcepts);
+    case RowKindQuote:
+    default:
+        return {};
+    }
+}
+
+int QuoteModel::specialRowEntryCount(int row) const {
+    return specialRowEntries(row).size();
+}
+
+QString QuoteModel::specialRowEntryText(int row, int entryIndex) const {
+    const QStringList entries = specialRowEntries(row);
+    if (entryIndex < 0 || entryIndex >= entries.size()) {
+        return {};
+    }
+    return entries.at(entryIndex);
+}
+
+QColor QuoteModel::specialRowEntryColor(int row, int entryIndex) const {
+    const QVector<HotRankItem>* items = nullptr;
+    switch (rowKind(row)) {
+    case RowKindHotSector:
+        items = &m_hotSectors;
+        break;
+    case RowKindHotConcept:
+        items = &m_hotConcepts;
+        break;
+    case RowKindQuote:
+    default:
+        return m_cfg.textColor;
+    }
+
+    if (!items || entryIndex < 0 || entryIndex >= items->size()) {
+        return m_cfg.textColor;
+    }
+
+    return hotRankColorForPct(items->at(entryIndex).pct);
+}
+
+bool QuoteModel::specialRowHasData(int row) const {
+    switch (rowKind(row)) {
+    case RowKindHotSector:
+        return !m_hotSectors.isEmpty();
+    case RowKindHotConcept:
+        return !m_hotConcepts.isEmpty();
+    case RowKindQuote:
+    default:
+        return false;
+    }
+}
+
+int QuoteModel::firstVisibleLogicalColumn() const {
+    const QVector<int> columns = visibleLogicalColumns(m_cfg);
+    return columns.isEmpty() ? 0 : columns.first();
+}
+
+int QuoteModel::firstContentLogicalColumn() const {
+    const QVector<int> columns = visibleLogicalColumns(m_cfg);
+    if (columns.size() >= 2) {
+        return columns.at(1);
+    }
+    return columns.isEmpty() ? 0 : columns.first();
+}
+
 QString QuoteModel::formatSigned(double value, int precision, bool percent) {
     QString s = QString::number(value, 'f', precision);
     if (value > 0.0) {
@@ -311,4 +519,71 @@ QString QuoteModel::formatSigned(double value, int precision, bool percent) {
         s.append('%');
     }
     return s;
+}
+
+QColor QuoteModel::hotRankColorForPct(double pct) const {
+    if (std::isnan(pct)) {
+        return m_cfg.flatColor;
+    }
+    if (pct > 0.0) {
+        return m_cfg.upColor;
+    }
+    if (pct < 0.0) {
+        return m_cfg.downColor;
+    }
+    return m_cfg.flatColor;
+}
+
+bool QuoteModel::hasHotSectorRow() const {
+    return m_cfg.hotRankEnabled && m_cfg.hotSectorVisible;
+}
+
+bool QuoteModel::hasHotConceptRow() const {
+    return m_cfg.hotRankEnabled && m_cfg.hotConceptVisible;
+}
+
+int QuoteModel::hotSectorRowIndex() const {
+    return m_rows.size();
+}
+
+int QuoteModel::hotConceptRowIndex() const {
+    return m_rows.size() + (hasHotSectorRow() ? 1 : 0);
+}
+
+void QuoteModel::emitSpecialRowsChanged() {
+    if (hasHotSectorRow()) {
+        const int row = hotSectorRowIndex();
+        emit dataChanged(index(row, 0), index(row, ColCount - 1));
+    }
+    if (hasHotConceptRow()) {
+        const int row = hotConceptRowIndex();
+        emit dataChanged(index(row, 0), index(row, ColCount - 1));
+    }
+}
+
+QStringList QuoteModel::formatHotRankEntries(const QVector<HotRankItem>& items) const {
+    QStringList parts;
+    parts.reserve(items.size());
+
+    for (const HotRankItem& item : items) {
+        const QString text = formatHotRankEntry(item);
+        if (!text.isEmpty()) {
+            parts.push_back(text);
+        }
+    }
+
+    return parts;
+}
+
+QString QuoteModel::formatHotRankEntry(const HotRankItem& item) const {
+    const QString name = item.name.trimmed();
+    if (name.isEmpty()) {
+        return {};
+    }
+
+    const QString pct = std::isnan(item.pct)
+        ? QStringLiteral("--")
+        : formatSigned(item.pct, 2, true);
+    const QString netInflow = formatNetInflowYi(item.mainNetInflow);
+    return QStringLiteral("%1 %2 %3").arg(name, pct, netInflow);
 }

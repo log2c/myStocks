@@ -13,6 +13,7 @@
 #include <QPalette>
 #include <QSignalBlocker>
 #include <QShowEvent>
+#include <QStyledItemDelegate>
 #include <QStyleFactory>
 #include <QVBoxLayout>
 
@@ -264,7 +265,10 @@ void setMacWindowIgnoresMouseEvents(const QWidget* widget, bool ignore) {
 
 class BottomGridTableView : public QTableView {
 public:
-    using QTableView::QTableView;
+    explicit BottomGridTableView(QWidget* parent = nullptr)
+        : QTableView(parent) {
+        m_animationTimerId = startTimer(40);
+    }
 
     void setBottomGridVisible(bool visible) {
         if (m_bottomGridVisible == visible) {
@@ -284,7 +288,60 @@ public:
         }
     }
 
+    void syncSpecialRowSpans(const QuoteModel* quoteModel) {
+        clearSpans();
+
+        if (!quoteModel) {
+            return;
+        }
+
+        QVector<int> visibleColumns;
+        QHeaderView* header = horizontalHeader();
+        for (int visual = 0; visual < header->count(); ++visual) {
+            const int logical = header->logicalIndex(visual);
+            if (logical < 0 || isColumnHidden(logical)) {
+                continue;
+            }
+            visibleColumns.push_back(logical);
+        }
+
+        if (visibleColumns.size() < 2) {
+            return;
+        }
+
+        const int contentColumn = visibleColumns.at(1);
+        const int spanWidth = qMax(1, ColCount - contentColumn);
+        for (int row = 0; row < quoteModel->rowCount(); ++row) {
+            if (quoteModel->rowKind(row) == QuoteModel::RowKindQuote) {
+                continue;
+            }
+            setSpan(row, contentColumn, 1, spanWidth);
+        }
+    }
+
+    int animationTick() const {
+        return m_animationTick;
+    }
+
+    void setHotRankFlipSecs(double secs) {
+        m_hotRankFlipSecs = qBound(0.5, secs, 60.0);
+    }
+
+    double hotRankFlipSecs() const {
+        return m_hotRankFlipSecs;
+    }
+
 protected:
+    void timerEvent(QTimerEvent* event) override {
+        if (event && event->timerId() == m_animationTimerId) {
+            ++m_animationTick;
+            viewport()->update();
+            return;
+        }
+
+        QTableView::timerEvent(event);
+    }
+
     void paintEvent(QPaintEvent* event) override {
         QTableView::paintEvent(event);
 
@@ -330,6 +387,160 @@ protected:
 private:
     bool m_bottomGridVisible = false;
     QColor m_bottomGridColor = QColor(255, 255, 255, 80);
+    int m_animationTimerId = 0;
+    int m_animationTick = 0;
+    double m_hotRankFlipSecs = 2.6;
+};
+
+class HotRankFlipDelegate : public QStyledItemDelegate {
+public:
+    HotRankFlipDelegate(QTableView* table, QuoteModel* model, QObject* parent = nullptr)
+        : QStyledItemDelegate(parent)
+        , m_table(table)
+        , m_model(model) {}
+
+    void paint(
+        QPainter* painter,
+        const QStyleOptionViewItem& option,
+        const QModelIndex& index
+    ) const override {
+        if (!m_table || !m_model || m_model->rowKind(index.row()) == QuoteModel::RowKindQuote) {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+
+        QVector<int> visibleColumns;
+        QHeaderView* header = m_table->horizontalHeader();
+        for (int visual = 0; visual < header->count(); ++visual) {
+            const int logical = header->logicalIndex(visual);
+            if (logical < 0 || m_table->isColumnHidden(logical)) {
+                continue;
+            }
+            visibleColumns.push_back(logical);
+        }
+
+        if (visibleColumns.size() < 2) {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+
+        const int contentColumn = visibleColumns.at(1);
+        if (index.column() != contentColumn) {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+
+        QStyleOptionViewItem baseOption(option);
+        initStyleOption(&baseOption, index);
+        baseOption.text.clear();
+        QStyledItemDelegate::paint(painter, baseOption, index);
+
+        const QRect textRect = option.rect.adjusted(8, 0, -8, 0);
+        const QVariant foreground = index.data(Qt::ForegroundRole);
+        const QColor textColor = foreground.canConvert<QColor>()
+            ? qvariant_cast<QColor>(foreground)
+            : baseOption.palette.color(QPalette::Text);
+
+        painter->save();
+        painter->setPen(textColor);
+
+        const int alignment = index.data(Qt::TextAlignmentRole).toInt();
+        if (!m_model->specialRowHasData(index.row())) {
+            const QString text = m_model->specialRowText(index.row());
+            painter->drawText(
+                textRect,
+                alignment != 0 ? Qt::Alignment(alignment) : (Qt::AlignCenter),
+                text
+            );
+            painter->restore();
+            return;
+        }
+
+        const int entryCount = m_model->specialRowEntryCount(index.row());
+        if (entryCount <= 0) {
+            painter->restore();
+            return;
+        }
+
+        const int currentIndex = currentEntryIndex(entryCount);
+        const QString currentText = m_model->specialRowEntryText(index.row(), currentIndex);
+        const QColor currentColor = m_model->specialRowEntryColor(index.row(), currentIndex);
+        if (entryCount == 1) {
+            painter->setPen(currentColor);
+            painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, currentText);
+            painter->restore();
+            return;
+        }
+
+        const int nextIndex = (currentIndex + 1) % entryCount;
+        const QString nextText = m_model->specialRowEntryText(index.row(), nextIndex);
+        const QColor nextColor = m_model->specialRowEntryColor(index.row(), nextIndex);
+        const int yOffset = qRound(flipProgress() * textRect.height());
+
+        painter->setClipRect(textRect);
+        drawAlignedText(*painter, textRect.translated(0, -yOffset), currentText, currentColor);
+        drawAlignedText(*painter, textRect.translated(0, textRect.height() - yOffset), nextText, nextColor);
+
+        painter->restore();
+    }
+
+private:
+    int animationTick() const {
+        const auto* table = dynamic_cast<const BottomGridTableView*>(m_table);
+        return table ? table->animationTick() : 0;
+    }
+
+    int currentEntryIndex(int entryCount) const {
+        if (entryCount <= 0) {
+            return 0;
+        }
+
+        return (animationTick() / flipCycleTicks()) % entryCount;
+    }
+
+    qreal flipProgress() const {
+        const int holdTicks = flipHoldTicks();
+        const int animTicks = flipAnimTicks();
+        const int phaseTick = animationTick() % flipCycleTicks();
+        if (phaseTick < holdTicks) {
+            return 0.0;
+        }
+
+        return qBound(
+            0.0,
+            static_cast<qreal>(phaseTick - holdTicks) / static_cast<qreal>(animTicks),
+            1.0
+        );
+    }
+
+    void drawAlignedText(
+        QPainter& painter,
+        const QRect& rect,
+        const QString& text,
+        const QColor& color
+    ) const {
+        painter.setPen(color);
+        painter.drawText(rect, Qt::AlignLeft | Qt::AlignVCenter, text);
+    }
+
+    int flipCycleTicks() const {
+        const auto* table = dynamic_cast<const BottomGridTableView*>(m_table);
+        const double secs = table ? table->hotRankFlipSecs() : 2.6;
+        return qMax(2, qRound((secs * 1000.0) / 40.0));
+    }
+
+    int flipHoldTicks() const {
+        const int cycle = flipCycleTicks();
+        return qMax(1, cycle * 4 / 5);
+    }
+
+    int flipAnimTicks() const {
+        return qMax(1, flipCycleTicks() - flipHoldTicks());
+    }
+
+private:
+    QTableView* m_table = nullptr;
+    QuoteModel* m_model = nullptr;
 };
 
 } // namespace
@@ -371,6 +582,7 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
 
     m_table = new BottomGridTableView(m_panel);
     m_table->setModel(m_model);
+    m_table->setItemDelegate(new HotRankFlipDelegate(m_table, m_model, m_table));
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setSelectionMode(QAbstractItemView::NoSelection);
     m_table->setShowGrid(false);
@@ -692,6 +904,9 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
 
 void FloatingWindow::applyConfig(const AppConfig& cfg) {
     m_cfg = cfg;
+    if (auto* table = static_cast<BottomGridTableView*>(m_table)) {
+        table->setHotRankFlipSecs(m_cfg.hotRankFlipSecs);
+    }
 
     if (QLayout* panelLayout = m_panel ? m_panel->layout() : nullptr) {
         const int padding = floatingWindowPaddingPx(m_cfg);
@@ -1221,12 +1436,26 @@ void FloatingWindow::applyColumns() {
 }
 
 void FloatingWindow::adjustWindowSize() {
+    if (auto* table = static_cast<BottomGridTableView*>(m_table)) {
+        table->syncSpecialRowSpans(m_model);
+    }
+
     // Auto-size each visible column to its content.
     for (int i = 0; i < ColCount; ++i) {
         if (m_table->isColumnHidden(i)) {
             continue;
         }
         m_table->setColumnWidth(i, autoColumnWidthFromContent(i));
+    }
+
+    QVector<int> visibleColumns;
+    QHeaderView* header = m_table->horizontalHeader();
+    for (int visual = 0; visual < header->count(); ++visual) {
+        const int logical = header->logicalIndex(visual);
+        if (logical < 0 || m_table->isColumnHidden(logical)) {
+            continue;
+        }
+        visibleColumns.push_back(logical);
     }
 
     // Width = sum of visible column widths.
@@ -1265,6 +1494,10 @@ int FloatingWindow::autoColumnWidthFromContent(int column) const {
     const QFontMetrics cellFm(m_table->font());
     const int rows = m_model->rowCount();
     for (int r = 0; r < rows; ++r) {
+        if (m_model->rowKind(r) != QuoteModel::RowKindQuote
+            && column != m_model->firstVisibleLogicalColumn()) {
+            continue;
+        }
         const QString text = m_model->data(m_model->index(r, column), Qt::DisplayRole).toString();
         width = qMax(width, cellFm.horizontalAdvance(text) + 24);
     }

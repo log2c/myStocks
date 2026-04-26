@@ -121,6 +121,17 @@ private:
     QCheckBox* m_showHeaderCheck = nullptr;
     QCheckBox* m_showGridCheck = nullptr;
     QPushButton* m_gridColorBtn = nullptr;
+    QCheckBox* m_hotRankEnabledCheck = nullptr;
+    QSpinBox* m_hotRankPollSecsSpin = nullptr;
+    QDoubleSpinBox* m_hotRankFlipSecsSpin = nullptr;
+    QCheckBox* m_hotSectorVisibleCheck = nullptr;
+    QSpinBox* m_hotSectorCountSpin = nullptr;
+    QComboBox* m_hotSectorSortFieldCombo = nullptr;
+    QComboBox* m_hotSectorSortOrderCombo = nullptr;
+    QCheckBox* m_hotConceptVisibleCheck = nullptr;
+    QSpinBox* m_hotConceptCountSpin = nullptr;
+    QComboBox* m_hotConceptSortFieldCombo = nullptr;
+    QComboBox* m_hotConceptSortOrderCombo = nullptr;
     QCheckBox* m_floatingTopMostCheck = nullptr;
     QCheckBox* m_simpleModeCheck = nullptr;
     QCheckBox* m_blinkReminderCheck = nullptr;

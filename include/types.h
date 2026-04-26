@@ -32,6 +32,13 @@ struct QuoteItem {
     double change = qQNaN();
 };
 
+struct HotRankItem {
+    QString code;
+    QString name;
+    double pct = qQNaN();
+    double mainNetInflow = qQNaN();
+};
+
 inline QString defaultChrome100UserAgent() {
     return QStringLiteral(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -71,6 +78,22 @@ inline QString normalizeHoverReadingUiMode(const QString& rawMode) {
         return mode;
     }
     return QStringLiteral("dark");
+}
+
+inline QString normalizeHotRankSortField(const QString& rawField) {
+    const QString field = rawField.trimmed().toLower();
+    if (field == QLatin1String("pct")) {
+        return field;
+    }
+    return QStringLiteral("mainnetinflow");
+}
+
+inline QString normalizeHotRankSortOrder(const QString& rawOrder) {
+    const QString order = rawOrder.trimmed().toLower();
+    if (order == QLatin1String("asc")) {
+        return order;
+    }
+    return QStringLiteral("desc");
 }
 
 struct AppConfig {
@@ -146,6 +169,17 @@ struct AppConfig {
     double hoverReadingDelaySecs = 1.0;
     QString hoverReadingUiMode = "dark";
     bool hoverReadingTransparentBackgroundEnabled = true;
+    bool hotRankEnabled = false;
+    int hotRankPollSecs = 60;
+    double hotRankFlipSecs = 2.6;
+    bool hotSectorVisible = true;
+    int hotSectorCount = 5;
+    QString hotSectorSortField = "mainnetinflow";
+    QString hotSectorSortOrder = "desc";
+    bool hotConceptVisible = true;
+    int hotConceptCount = 5;
+    QString hotConceptSortField = "mainnetinflow";
+    QString hotConceptSortOrder = "desc";
     bool mousePassthroughEnabled = false;
     QString mousePassthroughActivationKey = "ctrl";
     double floatingWindowPaddingPx = static_cast<double>(kFloatingWindowPaddingPx);

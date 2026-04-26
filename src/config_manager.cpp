@@ -315,6 +315,25 @@ AppConfig ConfigManager::loadConfig() {
         "ui/hoverReadingTransparentBackgroundEnabled",
         cfg.hoverReadingTransparentBackgroundEnabled
     ).toBool();
+    cfg.hotRankEnabled = s.value("ui/hotRankEnabled", cfg.hotRankEnabled).toBool();
+    cfg.hotRankPollSecs = s.value("ui/hotRankPollSecs", cfg.hotRankPollSecs).toInt();
+    cfg.hotRankFlipSecs = s.value("ui/hotRankFlipSecs", cfg.hotRankFlipSecs).toDouble();
+    cfg.hotSectorVisible = s.value("ui/hotSectorVisible", cfg.hotSectorVisible).toBool();
+    cfg.hotSectorCount = s.value("ui/hotSectorCount", cfg.hotSectorCount).toInt();
+    cfg.hotSectorSortField = normalizeHotRankSortField(
+        s.value("ui/hotSectorSortField", cfg.hotSectorSortField).toString()
+    );
+    cfg.hotSectorSortOrder = normalizeHotRankSortOrder(
+        s.value("ui/hotSectorSortOrder", cfg.hotSectorSortOrder).toString()
+    );
+    cfg.hotConceptVisible = s.value("ui/hotConceptVisible", cfg.hotConceptVisible).toBool();
+    cfg.hotConceptCount = s.value("ui/hotConceptCount", cfg.hotConceptCount).toInt();
+    cfg.hotConceptSortField = normalizeHotRankSortField(
+        s.value("ui/hotConceptSortField", cfg.hotConceptSortField).toString()
+    );
+    cfg.hotConceptSortOrder = normalizeHotRankSortOrder(
+        s.value("ui/hotConceptSortOrder", cfg.hotConceptSortOrder).toString()
+    );
     cfg.mousePassthroughEnabled = s.value(
         "ui/mousePassthroughEnabled",
         cfg.mousePassthroughEnabled
@@ -399,6 +418,14 @@ AppConfig ConfigManager::loadConfig() {
     cfg.floatingWindowFontSize = qBound(0, cfg.floatingWindowFontSize, 72);
     cfg.hoverReadingDelaySecs = qBound(0.1, cfg.hoverReadingDelaySecs, 60.0);
     cfg.hoverReadingUiMode = normalizeHoverReadingUiMode(cfg.hoverReadingUiMode);
+    cfg.hotRankPollSecs = qBound(10, cfg.hotRankPollSecs, 3600);
+    cfg.hotRankFlipSecs = qBound(0.5, cfg.hotRankFlipSecs, 60.0);
+    cfg.hotSectorCount = qMax(1, cfg.hotSectorCount);
+    cfg.hotSectorSortField = normalizeHotRankSortField(cfg.hotSectorSortField);
+    cfg.hotSectorSortOrder = normalizeHotRankSortOrder(cfg.hotSectorSortOrder);
+    cfg.hotConceptCount = qMax(1, cfg.hotConceptCount);
+    cfg.hotConceptSortField = normalizeHotRankSortField(cfg.hotConceptSortField);
+    cfg.hotConceptSortOrder = normalizeHotRankSortOrder(cfg.hotConceptSortOrder);
     cfg.mousePassthroughActivationKey = normalizeMousePassthroughActivationKey(
         cfg.mousePassthroughActivationKey
     );
@@ -499,6 +526,29 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue(
         "ui/hoverReadingTransparentBackgroundEnabled",
         cfg.hoverReadingTransparentBackgroundEnabled
+    );
+    s.setValue("ui/hotRankEnabled", cfg.hotRankEnabled);
+    s.setValue("ui/hotRankPollSecs", qBound(10, cfg.hotRankPollSecs, 3600));
+    s.setValue("ui/hotRankFlipSecs", qBound(0.5, cfg.hotRankFlipSecs, 60.0));
+    s.setValue("ui/hotSectorVisible", cfg.hotSectorVisible);
+    s.setValue("ui/hotSectorCount", qMax(1, cfg.hotSectorCount));
+    s.setValue(
+        "ui/hotSectorSortField",
+        normalizeHotRankSortField(cfg.hotSectorSortField)
+    );
+    s.setValue(
+        "ui/hotSectorSortOrder",
+        normalizeHotRankSortOrder(cfg.hotSectorSortOrder)
+    );
+    s.setValue("ui/hotConceptVisible", cfg.hotConceptVisible);
+    s.setValue("ui/hotConceptCount", qMax(1, cfg.hotConceptCount));
+    s.setValue(
+        "ui/hotConceptSortField",
+        normalizeHotRankSortField(cfg.hotConceptSortField)
+    );
+    s.setValue(
+        "ui/hotConceptSortOrder",
+        normalizeHotRankSortOrder(cfg.hotConceptSortOrder)
     );
     s.setValue("ui/mousePassthroughEnabled", cfg.mousePassthroughEnabled);
     s.setValue(
