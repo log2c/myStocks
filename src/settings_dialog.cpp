@@ -1371,6 +1371,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_hotRankPollSecsSpin->setSingleStep(1);
     m_hotRankPollSecsSpin->setSuffix(trText("settings.display.hotRankPollSuffix"));
     m_hotRankPollSecsSpin->setValue(qBound(10, m_cfg.hotRankPollSecs, 3600));
+    applyNumericSpinBoxWidth(m_hotRankPollSecsSpin);
     hotRankForm->addRow(trText("settings.display.hotRankPoll"), m_hotRankPollSecsSpin);
 
     m_hotRankFlipSecsSpin = new QDoubleSpinBox(w);
@@ -1379,6 +1380,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_hotRankFlipSecsSpin->setDecimals(1);
     m_hotRankFlipSecsSpin->setSuffix(trText("settings.display.hotRankFlipSuffix"));
     m_hotRankFlipSecsSpin->setValue(qBound(0.5, m_cfg.hotRankFlipSecs, 60.0));
+    applyNumericSpinBoxWidth(m_hotRankFlipSecsSpin);
     hotRankForm->addRow(trText("settings.display.hotRankFlip"), m_hotRankFlipSecsSpin);
 
     m_hotSectorVisibleCheck = new QCheckBox(trText("settings.display.hotSectorVisible"), w);
@@ -1568,6 +1570,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_windowPaddingSpin->setDecimals(1);
     m_windowPaddingSpin->setSuffix(trText("settings.display.pxSuffix"));
     m_windowPaddingSpin->setValue(qMax(0.0, m_cfg.floatingWindowPaddingPx));
+    applyNumericSpinBoxWidth(m_windowPaddingSpin);
     windowForm->addRow(trText("settings.display.padding"), m_windowPaddingSpin);
 
     m_transparentBackgroundCheck = new QCheckBox(
@@ -1671,6 +1674,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_hoverReadingDelaySpin->setDecimals(1);
     m_hoverReadingDelaySpin->setSuffix(trText("settings.display.hoverReadingDelaySuffix"));
     m_hoverReadingDelaySpin->setValue(qBound(0.1, m_cfg.hoverReadingDelaySecs, 60.0));
+    applyNumericSpinBoxWidth(m_hoverReadingDelaySpin);
     m_hoverReadingDelaySpin->setEnabled(
         m_cfg.hoverReadingEnabled && !m_cfg.mousePassthroughEnabled
     );
@@ -1859,6 +1863,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
         m_columnMaxWidthSpins[i]->setSpecialValueText(autoText);
         m_columnMaxWidthSpins[i]->setSuffix(maxSuffix);
         m_columnMaxWidthSpins[i]->setValue(qMax(0, m_cfg.columnMaxWidths.value(i, 0)));
+        applyNumericSpinBoxWidth(m_columnMaxWidthSpins[i]);
 
         columnsForm->addRow(
             trText("settings.display.columnMaxNameFmt").arg(names.value(i)),
