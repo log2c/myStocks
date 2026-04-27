@@ -10,6 +10,8 @@
 #include <QVariantAnimation>
 #include <QWidget>
 
+class TimelineChartPopup;
+
 class FloatingWindow : public QWidget {
     Q_OBJECT
 public:
@@ -24,6 +26,7 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void showEvent(QShowEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
     void enterEvent(QEnterEvent* event) override;
     void leaveEvent(QEvent* event) override;
 
@@ -38,6 +41,9 @@ private:
     void updateHoverReadingState(bool animated);
     void refreshMousePassthroughState(bool force = false);
     bool setMousePassthroughActive(bool active);
+    bool canShowTimelinePopup() const;
+    void updateTimelinePopupForHover(const QPoint& viewportPos);
+    void hideTimelinePopup();
     void enforceWindowLevel(bool activate = false);
     void applyStyle();
     void applyHoverReadingStyle();
@@ -51,6 +57,9 @@ private:
     QuoteModel* m_model = nullptr;
     QFrame* m_panel = nullptr;
     QTableView* m_table = nullptr;
+    TimelineChartPopup* m_timelinePopup = nullptr;
+    QString m_timelineHoverCode;
+    QString m_timelineHoverName;
 
     AppConfig m_cfg;
     bool m_dragging = false;

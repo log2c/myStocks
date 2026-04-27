@@ -690,6 +690,27 @@ AppConfig SettingsDialog::config() const {
     out.hoverReadingTransparentBackgroundEnabled = m_hoverReadingTransparentBackgroundCheck
         ? m_hoverReadingTransparentBackgroundCheck->isChecked()
         : out.hoverReadingTransparentBackgroundEnabled;
+    out.timelineChartEnabled = m_timelineChartEnabledCheck
+        ? m_timelineChartEnabledCheck->isChecked()
+        : out.timelineChartEnabled;
+    out.timelineChartRefreshSecs = m_timelineChartRefreshSecsSpin
+        ? qBound(10, m_timelineChartRefreshSecsSpin->value(), 3600)
+        : out.timelineChartRefreshSecs;
+    out.timelineChartBgColor = m_timelineChartBgBtn
+        ? buttonColor(m_timelineChartBgBtn)
+        : out.timelineChartBgColor;
+    out.timelineChartGridColor = m_timelineChartGridBtn
+        ? buttonColor(m_timelineChartGridBtn)
+        : out.timelineChartGridColor;
+    out.timelineChartPriceLineColor = m_timelineChartPriceLineBtn
+        ? buttonColor(m_timelineChartPriceLineBtn)
+        : out.timelineChartPriceLineColor;
+    out.timelineChartAvgLineColor = m_timelineChartAvgLineBtn
+        ? buttonColor(m_timelineChartAvgLineBtn)
+        : out.timelineChartAvgLineColor;
+    out.timelineChartTextColor = m_timelineChartTextBtn
+        ? buttonColor(m_timelineChartTextBtn)
+        : out.timelineChartTextColor;
     out.hotRankEnabled = m_hotRankEnabledCheck && m_hotRankEnabledCheck->isChecked();
     out.hotRankPollSecs = m_hotRankPollSecsSpin
         ? qBound(10, m_hotRankPollSecsSpin->value(), 3600)
@@ -1322,6 +1343,12 @@ QWidget* SettingsDialog::buildDisplayTab() {
     interactionForm->setContentsMargins(6, 6, 6, 6);
     interactionForm->setVerticalSpacing(8);
 
+    QGroupBox* timelineGroup = new QGroupBox(trText("settings.display.groupTimeline"), w);
+    QFormLayout* timelineForm = new QFormLayout(timelineGroup);
+    applyCompactFormLayout(timelineForm);
+    timelineForm->setContentsMargins(6, 6, 6, 6);
+    timelineForm->setVerticalSpacing(8);
+
     QGroupBox* hotRankGroup = new QGroupBox(trText("settings.display.groupHotRank"), w);
     QFormLayout* hotRankForm = new QFormLayout(hotRankGroup);
     applyCompactFormLayout(hotRankForm);
@@ -1821,6 +1848,106 @@ QWidget* SettingsDialog::buildDisplayTab() {
         }
     );
 
+    m_timelineChartEnabledCheck = new QCheckBox(trText("settings.display.timelineEnabled"), w);
+    m_timelineChartEnabledCheck->setChecked(m_cfg.timelineChartEnabled);
+    addCompactFormRow(timelineForm, m_timelineChartEnabledCheck);
+
+    m_timelineChartRefreshSecsSpin = new QSpinBox(w);
+    m_timelineChartRefreshSecsSpin->setRange(10, 3600);
+    m_timelineChartRefreshSecsSpin->setSingleStep(1);
+    m_timelineChartRefreshSecsSpin->setSuffix(trText("settings.display.timelineRefreshSuffix"));
+    m_timelineChartRefreshSecsSpin->setValue(qBound(10, m_cfg.timelineChartRefreshSecs, 3600));
+    applyNumericSpinBoxWidth(m_timelineChartRefreshSecsSpin);
+    timelineForm->addRow(trText("settings.display.timelineRefresh"), m_timelineChartRefreshSecsSpin);
+
+    const QString timelinePickColorTitle = trText("settings.color.pick");
+    m_timelineChartBgBtn = createColorButton(
+        w,
+        m_cfg.timelineChartBgColor,
+        timelinePickColorTitle
+    );
+    m_timelineChartGridBtn = createColorButton(
+        w,
+        m_cfg.timelineChartGridColor,
+        timelinePickColorTitle
+    );
+    m_timelineChartPriceLineBtn = createColorButton(
+        w,
+        m_cfg.timelineChartPriceLineColor,
+        timelinePickColorTitle
+    );
+    m_timelineChartAvgLineBtn = createColorButton(
+        w,
+        m_cfg.timelineChartAvgLineColor,
+        timelinePickColorTitle
+    );
+    m_timelineChartTextBtn = createColorButton(
+        w,
+        m_cfg.timelineChartTextColor,
+        timelinePickColorTitle
+    );
+
+    timelineForm->addRow(trText("settings.display.timelineBg"), m_timelineChartBgBtn);
+    timelineForm->addRow(trText("settings.display.timelineGrid"), m_timelineChartGridBtn);
+    timelineForm->addRow(trText("settings.display.timelinePriceLine"), m_timelineChartPriceLineBtn);
+    timelineForm->addRow(trText("settings.display.timelineAvgLine"), m_timelineChartAvgLineBtn);
+    timelineForm->addRow(trText("settings.display.timelineText"), m_timelineChartTextBtn);
+
+    QPushButton* resetTimelineColorsButton = new QPushButton(
+        trText("settings.display.timelineResetColors"),
+        w
+    );
+    const AppConfig timelineDefaultCfg;
+    connect(resetTimelineColorsButton, &QPushButton::clicked, this, [this, timelineDefaultCfg]() {
+        m_timelineChartBgBtn->setProperty("pickColor", timelineDefaultCfg.timelineChartBgColor);
+        m_timelineChartGridBtn->setProperty("pickColor", timelineDefaultCfg.timelineChartGridColor);
+        m_timelineChartPriceLineBtn->setProperty("pickColor", timelineDefaultCfg.timelineChartPriceLineColor);
+        m_timelineChartAvgLineBtn->setProperty("pickColor", timelineDefaultCfg.timelineChartAvgLineColor);
+        m_timelineChartTextBtn->setProperty("pickColor", timelineDefaultCfg.timelineChartTextColor);
+
+        paintColorButton(m_timelineChartBgBtn, timelineDefaultCfg.timelineChartBgColor);
+        paintColorButton(m_timelineChartGridBtn, timelineDefaultCfg.timelineChartGridColor);
+        paintColorButton(m_timelineChartPriceLineBtn, timelineDefaultCfg.timelineChartPriceLineColor);
+        paintColorButton(m_timelineChartAvgLineBtn, timelineDefaultCfg.timelineChartAvgLineColor);
+        paintColorButton(m_timelineChartTextBtn, timelineDefaultCfg.timelineChartTextColor);
+    });
+    addCompactFormRow(timelineForm, resetTimelineColorsButton);
+
+    QWidget* timelineRefreshLabel = timelineForm->labelForField(m_timelineChartRefreshSecsSpin);
+    const auto updateTimelineControlsState = [this, timelineRefreshLabel]() {
+        const bool enabled = m_timelineChartEnabledCheck && m_timelineChartEnabledCheck->isChecked();
+        if (m_timelineChartRefreshSecsSpin) {
+            m_timelineChartRefreshSecsSpin->setEnabled(enabled);
+        }
+        if (timelineRefreshLabel) {
+            timelineRefreshLabel->setEnabled(enabled);
+        }
+        if (m_timelineChartBgBtn) {
+            m_timelineChartBgBtn->setEnabled(enabled);
+        }
+        if (m_timelineChartGridBtn) {
+            m_timelineChartGridBtn->setEnabled(enabled);
+        }
+        if (m_timelineChartPriceLineBtn) {
+            m_timelineChartPriceLineBtn->setEnabled(enabled);
+        }
+        if (m_timelineChartAvgLineBtn) {
+            m_timelineChartAvgLineBtn->setEnabled(enabled);
+        }
+        if (m_timelineChartTextBtn) {
+            m_timelineChartTextBtn->setEnabled(enabled);
+        }
+    };
+    connect(
+        m_timelineChartEnabledCheck,
+        &QCheckBox::toggled,
+        this,
+        [updateTimelineControlsState](bool) {
+            updateTimelineControlsState();
+        }
+    );
+    updateTimelineControlsState();
+
     const QStringList names = i18n::columnNames(m_uiLanguage);
     const QVector<int> columnOrder = normalizedColumnOrder(m_cfg.columnOrder);
 
@@ -1872,6 +1999,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
     }
 
     root->addWidget(windowGroup);
+    root->addWidget(timelineGroup);
     root->addWidget(hotRankGroup);
     root->addWidget(interactionGroup);
     root->addWidget(columnsGroup, 1);

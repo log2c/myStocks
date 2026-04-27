@@ -169,6 +169,13 @@ struct AppConfig {
     double hoverReadingDelaySecs = 1.0;
     QString hoverReadingUiMode = "dark";
     bool hoverReadingTransparentBackgroundEnabled = true;
+    bool timelineChartEnabled = true;
+    int timelineChartRefreshSecs = 10;
+    QColor timelineChartBgColor = QColor(14, 18, 24, 238);
+    QColor timelineChartGridColor = QColor(255, 255, 255, 45);
+    QColor timelineChartPriceLineColor = QColor(255, 89, 94);
+    QColor timelineChartAvgLineColor = QColor(64, 196, 255);
+    QColor timelineChartTextColor = QColor(236, 240, 245);
     bool hotRankEnabled = false;
     int hotRankPollSecs = 60;
     double hotRankFlipSecs = 2.6;

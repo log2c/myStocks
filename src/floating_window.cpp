@@ -1,5 +1,6 @@
 #include "floating_window.h"
 
+#include <QDateTime>
 #include <QCursor>
 #include <QEasingCurve>
 #include <QEnterEvent>
@@ -7,15 +8,31 @@
 #include <QFontMetrics>
 #include <QGuiApplication>
 #include <QHeaderView>
+#include <QHoverEvent>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QLabel>
 #include <QLayout>
 #include <QMouseEvent>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPalette>
 #include <QSignalBlocker>
 #include <QShowEvent>
+#include <QScreen>
 #include <QStyledItemDelegate>
 #include <QStyleFactory>
+#include <QTimeZone>
+#include <QUrl>
+#include <QUrlQuery>
 #include <QVBoxLayout>
+
+#include <cmath>
+#include <limits>
 
 #ifdef WIN32
 #ifndef NOMINMAX
@@ -262,6 +279,623 @@ void setMacWindowIgnoresMouseEvents(const QWidget* widget, bool ignore) {
     sendBoolMessage(nsWindow, sel_registerName("setIgnoresMouseEvents:"), ignore);
 }
 #endif
+
+inline constexpr double kTimelinePopupWidthScale = 1.5;
+inline constexpr double kTimelinePopupHeightScale = 1.5;
+inline constexpr int kTimelinePopupMinWidth = 560;
+inline constexpr int kTimelinePopupMinHeight = 360;
+inline constexpr int kTimelinePopupScreenMarginPx = 12;
+
+struct TimelinePoint {
+    QDateTime time;
+    double price = qQNaN();
+    double avgPrice = qQNaN();
+    double volume = qQNaN();
+    double amount = qQNaN();
+};
+
+QString toTimelineSecId(const QString& rawCode) {
+    const QString code = rawCode.trimmed().toLower();
+    if (code.isEmpty()) {
+        return {};
+    }
+
+    const int dot = code.indexOf(QLatin1Char('.'));
+    if (dot > 0 && dot < code.size() - 1) {
+        bool marketOk = false;
+        const int market = code.left(dot).toInt(&marketOk);
+        const QString symbol = code.mid(dot + 1);
+        bool symbolOk = !symbol.isEmpty();
+        for (QChar ch : symbol) {
+            if (!ch.isLetterOrNumber()) {
+                symbolOk = false;
+                break;
+            }
+        }
+        if (marketOk && symbolOk) {
+            return QString::number(market) + QStringLiteral(".") + symbol.toUpper();
+        }
+    }
+
+    QString digits;
+    digits.reserve(6);
+    for (QChar ch : code) {
+        if (ch.isDigit()) {
+            digits.append(ch);
+        }
+    }
+
+    if (digits.size() > 6) {
+        digits = digits.right(6);
+    }
+    if (digits.size() != 6) {
+        return {};
+    }
+
+    if (code.startsWith(QStringLiteral("sh"))) {
+        return QStringLiteral("1.") + digits;
+    }
+    if (code.startsWith(QStringLiteral("sz"))) {
+        return QStringLiteral("0.") + digits;
+    }
+
+    const QChar head = digits[0];
+    const QString market = (head == QLatin1Char('6') || head == QLatin1Char('5') || head == QLatin1Char('9'))
+        ? QStringLiteral("1")
+        : QStringLiteral("0");
+    return market + QStringLiteral(".") + digits;
+}
+
+bool isAshareTradingTimeNow() {
+    const QTimeZone bjZone("Asia/Shanghai");
+    if (!bjZone.isValid()) {
+        return false;
+    }
+
+    const QDateTime now = QDateTime::currentDateTimeUtc().toTimeZone(bjZone);
+    const int dayOfWeek = now.date().dayOfWeek();
+    if (dayOfWeek < 1 || dayOfWeek > 5) {
+        return false;
+    }
+
+    const QTime time = now.time();
+    const bool morning = time >= QTime(9, 30) && time <= QTime(11, 30);
+    const bool afternoon = time >= QTime(13, 0) && time <= QTime(15, 0);
+    return morning || afternoon;
+}
+
+QString stripJsonp(const QByteArray& body) {
+    const QString text = QString::fromUtf8(body).trimmed();
+    const int open = text.indexOf(QLatin1Char('('));
+    const int close = text.lastIndexOf(QLatin1Char(')'));
+    if (open <= 0 || close <= open) {
+        return {};
+    }
+    const QString callback = text.left(open).trimmed();
+    if (!callback.startsWith(QStringLiteral("jQuery"))) {
+        return {};
+    }
+    return text.mid(open + 1, close - open - 1).trimmed();
+}
+
+bool parseTimelinePayload(
+    const QByteArray& body,
+    QVector<TimelinePoint>* outPoints,
+    double* outPreClose,
+    bool keepLastTradingDayOnly
+) {
+    if (!outPoints || !outPreClose) {
+        return false;
+    }
+
+    *outPreClose = qQNaN();
+    outPoints->clear();
+
+    const QString jsonText = stripJsonp(body);
+    if (jsonText.isEmpty()) {
+        return false;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(jsonText.toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        return false;
+    }
+
+    const QJsonObject root = doc.object();
+    if (!root.value(QStringLiteral("data")).isObject()) {
+        return false;
+    }
+    const QJsonObject data = root.value(QStringLiteral("data")).toObject();
+    *outPreClose = data.value(QStringLiteral("preClose")).toDouble(qQNaN());
+
+    const QJsonArray trends = data.value(QStringLiteral("trends")).toArray();
+    if (trends.isEmpty()) {
+        return true;
+    }
+
+    QString targetDate;
+    if (keepLastTradingDayOnly) {
+        for (int i = trends.size() - 1; i >= 0; --i) {
+            const QString row = trends.at(i).toString().trimmed();
+            if (row.size() >= 10) {
+                targetDate = row.left(10);
+                break;
+            }
+        }
+    }
+
+    outPoints->reserve(trends.size());
+    for (const QJsonValue& value : trends) {
+        const QString row = value.toString();
+        if (row.isEmpty()) {
+            continue;
+        }
+
+        const QStringList parts = row.split(QLatin1Char(','));
+        if (parts.size() < 7) {
+            continue;
+        }
+
+        const QString timeText = parts.at(0).trimmed();
+        if (keepLastTradingDayOnly && !targetDate.isEmpty() && !timeText.startsWith(targetDate)) {
+            continue;
+        }
+
+        const QDateTime time = QDateTime::fromString(timeText, QStringLiteral("yyyy-MM-dd HH:mm"));
+        bool priceOk = false;
+        bool avgPriceOk = false;
+        bool volumeOk = false;
+        bool amountOk = false;
+        const double price = parts.at(2).toDouble(&priceOk);
+        const double avgPrice = parts.at(3).toDouble(&avgPriceOk);
+        const double volume = parts.at(5).toDouble(&volumeOk);
+        const double amount = parts.at(6).toDouble(&amountOk);
+        if (!time.isValid() || !priceOk) {
+            continue;
+        }
+
+        TimelinePoint point;
+        point.time = time;
+        point.price = price;
+        point.avgPrice = avgPriceOk ? avgPrice : qQNaN();
+        point.volume = volumeOk ? volume : qQNaN();
+        point.amount = amountOk ? amount : qQNaN();
+        outPoints->push_back(point);
+    }
+
+    return true;
+}
+
+} // namespace
+
+class TimelineChartWidget : public QWidget {
+public:
+    explicit TimelineChartWidget(QWidget* parent = nullptr)
+        : QWidget(parent) {
+        setMinimumSize(280, 180);
+    }
+
+    void setConfig(const AppConfig& cfg) {
+        m_cfg = cfg;
+        update();
+    }
+
+    void setSeries(const QString& title, const QVector<TimelinePoint>& points, double preClose) {
+        m_title = title;
+        m_points = points;
+        m_preClose = preClose;
+        m_status.clear();
+        update();
+    }
+
+    void setStatusText(const QString& status) {
+        m_status = status;
+        if (!status.isEmpty()) {
+            m_points.clear();
+        }
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent* event) override {
+        Q_UNUSED(event);
+
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.fillRect(rect(), m_cfg.timelineChartBgColor);
+
+        const QRect r = rect().adjusted(12, 12, -12, -12);
+        if (r.width() < 40 || r.height() < 40) {
+            return;
+        }
+
+        painter.setPen(QPen(m_cfg.timelineChartTextColor));
+        if (!m_title.isEmpty()) {
+            painter.drawText(r.left(), r.top(), r.width(), 20, Qt::AlignLeft | Qt::AlignVCenter, m_title);
+        }
+
+        QRect plot = r.adjusted(0, 24, 0, -24);
+        if (plot.width() < 20 || plot.height() < 20) {
+            return;
+        }
+
+        if (!m_status.isEmpty()) {
+            painter.drawText(plot, Qt::AlignCenter, m_status);
+            return;
+        }
+
+        if (m_points.isEmpty()) {
+            painter.drawText(plot, Qt::AlignCenter, QStringLiteral("No timeline data"));
+            return;
+        }
+
+        double minValue = std::numeric_limits<double>::max();
+        double maxValue = std::numeric_limits<double>::lowest();
+        for (const TimelinePoint& point : m_points) {
+            if (std::isfinite(point.price)) {
+                minValue = qMin(minValue, point.price);
+                maxValue = qMax(maxValue, point.price);
+            }
+            if (std::isfinite(point.avgPrice)) {
+                minValue = qMin(minValue, point.avgPrice);
+                maxValue = qMax(maxValue, point.avgPrice);
+            }
+        }
+        if (std::isfinite(m_preClose)) {
+            minValue = qMin(minValue, m_preClose);
+            maxValue = qMax(maxValue, m_preClose);
+        }
+
+        if (!std::isfinite(minValue) || !std::isfinite(maxValue)) {
+            painter.drawText(plot, Qt::AlignCenter, QStringLiteral("No timeline data"));
+            return;
+        }
+
+        if (qFuzzyCompare(minValue, maxValue)) {
+            minValue -= 0.01;
+            maxValue += 0.01;
+        }
+
+        const double range = qMax(0.000001, maxValue - minValue);
+        const double topPadding = range * 0.08;
+        const double bottomPadding = range * 0.08;
+        const double yMin = minValue - bottomPadding;
+        const double yMax = maxValue + topPadding;
+
+        painter.setPen(QPen(m_cfg.timelineChartGridColor, 1));
+        for (int i = 0; i <= 4; ++i) {
+            const int y = plot.top() + (plot.height() * i) / 4;
+            painter.drawLine(plot.left(), y, plot.right(), y);
+        }
+        for (int i = 0; i <= 4; ++i) {
+            const int x = plot.left() + (plot.width() * i) / 4;
+            painter.drawLine(x, plot.top(), x, plot.bottom());
+        }
+
+        if (std::isfinite(m_preClose)) {
+            const int y = plot.bottom()
+                - qRound(((m_preClose - yMin) / (yMax - yMin)) * static_cast<double>(plot.height()));
+            painter.setPen(QPen(m_cfg.timelineChartGridColor.lighter(150), 1, Qt::DashLine));
+            painter.drawLine(plot.left(), y, plot.right(), y);
+        }
+
+        QPainterPath pricePath;
+        QPainterPath avgPath;
+        for (int i = 0; i < m_points.size(); ++i) {
+            const double t = (m_points.size() == 1)
+                ? 0.0
+                : static_cast<double>(i) / static_cast<double>(m_points.size() - 1);
+            const int x = plot.left() + qRound(t * static_cast<double>(plot.width()));
+            const int yPrice = plot.bottom()
+                - qRound(((m_points.at(i).price - yMin) / (yMax - yMin)) * static_cast<double>(plot.height()));
+
+            if (i == 0) {
+                pricePath.moveTo(x, yPrice);
+            } else {
+                pricePath.lineTo(x, yPrice);
+            }
+
+            if (std::isfinite(m_points.at(i).avgPrice)) {
+                const int yAvg = plot.bottom()
+                    - qRound(((m_points.at(i).avgPrice - yMin) / (yMax - yMin))
+                        * static_cast<double>(plot.height()));
+                if (avgPath.isEmpty()) {
+                    avgPath.moveTo(x, yAvg);
+                } else {
+                    avgPath.lineTo(x, yAvg);
+                }
+            }
+        }
+
+        painter.setPen(QPen(m_cfg.timelineChartPriceLineColor, 1.8));
+        painter.drawPath(pricePath);
+
+        if (!avgPath.isEmpty()) {
+            painter.setPen(QPen(m_cfg.timelineChartAvgLineColor, 1.2));
+            painter.drawPath(avgPath);
+        }
+
+        const TimelinePoint& lastPoint = m_points.last();
+        const double changePct = std::isfinite(m_preClose) && !qFuzzyIsNull(m_preClose)
+            ? ((lastPoint.price - m_preClose) / m_preClose * 100.0)
+            : qQNaN();
+        QColor changeColor = m_cfg.timelineChartTextColor;
+        if (std::isfinite(changePct)) {
+            if (changePct > 0.0) {
+                changeColor = m_cfg.upColor;
+            } else if (changePct < 0.0) {
+                changeColor = m_cfg.downColor;
+            }
+        }
+
+        painter.setPen(QPen(m_cfg.timelineChartTextColor));
+        painter.drawText(
+            r.left(),
+            r.bottom() - 16,
+            r.width() / 2,
+            16,
+            Qt::AlignLeft | Qt::AlignVCenter,
+            QStringLiteral("Last: %1").arg(QString::number(lastPoint.price, 'f', 3))
+        );
+        painter.setPen(QPen(changeColor));
+        painter.drawText(
+            r.left() + r.width() / 2,
+            r.bottom() - 16,
+            r.width() / 2,
+            16,
+            Qt::AlignRight | Qt::AlignVCenter,
+            std::isfinite(changePct)
+                ? QStringLiteral("%1%").arg(QString::number(changePct, 'f', 2))
+                : QStringLiteral("--")
+        );
+    }
+
+private:
+    AppConfig m_cfg;
+    QString m_title;
+    QString m_status;
+    QVector<TimelinePoint> m_points;
+    double m_preClose = qQNaN();
+};
+
+class TimelineChartPopup : public QWidget {
+public:
+    explicit TimelineChartPopup(QWidget* parent = nullptr)
+        : QWidget(nullptr)
+        , m_parentWindow(parent) {
+        Qt::WindowFlags flags = Qt::FramelessWindowHint | Qt::Tool;
+        setWindowFlags(flags);
+        setAttribute(Qt::WA_ShowWithoutActivating, true);
+
+        QVBoxLayout* layout = new QVBoxLayout(this);
+        layout->setContentsMargins(0, 0, 0, 0);
+
+        m_chart = new TimelineChartWidget(this);
+        layout->addWidget(m_chart);
+
+        m_refreshTimer = new QTimer(this);
+        connect(m_refreshTimer, &QTimer::timeout, this, [this]() {
+            if (!isVisible() || !isAshareTradingTimeNow()) {
+                m_refreshTimer->stop();
+                return;
+            }
+            fetchTimeline(true);
+        });
+    }
+
+    void applyConfig(const AppConfig& cfg) {
+        m_cfg = cfg;
+        if (m_chart) {
+            m_chart->setConfig(cfg);
+        }
+        if (!isVisible()) {
+            return;
+        }
+
+        if (isAshareTradingTimeNow()) {
+            startRefreshTimer();
+        } else {
+            stopRefreshTimer();
+        }
+    }
+
+    void showForStock(const QString& code, const QString& name, const QRect& anchorRect, int baseWidth) {
+        if (code.trimmed().isEmpty()) {
+            hidePopup();
+            return;
+        }
+
+        const bool changed = (m_code.compare(code, Qt::CaseInsensitive) != 0);
+        m_code = code.trimmed();
+        m_name = name.trimmed();
+
+        const int popupWidth = qMax(
+            kTimelinePopupMinWidth,
+            qRound(static_cast<double>(qMax(1, baseWidth)) * kTimelinePopupWidthScale)
+        );
+        const int popupHeight = qMax(
+            kTimelinePopupMinHeight,
+            qRound(static_cast<double>(qMax(1, baseWidth)) * kTimelinePopupHeightScale)
+        );
+        resize(popupWidth, popupHeight);
+
+        QRect targetRect = QRect(anchorRect.topRight() + QPoint(12, 0), size());
+        const QList<QScreen*> screens = QGuiApplication::screens();
+        QRect screenRect;
+        for (QScreen* screen : screens) {
+            if (screen && screen->geometry().contains(anchorRect.center())) {
+                screenRect = screen->availableGeometry();
+                break;
+            }
+        }
+        if (!screenRect.isValid()) {
+            if (QScreen* screen = QGuiApplication::primaryScreen()) {
+                screenRect = screen->availableGeometry();
+            }
+        }
+
+        if (screenRect.isValid()) {
+            if (targetRect.right() + kTimelinePopupScreenMarginPx > screenRect.right()) {
+                targetRect.moveLeft(anchorRect.left() - popupWidth - 12);
+            }
+            if (targetRect.left() < screenRect.left() + kTimelinePopupScreenMarginPx) {
+                targetRect.moveLeft(screenRect.left() + kTimelinePopupScreenMarginPx);
+            }
+            if (targetRect.bottom() + kTimelinePopupScreenMarginPx > screenRect.bottom()) {
+                targetRect.moveTop(screenRect.bottom() - popupHeight - kTimelinePopupScreenMarginPx);
+            }
+            if (targetRect.top() < screenRect.top() + kTimelinePopupScreenMarginPx) {
+                targetRect.moveTop(screenRect.top() + kTimelinePopupScreenMarginPx);
+            }
+        }
+        setGeometry(targetRect);
+
+        if (!isVisible()) {
+            show();
+            raise();
+        }
+
+        if (changed) {
+            fetchTimeline(true);
+        }
+
+        if (isAshareTradingTimeNow()) {
+            startRefreshTimer();
+        } else {
+            stopRefreshTimer();
+        }
+    }
+
+    void hidePopup() {
+        stopRefreshTimer();
+        if (m_reply) {
+            m_reply->abort();
+            m_reply->deleteLater();
+            m_reply = nullptr;
+        }
+        m_code.clear();
+        m_name.clear();
+        hide();
+    }
+
+private:
+    void startRefreshTimer() {
+        if (!m_refreshTimer) {
+            return;
+        }
+        const int intervalMs = qBound(10, m_cfg.timelineChartRefreshSecs, 3600) * 1000;
+        m_refreshTimer->start(intervalMs);
+    }
+
+    void stopRefreshTimer() {
+        if (m_refreshTimer) {
+            m_refreshTimer->stop();
+        }
+    }
+
+    void requestTimeline(int days, bool fallbackAllowed, bool keepLastTradingDayOnly, int token) {
+        if (m_reply) {
+            m_reply->abort();
+            m_reply->deleteLater();
+            m_reply = nullptr;
+        }
+
+        const QString secId = toTimelineSecId(m_code);
+        if (secId.isEmpty()) {
+            m_chart->setStatusText(QStringLiteral("Unsupported code: %1").arg(m_code));
+            return;
+        }
+
+        QUrl url(QStringLiteral("https://push2his.eastmoney.com/api/qt/stock/trends2/get"));
+        QUrlQuery query;
+        const QString callback = QStringLiteral("jQuery%1_%2")
+            .arg(QDateTime::currentMSecsSinceEpoch() % 1000000)
+            .arg(QDateTime::currentMSecsSinceEpoch());
+        query.addQueryItem(QStringLiteral("cb"), callback);
+        query.addQueryItem(QStringLiteral("secid"), secId);
+        query.addQueryItem(QStringLiteral("ut"), QStringLiteral("fa5fd1943c7b386f172d6893dbfba10b"));
+        query.addQueryItem(QStringLiteral("fields1"), QStringLiteral("f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13"));
+        query.addQueryItem(QStringLiteral("fields2"), QStringLiteral("f51,f52,f53,f54,f55,f56,f57,f58"));
+        query.addQueryItem(QStringLiteral("iscr"), QStringLiteral("0"));
+        query.addQueryItem(QStringLiteral("ndays"), QString::number(days));
+        query.addQueryItem(QStringLiteral("_"), QString::number(QDateTime::currentMSecsSinceEpoch()));
+        url.setQuery(query);
+
+        QNetworkRequest req(url);
+        const QString userAgent = m_cfg.userAgent.trimmed().isEmpty()
+            ? defaultChrome100UserAgent()
+            : m_cfg.userAgent.trimmed();
+        req.setRawHeader("User-Agent", userAgent.toUtf8());
+        req.setRawHeader("Referer", "https://quote.eastmoney.com/");
+        req.setTransferTimeout(10000);
+
+        m_reply = m_nam.get(req);
+        connect(m_reply, &QNetworkReply::finished, this, [this, token, days, fallbackAllowed, keepLastTradingDayOnly]() {
+            if (!m_reply) {
+                return;
+            }
+
+            QNetworkReply* finishedReply = m_reply;
+            m_reply = nullptr;
+
+            if (token != m_requestToken) {
+                finishedReply->deleteLater();
+                return;
+            }
+
+            const QString error = finishedReply->error() == QNetworkReply::NoError
+                ? QString()
+                : finishedReply->errorString();
+            const QByteArray body = finishedReply->readAll();
+            finishedReply->deleteLater();
+
+            if (!error.isEmpty()) {
+                m_chart->setStatusText(QStringLiteral("Request failed: %1").arg(error));
+                return;
+            }
+
+            QVector<TimelinePoint> points;
+            double preClose = qQNaN();
+            if (!parseTimelinePayload(body, &points, &preClose, keepLastTradingDayOnly)) {
+                m_chart->setStatusText(QStringLiteral("Timeline parse failed"));
+                return;
+            }
+
+            if (points.isEmpty() && days == 1 && fallbackAllowed) {
+                requestTimeline(2, false, true, token);
+                return;
+            }
+
+            const QString title = m_name.isEmpty()
+                ? m_code
+                : QStringLiteral("%1  %2").arg(m_name, m_code);
+            m_chart->setSeries(title, points, preClose);
+        });
+    }
+
+    void fetchTimeline(bool fallbackAllowed) {
+        ++m_requestToken;
+        const QString title = m_name.isEmpty()
+            ? m_code
+            : QStringLiteral("%1  %2").arg(m_name, m_code);
+        m_chart->setStatusText(QStringLiteral("Loading %1 ...").arg(title));
+        requestTimeline(1, fallbackAllowed, false, m_requestToken);
+    }
+
+private:
+    QWidget* m_parentWindow = nullptr;
+    AppConfig m_cfg;
+    TimelineChartWidget* m_chart = nullptr;
+    QTimer* m_refreshTimer = nullptr;
+    QNetworkAccessManager m_nam;
+    QNetworkReply* m_reply = nullptr;
+    QString m_code;
+    QString m_name;
+    int m_requestToken = 0;
+};
+
+namespace {
 
 class BottomGridTableView : public QTableView {
 public:
@@ -588,6 +1222,8 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
     m_table->setShowGrid(false);
     m_table->setAlternatingRowColors(false);
     m_table->setFocusPolicy(Qt::NoFocus);
+    m_table->setMouseTracking(true);
+    m_table->viewport()->setMouseTracking(true);
     m_table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_table->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_table->setFrameShape(QFrame::NoFrame);
@@ -671,6 +1307,9 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
         m_hoverReadingProgress = qBound(0.0, value.toReal(), 1.0);
         applyInterpolatedStyle(m_hoverReadingProgress);
     });
+
+    m_timelinePopup = new TimelineChartPopup(this);
+    m_timelinePopup->applyConfig(m_cfg);
 }
 
 bool FloatingWindow::isCursorInsideWindow() const {
@@ -739,6 +1378,7 @@ void FloatingWindow::updateHoverReadingState(bool animated) {
             m_hoverTimer->stop();
         }
         setHoverReadingActive(false, animated);
+        hideTimelinePopup();
         return;
     }
 
@@ -747,6 +1387,9 @@ void FloatingWindow::updateHoverReadingState(bool animated) {
             m_hoverTimer->stop();
         }
         setHoverReadingActive(false, animated);
+        if (m_cfg.mousePassthroughEnabled) {
+            hideTimelinePopup();
+        }
         return;
     }
 
@@ -774,6 +1417,71 @@ void FloatingWindow::updateHoverReadingState(bool animated) {
         m_hoverTimer->stop();
     }
     setHoverReadingActive(false, animated);
+    hideTimelinePopup();
+}
+
+bool FloatingWindow::canShowTimelinePopup() const {
+    if (!m_cfg.timelineChartEnabled || !m_timelinePopup) {
+        return false;
+    }
+    if (!isVisible()) {
+        return false;
+    }
+
+    if (m_cfg.mousePassthroughEnabled) {
+        return m_hoverReadingActive;
+    }
+
+    return true;
+}
+
+void FloatingWindow::updateTimelinePopupForHover(const QPoint& viewportPos) {
+    if (!m_table || !m_model || !m_timelinePopup) {
+        return;
+    }
+
+    if (!canShowTimelinePopup()) {
+        hideTimelinePopup();
+        return;
+    }
+
+    const QModelIndex index = m_table->indexAt(viewportPos);
+    if (!index.isValid() || m_model->rowKind(index.row()) != QuoteModel::RowKindQuote) {
+        hideTimelinePopup();
+        return;
+    }
+
+    if (index.column() != ColCode && index.column() != ColName) {
+        hideTimelinePopup();
+        return;
+    }
+
+    const QString code = m_model->data(m_model->index(index.row(), ColCode), Qt::DisplayRole)
+        .toString()
+        .trimmed();
+    const QString name = m_model->data(m_model->index(index.row(), ColName), Qt::DisplayRole)
+        .toString()
+        .trimmed();
+    if (code.isEmpty()) {
+        hideTimelinePopup();
+        return;
+    }
+
+    const QRect visual = m_table->visualRect(index);
+    const QPoint globalTopLeft = m_table->viewport()->mapToGlobal(visual.topLeft());
+    const QRect globalAnchor(globalTopLeft, visual.size());
+
+    m_timelineHoverCode = code;
+    m_timelineHoverName = name;
+    m_timelinePopup->showForStock(code, name, globalAnchor, width());
+}
+
+void FloatingWindow::hideTimelinePopup() {
+    m_timelineHoverCode.clear();
+    m_timelineHoverName.clear();
+    if (m_timelinePopup) {
+        m_timelinePopup->hidePopup();
+    }
 }
 
 void FloatingWindow::refreshMousePassthroughState(bool force) {
@@ -790,6 +1498,7 @@ void FloatingWindow::refreshMousePassthroughState(bool force) {
             m_hoverTimer->stop();
         }
         setHoverReadingActive(false, true);
+        hideTimelinePopup();
         return;
     }
 
@@ -838,6 +1547,7 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
     case QEvent::Enter:
     case QEvent::HoverEnter:
     case QEvent::HoverMove:
+    case QEvent::MouseMove:
         if (watched == m_panel
             || watched == m_table
             || watched == m_table->viewport()
@@ -850,6 +1560,18 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
                 return false;
             }
             updateHoverReadingState(false);
+
+            if (watched == m_table->viewport()) {
+                QPoint hoverPos;
+                if (event->type() == QEvent::MouseMove) {
+                    hoverPos = static_cast<QMouseEvent*>(event)->position().toPoint();
+                } else if (event->type() == QEvent::HoverMove || event->type() == QEvent::HoverEnter) {
+                    hoverPos = static_cast<QHoverEvent*>(event)->position().toPoint();
+                } else {
+                    hoverPos = m_table->viewport()->mapFromGlobal(QCursor::pos());
+                }
+                updateTimelinePopupForHover(hoverPos);
+            }
         }
         break;
     case QEvent::Leave:
@@ -859,6 +1581,7 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
             || watched == m_table->viewport()
             || watched == m_table->horizontalHeader()) {
             updateHoverReadingState(true);
+            hideTimelinePopup();
         }
         break;
     case QEvent::MouseButtonPress: {
@@ -868,6 +1591,7 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
             m_dragButton = mouseEvent->button();
             m_dragOffset = mouseEvent->globalPosition().toPoint() - frameGeometry().topLeft();
             grabMouse();
+            hideTimelinePopup();
             refreshMousePassthroughState();
             return true;
         }
@@ -971,6 +1695,12 @@ void FloatingWindow::applyConfig(const AppConfig& cfg) {
 
     applyStyle();
     applyColumns();
+    if (m_timelinePopup) {
+        m_timelinePopup->applyConfig(m_cfg);
+        if (!m_cfg.timelineChartEnabled) {
+            hideTimelinePopup();
+        }
+    }
 
     if (m_mousePassthroughTimer) {
         if (m_cfg.mousePassthroughEnabled) {
@@ -1008,6 +1738,7 @@ void FloatingWindow::mouseDoubleClickEvent(QMouseEvent* event) {
             m_dragButton = Qt::NoButton;
             releaseMouse();
         }
+        hideTimelinePopup();
         hide();
         event->accept();
         return;
@@ -1045,6 +1776,11 @@ void FloatingWindow::showEvent(QShowEvent* event) {
     updateHoverReadingState(false);
 }
 
+void FloatingWindow::hideEvent(QHideEvent* event) {
+    QWidget::hideEvent(event);
+    hideTimelinePopup();
+}
+
 void FloatingWindow::enterEvent(QEnterEvent* event) {
     QWidget::enterEvent(event);
     refreshMousePassthroughState();
@@ -1055,6 +1791,7 @@ void FloatingWindow::leaveEvent(QEvent* event) {
     QWidget::leaveEvent(event);
     refreshMousePassthroughState();
     updateHoverReadingState(true);
+    hideTimelinePopup();
 }
 
 void FloatingWindow::enforceWindowLevel(bool activate) {

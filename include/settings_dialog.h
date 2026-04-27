@@ -140,6 +140,13 @@ private:
     QDoubleSpinBox* m_hoverReadingDelaySpin = nullptr;
     QComboBox* m_hoverReadingModeCombo = nullptr;
     QCheckBox* m_hoverReadingTransparentBackgroundCheck = nullptr;
+    QCheckBox* m_timelineChartEnabledCheck = nullptr;
+    QSpinBox* m_timelineChartRefreshSecsSpin = nullptr;
+    QPushButton* m_timelineChartBgBtn = nullptr;
+    QPushButton* m_timelineChartGridBtn = nullptr;
+    QPushButton* m_timelineChartPriceLineBtn = nullptr;
+    QPushButton* m_timelineChartAvgLineBtn = nullptr;
+    QPushButton* m_timelineChartTextBtn = nullptr;
     QCheckBox* m_mousePassthroughCheck = nullptr;
     QComboBox* m_mousePassthroughKeyCombo = nullptr;
     QCheckBox* m_doubleClickCloseWindowCheck = nullptr;

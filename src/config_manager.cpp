@@ -315,6 +315,34 @@ AppConfig ConfigManager::loadConfig() {
         "ui/hoverReadingTransparentBackgroundEnabled",
         cfg.hoverReadingTransparentBackgroundEnabled
     ).toBool();
+    cfg.timelineChartEnabled = s.value(
+        "ui/timelineChartEnabled",
+        cfg.timelineChartEnabled
+    ).toBool();
+    cfg.timelineChartRefreshSecs = s.value(
+        "ui/timelineChartRefreshSecs",
+        cfg.timelineChartRefreshSecs
+    ).toInt();
+    cfg.timelineChartBgColor = s.value(
+        "ui/timelineChartBgColor",
+        cfg.timelineChartBgColor
+    ).value<QColor>();
+    cfg.timelineChartGridColor = s.value(
+        "ui/timelineChartGridColor",
+        cfg.timelineChartGridColor
+    ).value<QColor>();
+    cfg.timelineChartPriceLineColor = s.value(
+        "ui/timelineChartPriceLineColor",
+        cfg.timelineChartPriceLineColor
+    ).value<QColor>();
+    cfg.timelineChartAvgLineColor = s.value(
+        "ui/timelineChartAvgLineColor",
+        cfg.timelineChartAvgLineColor
+    ).value<QColor>();
+    cfg.timelineChartTextColor = s.value(
+        "ui/timelineChartTextColor",
+        cfg.timelineChartTextColor
+    ).value<QColor>();
     cfg.hotRankEnabled = s.value("ui/hotRankEnabled", cfg.hotRankEnabled).toBool();
     cfg.hotRankPollSecs = s.value("ui/hotRankPollSecs", cfg.hotRankPollSecs).toInt();
     cfg.hotRankFlipSecs = s.value("ui/hotRankFlipSecs", cfg.hotRankFlipSecs).toDouble();
@@ -421,6 +449,7 @@ AppConfig ConfigManager::loadConfig() {
     cfg.transparentBackgroundOpacity = qBound(0, cfg.transparentBackgroundOpacity, 100);
     cfg.floatingWindowFontSize = qBound(0, cfg.floatingWindowFontSize, 72);
     cfg.hoverReadingDelaySecs = qBound(0.1, cfg.hoverReadingDelaySecs, 60.0);
+    cfg.timelineChartRefreshSecs = qBound(10, cfg.timelineChartRefreshSecs, 3600);
     cfg.hoverReadingUiMode = normalizeHoverReadingUiMode(cfg.hoverReadingUiMode);
     cfg.hotRankPollSecs = qBound(10, cfg.hotRankPollSecs, 3600);
     cfg.hotRankFlipSecs = qBound(0.5, cfg.hotRankFlipSecs, 60.0);
@@ -534,6 +563,13 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         "ui/hoverReadingTransparentBackgroundEnabled",
         cfg.hoverReadingTransparentBackgroundEnabled
     );
+    s.setValue("ui/timelineChartEnabled", cfg.timelineChartEnabled);
+    s.setValue("ui/timelineChartRefreshSecs", qBound(10, cfg.timelineChartRefreshSecs, 3600));
+    s.setValue("ui/timelineChartBgColor", cfg.timelineChartBgColor);
+    s.setValue("ui/timelineChartGridColor", cfg.timelineChartGridColor);
+    s.setValue("ui/timelineChartPriceLineColor", cfg.timelineChartPriceLineColor);
+    s.setValue("ui/timelineChartAvgLineColor", cfg.timelineChartAvgLineColor);
+    s.setValue("ui/timelineChartTextColor", cfg.timelineChartTextColor);
     s.setValue("ui/hotRankEnabled", cfg.hotRankEnabled);
     s.setValue("ui/hotRankPollSecs", qBound(10, cfg.hotRankPollSecs, 3600));
     s.setValue("ui/hotRankFlipSecs", qBound(0.5, cfg.hotRankFlipSecs, 60.0));
