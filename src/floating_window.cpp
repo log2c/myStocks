@@ -282,9 +282,8 @@ void setMacWindowIgnoresMouseEvents(const QWidget* widget, bool ignore) {
 #endif
 
 inline constexpr double kTimelinePopupWidthScale = 1.5;
-inline constexpr double kTimelinePopupHeightScale = 1.5;
 inline constexpr int kTimelinePopupMinWidth = 560;
-inline constexpr int kTimelinePopupMinHeight = 360;
+inline constexpr int kTimelinePopupFixedHeight = 360;
 inline constexpr int kTimelinePopupScreenMarginPx = 12;
 
 struct TimelinePoint {
@@ -1030,10 +1029,7 @@ public:
             kTimelinePopupMinWidth,
             qRound(static_cast<double>(qMax(1, baseWidth)) * kTimelinePopupWidthScale)
         );
-        const int popupHeight = qMax(
-            kTimelinePopupMinHeight,
-            qRound(static_cast<double>(qMax(1, baseWidth)) * kTimelinePopupHeightScale)
-        );
+        const int popupHeight = kTimelinePopupFixedHeight;
         resize(popupWidth, popupHeight);
 
         QRect targetRect = QRect(anchorRect.topRight() + QPoint(12, 0), size());

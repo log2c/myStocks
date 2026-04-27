@@ -169,7 +169,7 @@ struct AppConfig {
     double hoverReadingDelaySecs = 1.0;
     QString hoverReadingUiMode = "dark";
     bool hoverReadingTransparentBackgroundEnabled = true;
-    bool timelineChartEnabled = true;
+    bool timelineChartEnabled = false;
     int timelineChartRefreshSecs = 10;
     bool timelineChartFixedRangeEnabled = true;
     QColor timelineChartBgColor = QColor(14, 18, 24, 238);
