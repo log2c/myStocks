@@ -8,7 +8,6 @@
 #include <QNetworkProxy>
 #include <QNetworkReply>
 #include <QObject>
-#include <QSet>
 #include <QStringList>
 
 class IQuoteProvider : public QObject {

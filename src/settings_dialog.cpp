@@ -5,6 +5,7 @@
 #include "i18n.h"
 #include "network_logger.h"
 #include "network_utils.h"
+#include "watchlist_utils.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
@@ -42,6 +43,11 @@
 
 namespace {
 
+using watchlist_utils::isDigitsOnly;
+using watchlist_utils::normalizeFutureCode;
+using watchlist_utils::normalizeSectorCode;
+using watchlist_utils::watchCodeKey;
+
 struct IndexPreset {
     QString code;
     QString name;
@@ -73,120 +79,8 @@ const QVector<IndexPreset>& indexPresets() {
     return presets;
 }
 
-QString watchCodeKey(const QString& code) {
-    return code.trimmed().toLower();
-}
-
-bool isDigitsOnly(const QString& text) {
-    if (text.isEmpty()) {
-        return false;
-    }
-
-    for (const QChar ch : text) {
-        if (!ch.isDigit()) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-QString normalizeSectorCode(const QString& rawCode) {
-    QString code = rawCode.trimmed();
-    if (code.isEmpty()) {
-        return {};
-    }
-
-    if (code.startsWith(QStringLiteral("90."), Qt::CaseInsensitive)) {
-        code = code.mid(3);
-    }
-
-    if (code.startsWith(QStringLiteral("bk"), Qt::CaseInsensitive)) {
-        return code.toUpper();
-    }
-
-    return {};
-}
-
-QString normalizeFutureCode(const QString& rawCode) {
-    const QString raw = rawCode.trimmed();
-    if (raw.isEmpty()) {
-        return {};
-    }
-
-    const int dot = raw.indexOf(QLatin1Char('.'));
-    if (dot <= 0 || dot >= raw.size() - 1) {
-        return {};
-    }
-
-    const QString market = raw.left(dot).trimmed();
-    const QString symbol = raw.mid(dot + 1).trimmed().toUpper();
-    if (!isDigitsOnly(market) || symbol.isEmpty()) {
-        return {};
-    }
-
-    if (market == QStringLiteral("0")
-        || market == QStringLiteral("1")
-        || market == QStringLiteral("90")
-        || market == QStringLiteral("100")
-        || market == QStringLiteral("116")
-        || market == QStringLiteral("124")
-        || market == QStringLiteral("128")) {
-        return {};
-    }
-
-    bool hasLetter = false;
-    for (const QChar ch : symbol) {
-        if (ch.isLetter()) {
-            hasLetter = true;
-            break;
-        }
-    }
-    if (!hasLetter) {
-        return {};
-    }
-
-    return market + QStringLiteral(".") + symbol;
-}
-
-const QSet<QString>& predefinedIndexAliases() {
-    static QSet<QString> aliases;
-    if (!aliases.isEmpty()) {
-        return aliases;
-    }
-
-    for (const IndexPreset& preset : indexPresets()) {
-        const QString presetCode = watchCodeKey(preset.code);
-        aliases.insert(presetCode);
-
-        QString plainCode = presetCode;
-        if (presetCode.startsWith(QStringLiteral("sh"))
-            || presetCode.startsWith(QStringLiteral("sz"))
-            || presetCode.startsWith(QStringLiteral("hk"))) {
-            plainCode = presetCode.mid(2);
-        }
-        if (!plainCode.isEmpty() && plainCode != QStringLiteral("000001") && plainCode != presetCode) {
-            aliases.insert(plainCode);
-        }
-    }
-
-    // Additional aliases from requirement table.
-    aliases.insert(QStringLiteral("sz399300"));
-    aliases.insert(QStringLiteral("sh932133"));
-    aliases.insert(QStringLiteral("hsi"));
-    aliases.insert(QStringLiteral("hstech"));
-    aliases.insert(QStringLiteral("100.hsi"));
-    aliases.insert(QStringLiteral("124.hstech"));
-
-    return aliases;
-}
-
 bool isPredefinedIndexCode(const QString& rawCode) {
-    const QString code = watchCodeKey(rawCode);
-    if (code.isEmpty()) {
-        return false;
-    }
-    return predefinedIndexAliases().contains(code);
+    return watchlist_utils::isPredefinedIndexCode(rawCode);
 }
 
 QIcon dialogWindowIcon(QWidget* parent) {
@@ -407,35 +301,14 @@ private:
     std::function<bool(const QString&)> m_confirmDelete;
 };
 
-QVector<int> normalizedColumnOrder(const QVector<int>& order) {
-    QVector<int> out;
-    out.reserve(ColCount);
-
-    for (int logical : order) {
-        if (logical < 0 || logical >= ColCount || out.contains(logical)) {
-            continue;
-        }
-        out.push_back(logical);
-    }
-
-    for (int i = 0; i < ColCount; ++i) {
-        if (out.contains(i)) {
-            continue;
-        }
-        out.push_back(i);
-    }
-
-    return out;
-}
-
 QKeySequence normalizedHotkeySequence(const QKeySequence& sequence) {
     if (sequence.isEmpty()) {
         return {};
     }
 
-    const int keyCombo = sequence[0];
-    const int key = keyCombo & ~Qt::KeyboardModifierMask;
-    const Qt::KeyboardModifiers mods = Qt::KeyboardModifiers(keyCombo & Qt::KeyboardModifierMask);
+    const QKeyCombination combo = sequence[0];
+    const Qt::Key key = combo.key();
+    const Qt::KeyboardModifiers mods = combo.keyboardModifiers();
 
     if (key == Qt::Key_Backspace || key == Qt::Key_Delete) {
         return {};
@@ -800,7 +673,7 @@ AppConfig SettingsDialog::config() const {
         out.columnOrder.push_back(logical);
         out.visibleColumns[logical] = (item->checkState() == Qt::Checked);
     }
-    out.columnOrder = normalizedColumnOrder(out.columnOrder);
+    out.columnOrder = watchlist_utils::normalizedColumnOrder(out.columnOrder);
 
     for (int i = 0; i < ColCount; ++i) {
         out.columnMaxWidths[i] = m_columnMaxWidthSpins[i]->value();
@@ -2031,7 +1904,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
     updateTimelineControlsState();
 
     const QStringList names = i18n::columnNames(m_uiLanguage);
-    const QVector<int> columnOrder = normalizedColumnOrder(m_cfg.columnOrder);
+    const QVector<int> columnOrder = watchlist_utils::normalizedColumnOrder(m_cfg.columnOrder);
 
     m_columnList = new QListWidget(w);
     m_columnList->setDragDropMode(QAbstractItemView::InternalMove);

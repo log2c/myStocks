@@ -1,6 +1,7 @@
 #include "floating_window.h"
 
 #include "i18n.h"
+#include "watchlist_utils.h"
 
 #include <QDateTime>
 #include <QCursor>
@@ -26,7 +27,6 @@
 #include <QSignalBlocker>
 #include <QShowEvent>
 #include <QScreen>
-#include <QSet>
 #include <QStyledItemDelegate>
 #include <QStyleFactory>
 #include <QTimeZone>
@@ -50,27 +50,6 @@
 #endif
 
 namespace {
-
-QVector<int> normalizedColumnOrder(const QVector<int>& order) {
-    QVector<int> out;
-    out.reserve(ColCount);
-
-    for (int logical : order) {
-        if (logical < 0 || logical >= ColCount || out.contains(logical)) {
-            continue;
-        }
-        out.push_back(logical);
-    }
-
-    for (int i = 0; i < ColCount; ++i) {
-        if (out.contains(i)) {
-            continue;
-        }
-        out.push_back(i);
-    }
-
-    return out;
-}
 
 QColor mixColor(const QColor& from, const QColor& to, qreal t) {
     const qreal clamped = qBound(0.0, t, 1.0);
@@ -339,70 +318,8 @@ struct TimelinePoint {
     double amount = qQNaN();
 };
 
-bool isDigitsOnly(const QString& value) {
-    if (value.isEmpty()) {
-        return false;
-    }
-    for (QChar ch : value) {
-        if (!ch.isDigit()) {
-            return false;
-        }
-    }
-    return true;
-}
-
-const QSet<QString>& predefinedAshareIndexAliases() {
-    static const QSet<QString> aliases {
-        QStringLiteral("sh000001"),
-        QStringLiteral("sz399001"),
-        QStringLiteral("sh000300"),
-        QStringLiteral("sz399300"),
-        QStringLiteral("sh000016"),
-        QStringLiteral("sh000905"),
-        QStringLiteral("sh000852"),
-        QStringLiteral("sz399006"),
-        QStringLiteral("sz399673"),
-        QStringLiteral("sh000688"),
-        QStringLiteral("sh931643"),
-        QStringLiteral("sz931643"),
-        QStringLiteral("sh932133"),
-        QStringLiteral("sz399431"),
-        QStringLiteral("sz399975"),
-        QStringLiteral("sh000808"),
-        QStringLiteral("sh000932"),
-        QStringLiteral("sz399808"),
-        QStringLiteral("sh980017"),
-        QStringLiteral("sz980017"),
-        QStringLiteral("399001"),
-        QStringLiteral("000300"),
-        QStringLiteral("399300"),
-        QStringLiteral("000016"),
-        QStringLiteral("000905"),
-        QStringLiteral("000852"),
-        QStringLiteral("399006"),
-        QStringLiteral("399673"),
-        QStringLiteral("000688"),
-        QStringLiteral("931643"),
-        QStringLiteral("932133"),
-        QStringLiteral("399431"),
-        QStringLiteral("399975"),
-        QStringLiteral("000808"),
-        QStringLiteral("000932"),
-        QStringLiteral("399808"),
-        QStringLiteral("980017"),
-    };
-    return aliases;
-}
-
 bool isAshareIndexCode(const QString& rawCode) {
-    const QString code = rawCode.trimmed().toLower();
-    if (code.isEmpty()) {
-        return false;
-    }
-    if (code.startsWith(QStringLiteral("bk")) || code.startsWith(QStringLiteral("90."))) {
-        return false;
-    }
-    return predefinedAshareIndexAliases().contains(code);
+    return watchlist_utils::isPredefinedAshareIndexCode(rawCode);
 }
 
 QString extractSixDigitsSymbol(const QString& rawCode) {
@@ -418,13 +335,13 @@ QString extractSixDigitsSymbol(const QString& rawCode) {
             const QString symbol = code.mid(dot + 1);
             if ((market == QLatin1String("0") || market == QLatin1String("1"))
                 && symbol.size() == 6
-                && isDigitsOnly(symbol)) {
+                && watchlist_utils::isDigitsOnly(symbol)) {
                 return symbol;
             }
             return {};
         }
     }
-    return (code.size() == 6 && isDigitsOnly(code)) ? code : QString();
+    return (code.size() == 6 && watchlist_utils::isDigitsOnly(code)) ? code : QString();
 }
 
 bool isAshareStockCode(const QString& rawCode) {
@@ -437,15 +354,19 @@ bool isAshareStockCode(const QString& rawCode) {
         || code.startsWith(QStringLiteral("sz"))
         || code.startsWith(QStringLiteral("bj"))) {
         const QString symbol = code.mid(2);
-        return symbol.size() == 6 && isDigitsOnly(symbol);
+        return symbol.size() == 6 && watchlist_utils::isDigitsOnly(symbol);
     }
 
     if (code.startsWith(QStringLiteral("0.")) || code.startsWith(QStringLiteral("1."))) {
         const QString symbol = code.mid(2);
-        return symbol.size() == 6 && isDigitsOnly(symbol) && !isAshareIndexCode(symbol);
+        return symbol.size() == 6
+            && watchlist_utils::isDigitsOnly(symbol)
+            && !isAshareIndexCode(symbol);
     }
 
-    return code.size() == 6 && isDigitsOnly(code) && !isAshareIndexCode(code);
+    return code.size() == 6
+        && watchlist_utils::isDigitsOnly(code)
+        && !isAshareIndexCode(code);
 }
 
 bool isAshareTimelineSupportedCode(const QString& rawCode) {
@@ -493,7 +414,9 @@ QString toTimelineSecId(const QString& rawCode) {
             }
         }
         if (marketOk && symbolOk) {
-            if ((market == 0 || market == 1) && symbol.size() == 6 && isDigitsOnly(symbol)) {
+            if ((market == 0 || market == 1)
+                && symbol.size() == 6
+                && watchlist_utils::isDigitsOnly(symbol)) {
                 return QString::number(market) + QStringLiteral(".") + symbol.toUpper();
             }
             return {};
@@ -3238,7 +3161,7 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
 }
 
 void FloatingWindow::applyColumns() {
-    const QVector<int> columnOrder = normalizedColumnOrder(m_cfg.columnOrder);
+    const QVector<int> columnOrder = watchlist_utils::normalizedColumnOrder(m_cfg.columnOrder);
     QHeaderView* header = m_table->horizontalHeader();
 
     // Apply column visual order.

@@ -1,5 +1,6 @@
 #include "app_controller.h"
 
+#include "app_constants.h"
 #include "app_logging.h"
 #include "config_manager.h"
 #include "floating_window.h"
@@ -9,6 +10,7 @@
 #include "quote_model.h"
 #include "quote_provider.h"
 #include "settings_dialog.h"
+#include "watchlist_utils.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -40,6 +42,14 @@
 #include <memory>
 
 namespace {
+
+using watchlist_utils::defaultDataYamlTemplate;
+using watchlist_utils::isDigitsOnly;
+using watchlist_utils::isHongKongCode;
+using watchlist_utils::normalizeFutureCode;
+using watchlist_utils::normalizeHongKongIndexCode;
+using watchlist_utils::normalizeSectorCode;
+using watchlist_utils::watchCodeKey;
 
 QRect resetFloatingWindowRect() {
     const AppConfig defaultCfg;
@@ -93,11 +103,7 @@ AppController::AppController(QObject* parent)
         &ignoredYamlIndexes
     );
     if (m_stocks.isEmpty()) {
-        m_stocks = {
-            {"sh600519", "Kweichow Moutai"},
-            {"sz000001", "Ping An Bank"},
-            {"sz300750", "CATL"}
-        };
+        m_stocks = watchlist_utils::defaultWatchStocks();
         qInfo() << "Stock list is empty; fallback defaults loaded count=" << m_stocks.size();
     }
     m_lastIgnoredYamlIndexCodes = ignoredYamlIndexes;
@@ -284,18 +290,6 @@ bool addMacHotkeyMapping(const QKeySequence& sequence) {
 }
 #endif
 
-QString defaultDataYamlTemplate() {
-    return QStringLiteral(
-        "# MyStocks stock list template\n"
-        "- code: sh600519\n"
-        "  name: Kweichow Moutai\n"
-        "- code: sz000001\n"
-        "  name: Ping An Bank\n"
-        "- code: sz300750\n"
-        "  name: CATL\n"
-    );
-}
-
 bool ensureDataYamlExists(const QString& path) {
     const QFileInfo info(path);
     if (info.exists() && info.size() > 0) {
@@ -312,50 +306,6 @@ bool ensureDataYamlExists(const QString& path) {
     return written == content.size();
 }
 
-bool isHongKongCode(const QString& rawCode) {
-    const QString code = rawCode.trimmed().toLower();
-    if (code.isEmpty()) {
-        return false;
-    }
-
-    if (code.startsWith("hk")
-        || code.startsWith(QStringLiteral("116."))
-        || code.startsWith(QStringLiteral("128."))) {
-        return true;
-    }
-
-    static const QSet<QString> hkIndexCodes {
-        QStringLiteral("hsi"),
-        QStringLiteral("hstech"),
-        QStringLiteral("100.hsi"),
-        QStringLiteral("124.hstech"),
-    };
-
-    if (hkIndexCodes.contains(code)) {
-        return true;
-    }
-
-    if (code.startsWith(QStringLiteral("100."))
-        && hkIndexCodes.contains(code.mid(4))) {
-        return true;
-    }
-    if (code.startsWith(QStringLiteral("124."))
-        && hkIndexCodes.contains(code.mid(4))) {
-        return true;
-    }
-
-    if (code.size() == 5) {
-        for (QChar ch : code) {
-            if (!ch.isDigit()) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    return false;
-}
-
 bool isBenignCanceledError(const QString& message) {
     const QString lower = message.trimmed().toLower();
     return lower.contains("operation canceled")
@@ -363,171 +313,8 @@ bool isBenignCanceledError(const QString& message) {
         || lower.contains("operation cancled");
 }
 
-bool isDigitsOnly(const QString& value) {
-    if (value.isEmpty()) {
-        return false;
-    }
-
-    for (QChar ch : value) {
-        if (!ch.isDigit()) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-const QSet<QString>& predefinedIndexAliases() {
-    static const QSet<QString> aliases {
-        QStringLiteral("sh000001"),
-        QStringLiteral("sz399001"),
-        QStringLiteral("sh000300"),
-        QStringLiteral("sz399300"),
-        QStringLiteral("sh000016"),
-        QStringLiteral("sh000905"),
-        QStringLiteral("sh000852"),
-        QStringLiteral("sz399006"),
-        QStringLiteral("sz399673"),
-        QStringLiteral("sh000688"),
-        QStringLiteral("sh931643"),
-        QStringLiteral("sz931643"),
-        QStringLiteral("sh932133"),
-        QStringLiteral("sz399431"),
-        QStringLiteral("sz399975"),
-        QStringLiteral("sh000808"),
-        QStringLiteral("sh000932"),
-        QStringLiteral("sz399808"),
-        QStringLiteral("sh980017"),
-        QStringLiteral("sz980017"),
-        QStringLiteral("hsi"),
-        QStringLiteral("hstech"),
-        QStringLiteral("100.hsi"),
-        QStringLiteral("124.hstech"),
-
-        // Digits-only aliases from docs/api examples except 000001 (ambiguous with stock).
-        QStringLiteral("399001"),
-        QStringLiteral("000300"),
-        QStringLiteral("399300"),
-        QStringLiteral("000016"),
-        QStringLiteral("000905"),
-        QStringLiteral("000852"),
-        QStringLiteral("399006"),
-        QStringLiteral("399673"),
-        QStringLiteral("000688"),
-        QStringLiteral("931643"),
-        QStringLiteral("932133"),
-        QStringLiteral("399431"),
-        QStringLiteral("399975"),
-        QStringLiteral("000808"),
-        QStringLiteral("000932"),
-        QStringLiteral("399808"),
-        QStringLiteral("980017"),
-    };
-
-    return aliases;
-}
-
 bool isPredefinedIndexCode(const QString& rawCode) {
-    const QString code = rawCode.trimmed().toLower();
-    if (code.isEmpty()) {
-        return false;
-    }
-    if (code.startsWith(QStringLiteral("bk")) || code.startsWith(QStringLiteral("90."))) {
-        return false;
-    }
-
-    if (predefinedIndexAliases().contains(code)) {
-        return true;
-    }
-
-    if (isDigitsOnly(code) && code.size() == 6) {
-        return predefinedIndexAliases().contains(code);
-    }
-
-    return false;
-}
-
-QString watchCodeKey(const QString& code) {
-    return code.trimmed().toLower();
-}
-
-QString normalizeSectorCode(const QString& rawCode) {
-    QString code = rawCode.trimmed();
-    if (code.isEmpty()) {
-        return {};
-    }
-
-    if (code.startsWith(QStringLiteral("90."), Qt::CaseInsensitive)) {
-        code = code.mid(3);
-    }
-
-    if (code.startsWith(QStringLiteral("bk"), Qt::CaseInsensitive)) {
-        return code.toUpper();
-    }
-
-    return {};
-}
-
-QString normalizeFutureCode(const QString& rawCode) {
-    const QString raw = rawCode.trimmed();
-    if (raw.isEmpty()) {
-        return {};
-    }
-
-    const int dot = raw.indexOf(QLatin1Char('.'));
-    if (dot <= 0 || dot >= raw.size() - 1) {
-        return {};
-    }
-
-    const QString market = raw.left(dot).trimmed();
-    const QString symbol = raw.mid(dot + 1).trimmed().toUpper();
-    if (!isDigitsOnly(market) || symbol.isEmpty()) {
-        return {};
-    }
-
-    if (market == QStringLiteral("0")
-        || market == QStringLiteral("1")
-        || market == QStringLiteral("90")
-        || market == QStringLiteral("100")
-        || market == QStringLiteral("116")
-        || market == QStringLiteral("124")
-        || market == QStringLiteral("128")) {
-        return {};
-    }
-
-    bool hasLetter = false;
-    for (const QChar ch : symbol) {
-        if (ch.isLetter()) {
-            hasLetter = true;
-            break;
-        }
-    }
-    if (!hasLetter) {
-        return {};
-    }
-
-    return market + QStringLiteral(".") + symbol;
-}
-
-QString normalizeHongKongIndexCode(const QString& rawCode) {
-    const QString code = rawCode.trimmed().toLower();
-    if (code.isEmpty()) {
-        return {};
-    }
-
-    if (code == QStringLiteral("hsi")
-        || code == QStringLiteral("100.hsi")
-        || code == QStringLiteral("124.hsi")) {
-        return QStringLiteral("100.HSI");
-    }
-
-    if (code == QStringLiteral("hstech")
-        || code == QStringLiteral("124.hstech")
-        || code == QStringLiteral("100.hstech")) {
-        return QStringLiteral("124.HSTECH");
-    }
-
-    return {};
+    return watchlist_utils::isPredefinedIndexCode(rawCode);
 }
 
 QString encodeWatchItem(const StockItem& item) {
@@ -690,21 +477,14 @@ QVector<StockItem> AppController::mergedWatchItems() const {
 }
 
 void AppController::loadExtraWatchItems() {
-    std::unique_ptr<QSettings> settings;
-#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
-    const QString settingsPath = ConfigManager::appSettingsFilePath();
-    if (!settingsPath.isEmpty()) {
-        settings = std::make_unique<QSettings>(settingsPath, QSettings::IniFormat);
-    }
-#endif
-    if (!settings) {
-        settings = std::make_unique<QSettings>("myStocks", "myStocks");
-    }
+    std::unique_ptr<QSettings> settings = ConfigManager::createAppSettings();
     QSettings& s = *settings;
 
-    m_indexes = decodeWatchItems(s.value("watch/indexes").toStringList());
+    m_indexes = decodeWatchItems(s.value(app_constants::kWatchIndexesKey).toStringList());
 
-    QVector<StockItem> decodedSectors = decodeWatchItems(s.value("watch/sectors").toStringList());
+    QVector<StockItem> decodedSectors = decodeWatchItems(
+        s.value(app_constants::kWatchSectorsKey).toStringList()
+    );
     m_sectors.clear();
     m_sectors.reserve(decodedSectors.size());
 
@@ -724,7 +504,9 @@ void AppController::loadExtraWatchItems() {
         m_sectors.push_back({code, sector.name.trimmed()});
     }
 
-    QVector<StockItem> decodedFutures = decodeWatchItems(s.value("watch/futures").toStringList());
+    QVector<StockItem> decodedFutures = decodeWatchItems(
+        s.value(app_constants::kWatchFuturesKey).toStringList()
+    );
     m_futures.clear();
     m_futures.reserve(decodedFutures.size());
 
@@ -746,21 +528,12 @@ void AppController::loadExtraWatchItems() {
 }
 
 void AppController::saveExtraWatchItems() const {
-    std::unique_ptr<QSettings> settings;
-#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
-    const QString settingsPath = ConfigManager::appSettingsFilePath();
-    if (!settingsPath.isEmpty()) {
-        settings = std::make_unique<QSettings>(settingsPath, QSettings::IniFormat);
-    }
-#endif
-    if (!settings) {
-        settings = std::make_unique<QSettings>("myStocks", "myStocks");
-    }
+    std::unique_ptr<QSettings> settings = ConfigManager::createAppSettings();
     QSettings& s = *settings;
 
-    s.setValue("watch/indexes", encodeWatchItems(m_indexes));
-    s.setValue("watch/sectors", encodeWatchItems(m_sectors));
-    s.setValue("watch/futures", encodeWatchItems(m_futures));
+    s.setValue(app_constants::kWatchIndexesKey, encodeWatchItems(m_indexes));
+    s.setValue(app_constants::kWatchSectorsKey, encodeWatchItems(m_sectors));
+    s.setValue(app_constants::kWatchFuturesKey, encodeWatchItems(m_futures));
     s.sync();
 }
 

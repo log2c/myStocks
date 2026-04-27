@@ -1,7 +1,9 @@
 #include "config_manager.h"
 
+#include "app_constants.h"
 #include "app_logging.h"
 #include "i18n.h"
+#include "watchlist_utils.h"
 
 #include <QDebug>
 #include <QDir>
@@ -9,37 +11,12 @@
 #include <QFont>
 #include <QRegularExpression>
 #include <QSaveFile>
-#include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 
 #include <memory>
 
 namespace {
-
-QVector<int> normalizedColumnOrder(const QVector<int>& order) {
-    QVector<int> out;
-    out.reserve(ColCount);
-
-    QSet<int> seen;
-    for (int logical : order) {
-        if (logical < 0 || logical >= ColCount || seen.contains(logical)) {
-            continue;
-        }
-        out.push_back(logical);
-        seen.insert(logical);
-    }
-
-    for (int i = 0; i < ColCount; ++i) {
-        if (seen.contains(i)) {
-            continue;
-        }
-        out.push_back(i);
-        seen.insert(i);
-    }
-
-    return out;
-}
 
 QString settingsStatusToString(QSettings::Status status) {
     switch (status) {
@@ -54,11 +31,11 @@ QString settingsStatusToString(QSettings::Status status) {
 }
 
 QString stableConfigKey(const QString& leafKey) {
-    return QStringLiteral("cfg/") + leafKey;
+    return QString::fromLatin1(app_constants::kStableConfigPrefix) + leafKey;
 }
 
 QString legacyConfigKey(const QString& leafKey) {
-    return QStringLiteral("general/") + leafKey;
+    return QString::fromLatin1(app_constants::kLegacyConfigPrefix) + leafKey;
 }
 
 QVariant readConfigValue(
@@ -113,7 +90,9 @@ QString resolvedSettingsCacheDirPath() {
     return QDir::cleanPath(cacheDir);
 }
 
-std::unique_ptr<QSettings> createAppSettings() {
+} // namespace
+
+std::unique_ptr<QSettings> ConfigManager::createAppSettings() {
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     const QString settingsPath = ConfigManager::appSettingsFilePath();
     if (!settingsPath.isEmpty()) {
@@ -121,10 +100,11 @@ std::unique_ptr<QSettings> createAppSettings() {
     }
 #endif
 
-    return std::make_unique<QSettings>("myStocks", "myStocks");
+    return std::make_unique<QSettings>(
+        app_constants::kOrganizationName,
+        app_constants::kApplicationName
+    );
 }
-
-} // namespace
 
 QString ConfigManager::appSettingsFilePath() {
     if (!shouldUseCacheBackedSettings()) {
@@ -142,7 +122,7 @@ QString ConfigManager::appSettingsFilePath() {
         return {};
     }
 
-    return QDir(cacheDir).filePath("settings.ini");
+    return QDir(cacheDir).filePath(QString::fromLatin1(app_constants::kSettingsFileName));
 }
 
 QVector<StockItem> ConfigManager::loadStocksFromYaml(const QString& filePath) {
@@ -438,7 +418,7 @@ AppConfig ConfigManager::loadConfig() {
             loadedOrder.push_back(value.toInt());
         }
     }
-    cfg.columnOrder = normalizedColumnOrder(loadedOrder);
+    cfg.columnOrder = watchlist_utils::normalizedColumnOrder(loadedOrder);
 
     cfg.pollMs = qMax(500, cfg.pollMs);
     cfg.opacity = qBound(0.2, cfg.opacity, 1.0);
@@ -642,7 +622,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         );
     }
 
-    const QVector<int> columnOrder = normalizedColumnOrder(cfg.columnOrder);
+    const QVector<int> columnOrder = watchlist_utils::normalizedColumnOrder(cfg.columnOrder);
     QVariantList orderValues;
     orderValues.reserve(columnOrder.size());
     for (int logical : columnOrder) {

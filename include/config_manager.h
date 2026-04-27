@@ -2,11 +2,15 @@
 
 #include "types.h"
 
+#include <memory>
 #include <QString>
 #include <QVector>
 
+class QSettings;
+
 class ConfigManager {
 public:
+    static std::unique_ptr<QSettings> createAppSettings();
     static QVector<StockItem> loadStocksFromYaml(const QString& filePath);
     static bool saveStocksToYaml(const QString& filePath, const QVector<StockItem>& stocks);
     static QString appSettingsFilePath();

@@ -1,6 +1,7 @@
 #include "quote_model.h"
 
 #include "i18n.h"
+#include "watchlist_utils.h"
 
 #include <QColor>
 
@@ -30,10 +31,6 @@ QVector<int> visibleLogicalColumns(const AppConfig& cfg) {
     }
 
     return columns;
-}
-
-bool isHongKongCode(const QString& rawCode) {
-    return rawCode.trimmed().toLower().startsWith("hk");
 }
 
 // Returns true for ChiNext (创业板 300/301) and STAR Market (科创板 688/689)
@@ -84,7 +81,7 @@ QColor adjustedValue(const QColor& base, int delta) {
 }
 
 QString withHongKongNamePrefix(const QString& code, const QString& name) {
-    if (!isHongKongCode(code)) {
+    if (!watchlist_utils::isHongKongCode(code)) {
         return name;
     }
 

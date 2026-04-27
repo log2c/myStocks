@@ -5,6 +5,7 @@
 #include <QIcon>
 #include <QSharedMemory>
 
+#include "app_constants.h"
 #include "app_controller.h"
 #include "app_logging.h"
 #include "config_manager.h"
@@ -17,8 +18,8 @@ int main(int argc, char* argv[]) {
         app.setWindowIcon(appIcon);
     }
 
-    QApplication::setOrganizationName("myStocks");
-    QApplication::setApplicationName("myStocks");
+    QApplication::setOrganizationName(app_constants::kOrganizationName);
+    QApplication::setApplicationName(app_constants::kApplicationName);
     app.setQuitOnLastWindowClosed(false);
     crash_logging::installCrashHandlers();
 

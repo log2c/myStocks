@@ -37,7 +37,7 @@ if(WIN32 OR APPLE)
     FetchContent_MakeAvailable(QHotkey)
 endif()
 
-qt_add_executable(MyStocks
+set(MYSTOCKS_SOURCES
     main.cpp
     resources.qrc
     src/app_logging.cpp
@@ -51,6 +51,11 @@ qt_add_executable(MyStocks
     src/quote_model.cpp
     src/quote_provider.cpp
     src/settings_dialog.cpp
+    src/watchlist_utils.cpp
+)
+
+set(MYSTOCKS_HEADERS
+    include/app_constants.h
     include/app_logging.h
     include/app_controller.h
     include/config_manager.h
@@ -63,6 +68,12 @@ qt_add_executable(MyStocks
     include/quote_provider.h
     include/settings_dialog.h
     include/types.h
+    include/watchlist_utils.h
+)
+
+qt_add_executable(MyStocks
+    ${MYSTOCKS_SOURCES}
+    ${MYSTOCKS_HEADERS}
 )
 
 target_include_directories(MyStocks PRIVATE include)
