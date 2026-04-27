@@ -762,9 +762,10 @@ protected:
                 minPct -= 0.5;
                 maxPct += 0.5;
             }
-            const double pctRange = qMax(0.000001, maxPct - minPct);
-            yMinPct = minPct - pctRange * 0.08;
-            yMaxPct = maxPct + pctRange * 0.08;
+            const double absMaxPct = qMax(std::abs(minPct), std::abs(maxPct));
+            const double halfSpanPct = qMax(0.5, absMaxPct * 1.08);
+            yMinPct = -halfSpanPct;
+            yMaxPct = halfSpanPct;
         }
         const double ySpanPct = qMax(0.000001, yMaxPct - yMinPct);
 
