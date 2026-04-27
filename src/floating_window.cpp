@@ -1520,21 +1520,70 @@ private:
             return;
         }
 
-        const auto calcWidth = [&barRect, total](int value) -> int {
-            return qRound(static_cast<double>(barRect.width()) * static_cast<double>(value)
-                / static_cast<double>(qMax(1, total)));
-        };
-        int upWidth = calcWidth(up);
-        int flatWidth = calcWidth(flat);
-        int downWidth = barRect.width() - upWidth - flatWidth;
+        const auto computeSegmentWidths = [&](const QVector<int>& values) -> QVector<int> {
+            QVector<int> widths(values.size(), 0);
+            QVector<int> positiveIndexes;
+            positiveIndexes.reserve(values.size());
 
-        if (up > 0 && upWidth <= 0) {
-            upWidth = 1;
-        }
-        if (flat > 0 && flatWidth <= 0) {
-            flatWidth = 1;
-        }
-        downWidth = qMax(0, barRect.width() - upWidth - flatWidth);
+            int reservedWidth = 0;
+            int reservedValue = 0;
+            for (int i = 0; i < values.size(); ++i) {
+                if (values.at(i) <= 0) {
+                    continue;
+                }
+                widths[i] = 1;
+                positiveIndexes.push_back(i);
+                ++reservedWidth;
+                reservedValue += 1;
+            }
+
+            const int extraWidth = qMax(0, barRect.width() - reservedWidth);
+            const int extraValue = qMax(0, total - reservedValue);
+            if (extraWidth <= 0 || extraValue <= 0 || positiveIndexes.isEmpty()) {
+                return widths;
+            }
+
+            QVector<double> remainders(values.size(), 0.0);
+            int assignedExtraWidth = 0;
+            for (int index : positiveIndexes) {
+                const int weightedValue = qMax(0, values.at(index) - 1);
+                if (weightedValue <= 0) {
+                    continue;
+                }
+
+                const double rawExtra = static_cast<double>(extraWidth) * static_cast<double>(weightedValue)
+                    / static_cast<double>(extraValue);
+                const int extra = static_cast<int>(std::floor(rawExtra));
+                widths[index] += extra;
+                remainders[index] = rawExtra - static_cast<double>(extra);
+                assignedExtraWidth += extra;
+            }
+
+            int remainingExtraWidth = extraWidth - assignedExtraWidth;
+            while (remainingExtraWidth > 0) {
+                int bestIndex = -1;
+                double bestRemainder = -1.0;
+                for (int index : positiveIndexes) {
+                    if (remainders.at(index) > bestRemainder) {
+                        bestRemainder = remainders.at(index);
+                        bestIndex = index;
+                    }
+                }
+                if (bestIndex < 0) {
+                    break;
+                }
+                ++widths[bestIndex];
+                remainders[bestIndex] = 0.0;
+                --remainingExtraWidth;
+            }
+
+            return widths;
+        };
+
+        const QVector<int> segmentWidths = computeSegmentWidths({up, flat, down});
+        const int upWidth = segmentWidths.value(0);
+        const int flatWidth = segmentWidths.value(1);
+        const int downWidth = segmentWidths.value(2);
 
         const QColor upColor = m_model->marketBreadthUpColor();
         const QColor flatColor = m_model->marketBreadthFlatColor();
@@ -1543,69 +1592,180 @@ private:
         const QRect upRect(barRect.left(), barRect.top(), upWidth, barRect.height());
         const QRect flatRect(upRect.right() + 1, barRect.top(), flatWidth, barRect.height());
         const QRect downRect(flatRect.right() + 1, barRect.top(), qMax(0, downWidth), barRect.height());
-        const QRect upTextRect(upRect.left(), contentRect.top(), upRect.width(), contentRect.height());
-        const QRect downTextRect(downRect.left(), contentRect.top(), downRect.width(), contentRect.height());
-
         QFontMetrics fm(painter->font());
-        const auto centeredLabelRect = [&fm, &contentRect](const QRect& areaRect, const QString& text) -> QRect {
-            const int desiredW = qMax(10, fm.horizontalAdvance(text) + 8);
-            const int w = qMin(contentRect.width(), desiredW);
-            const int h = qMin(contentRect.height(), fm.height());
-
-            int x = areaRect.center().x() - w / 2;
-            x = qMax(contentRect.left(), qMin(x, contentRect.right() - w + 1));
-            const int y = contentRect.center().y() - h / 2;
-
-            return QRect(x, y, w, h);
+        struct BreadthLabel {
+            int segmentIndex = -1;
+            int priority = 0;
+            QString text;
+            QColor color;
+            QRect segmentRect;
+            QRect rect;
+            int preferredX = 0;
+            int minX = 0;
+            int maxX = 0;
         };
 
-        const QString upText = QString::number(up);
-        const QString downText = QString::number(down);
-        const QRect upLabelRect = centeredLabelRect(upTextRect, upText);
-        const QRect downLabelRect = centeredLabelRect(downTextRect, downText);
+        const int labelPadding = 8;
+        const int labelGap = 2;
+        const int labelHeight = qMin(contentRect.height(), fm.height());
+        const int labelY = contentRect.center().y() - labelHeight / 2;
+        const int dominantSegment = up >= down ? 0 : 2;
 
-        const auto fillStripeWithHole = [painter](const QRect& stripe, const QColor& color, const QRect& hole) {
+        const auto makeLabel = [&](int segmentIndex, int value, const QRect& segmentRect, const QColor& color) {
+            BreadthLabel label;
+            label.segmentIndex = segmentIndex;
+            label.priority = (segmentIndex == dominantSegment) ? 2 : 1;
+            label.text = QString::number(value);
+            label.color = color;
+            label.segmentRect = segmentRect;
+
+            const int desiredW = qMax(10, fm.horizontalAdvance(label.text) + labelPadding);
+            const int labelWidth = qMin(contentRect.width(), desiredW);
+            label.minX = contentRect.left();
+            label.maxX = qMax(label.minX, contentRect.right() - labelWidth + 1);
+
+            int preferredX = segmentRect.center().x() - labelWidth / 2;
+            if (segmentRect.width() < labelWidth) {
+                if (segmentIndex == 0) {
+                    preferredX = contentRect.left();
+                } else if (segmentIndex == 2) {
+                    preferredX = contentRect.right() - labelWidth + 1;
+                }
+            }
+            label.preferredX = qBound(label.minX, preferredX, label.maxX);
+            label.rect = QRect(label.preferredX, labelY, labelWidth, labelHeight);
+            return label;
+        };
+
+        QVector<BreadthLabel> labels;
+        if (up > 0) {
+            labels.push_back(makeLabel(0, up, upRect, upColor));
+        }
+        if (down > 0) {
+            labels.push_back(makeLabel(2, down, downRect, downColor));
+        }
+
+        auto requiredWidth = [&]() -> int {
+            if (labels.isEmpty()) {
+                return 0;
+            }
+
+            int totalWidth = 0;
+            for (const BreadthLabel& label : labels) {
+                totalWidth += label.rect.width();
+            }
+            totalWidth += labelGap * (labels.size() - 1);
+            return totalWidth;
+        };
+
+        while (labels.size() > 1 && requiredWidth() > contentRect.width()) {
+            int removeIndex = -1;
+            int removePriority = std::numeric_limits<int>::max();
+            for (int i = 0; i < labels.size(); ++i) {
+                if (labels.at(i).priority < removePriority
+                    || (labels.at(i).priority == removePriority
+                        && (removeIndex < 0
+                            || labels.at(i).segmentIndex > labels.at(removeIndex).segmentIndex))) {
+                    removePriority = labels.at(i).priority;
+                    removeIndex = i;
+                }
+            }
+            if (removeIndex < 0) {
+                break;
+            }
+            labels.removeAt(removeIndex);
+        }
+
+        const auto layoutLabels = [&]() {
+            int currentMinX = contentRect.left();
+            for (BreadthLabel& label : labels) {
+                int x = qMax(label.preferredX, currentMinX);
+                x = qMin(x, label.maxX);
+                label.rect.moveLeft(x);
+                currentMinX = label.rect.right() + 1 + labelGap;
+            }
+
+            int currentMaxX = contentRect.right() + 1;
+            for (int i = labels.size() - 1; i >= 0; --i) {
+                BreadthLabel& label = labels[i];
+                int x = qMin(label.rect.left(), currentMaxX - label.rect.width());
+                x = qMax(x, label.minX);
+                label.rect.moveLeft(x);
+                currentMaxX = label.rect.left() - labelGap;
+            }
+
+            currentMinX = contentRect.left();
+            for (BreadthLabel& label : labels) {
+                int x = qMax(label.rect.left(), currentMinX);
+                x = qMin(x, label.maxX);
+                label.rect.moveLeft(x);
+                currentMinX = label.rect.right() + 1 + labelGap;
+            }
+        };
+
+        layoutLabels();
+
+        const auto fillStripeWithHoles = [painter](const QRect& stripe, const QColor& color, const QVector<QRect>& holes) {
             if (stripe.width() <= 0 || stripe.height() <= 0) {
                 return;
             }
 
-            const QRect cut = stripe.intersected(hole);
-            if (cut.isEmpty()) {
+            QVector<QRect> cuts;
+            cuts.reserve(holes.size());
+            for (const QRect& hole : holes) {
+                const QRect cut = stripe.intersected(hole);
+                if (!cut.isEmpty()) {
+                    cuts.push_back(cut);
+                }
+            }
+
+            if (cuts.isEmpty()) {
                 painter->fillRect(stripe, color);
                 return;
             }
 
-            const QRect leftPart(stripe.left(), stripe.top(), qMax(0, cut.left() - stripe.left()), stripe.height());
-            const QRect rightPart(cut.right() + 1, stripe.top(), qMax(0, stripe.right() - cut.right()), stripe.height());
-            if (leftPart.width() > 0) {
-                painter->fillRect(leftPart, color);
+            std::sort(cuts.begin(), cuts.end(), [](const QRect& lhs, const QRect& rhs) {
+                return lhs.left() < rhs.left();
+            });
+
+            int currentLeft = stripe.left();
+            int currentRight = stripe.right();
+            for (const QRect& cut : cuts) {
+                if (cut.left() > currentLeft) {
+                    painter->fillRect(
+                        QRect(currentLeft, stripe.top(), cut.left() - currentLeft, stripe.height()),
+                        color
+                    );
+                }
+                currentLeft = qMax(currentLeft, cut.right() + 1);
+                if (currentLeft > currentRight) {
+                    break;
+                }
             }
-            if (rightPart.width() > 0) {
-                painter->fillRect(rightPart, color);
+
+            if (currentLeft <= currentRight) {
+                painter->fillRect(
+                    QRect(currentLeft, stripe.top(), currentRight - currentLeft + 1, stripe.height()),
+                    color
+                );
             }
         };
 
-        fillStripeWithHole(upRect, upColor, upLabelRect);
+        QVector<QRect> stripeHoles;
+        stripeHoles.reserve(labels.size());
+        for (const BreadthLabel& label : labels) {
+            stripeHoles.push_back(label.rect);
+        }
+
+        fillStripeWithHoles(upRect, upColor, stripeHoles);
         if (flatRect.width() > 0) {
-            painter->fillRect(flatRect, flatColor);
+            fillStripeWithHoles(flatRect, flatColor, stripeHoles);
         }
-        fillStripeWithHole(downRect, downColor, downLabelRect);
-
-        const QColor upTextColor = m_model->marketBreadthUpColor();
-        const QColor downTextColor = m_model->marketBreadthDownColor();
-        QBrush eraseBrush = option.backgroundBrush;
-        if (eraseBrush.style() == Qt::NoBrush) {
-            eraseBrush = option.palette.brush(QPalette::Base);
+        fillStripeWithHoles(downRect, downColor, stripeHoles);
+        for (const BreadthLabel& label : labels) {
+            painter->setPen(label.color);
+            painter->drawText(label.rect, Qt::AlignCenter, label.text);
         }
-
-        // Ensure labels remain fully readable even when the stripe segment is narrow.
-        painter->fillRect(upLabelRect, eraseBrush);
-        painter->fillRect(downLabelRect, eraseBrush);
-
-        painter->setPen(upTextColor);
-        painter->drawText(upLabelRect, Qt::AlignCenter, upText);
-        painter->setPen(downTextColor);
-        painter->drawText(downLabelRect, Qt::AlignCenter, downText);
 
         painter->restore();
     }
