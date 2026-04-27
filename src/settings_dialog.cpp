@@ -538,6 +538,15 @@ void addCompactFormRow(QFormLayout* form, QWidget* widget) {
     form->addRow(QString(), widget);
 }
 
+void applyNumericSpinBoxWidth(QSpinBox* spin) {
+    if (!spin) {
+        return;
+    }
+
+    // Keep purely numeric spin boxes readable in compact form layouts.
+    spin->setMinimumWidth(96);
+}
+
 QWidget* makeScrollableTab(QWidget* content, QWidget* parent) {
     if (!content) {
         return new QWidget(parent);
@@ -924,6 +933,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
     m_pollSpin->setRange(3000, 60000);
     m_pollSpin->setSingleStep(10);
     m_pollSpin->setValue(qMax(3000, m_cfg.pollMs));
+    applyNumericSpinBoxWidth(m_pollSpin);
 
     m_hotkeyEdit = new QKeySequenceEdit(QKeySequence(m_cfg.hotkey), w);
     m_hotkeyEdit->setToolTip(trText("settings.general.hotkeyHint"));
@@ -1218,6 +1228,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
             ? m_cfg.floatingWindowFontSize
             : qMax(6, effectiveBaseFont.pointSize()), 72)
     );
+    applyNumericSpinBoxWidth(m_fontSizeSpin);
 
     m_fontBoldCheck = new QCheckBox(trText("settings.general.fontBold"), fontGroup);
     m_fontBoldCheck->setChecked(m_cfg.floatingWindowFontBold);
@@ -1273,6 +1284,7 @@ QWidget* SettingsDialog::buildNetworkTab() {
     m_proxyPortSpin = new QSpinBox(w);
     m_proxyPortSpin->setRange(0, 65535);
     m_proxyPortSpin->setValue(qBound(0, m_cfg.proxyPort, 65535));
+    applyNumericSpinBoxWidth(m_proxyPortSpin);
 
     m_proxyUserEdit = new QLineEdit(m_cfg.proxyUser, w);
 
@@ -1364,6 +1376,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_hotSectorCountSpin->setRange(1, 100);
     m_hotSectorCountSpin->setSingleStep(1);
     m_hotSectorCountSpin->setValue(qMax(1, m_cfg.hotSectorCount));
+    applyNumericSpinBoxWidth(m_hotSectorCountSpin);
     hotRankForm->addRow(trText("settings.display.hotSectorCount"), m_hotSectorCountSpin);
 
     m_hotSectorSortFieldCombo = new QComboBox(w);
@@ -1405,6 +1418,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_hotConceptCountSpin->setRange(1, 100);
     m_hotConceptCountSpin->setSingleStep(1);
     m_hotConceptCountSpin->setValue(qMax(1, m_cfg.hotConceptCount));
+    applyNumericSpinBoxWidth(m_hotConceptCountSpin);
     hotRankForm->addRow(trText("settings.display.hotConceptCount"), m_hotConceptCountSpin);
 
     m_hotConceptSortFieldCombo = new QComboBox(w);
