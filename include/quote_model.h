@@ -11,8 +11,9 @@ class QuoteModel : public QAbstractTableModel {
 public:
     enum RowKind {
         RowKindQuote = 0,
-        RowKindHotSector = 1,
-        RowKindHotConcept = 2,
+        RowKindMarketBreadth = 1,
+        RowKindHotSector = 2,
+        RowKindHotConcept = 3,
     };
 
     explicit QuoteModel(QObject* parent = nullptr);
@@ -26,6 +27,8 @@ public:
     void updateQuotes(const QVector<QuoteItem>& quotes);
     void setHotSectors(const QVector<HotRankItem>& items);
     void setHotConcepts(const QVector<HotRankItem>& items);
+    void setMarketBreadth(int upCount, int flatCount, int downCount);
+    void setMarketBreadthError();
     void setConfig(const AppConfig& cfg);
     void setHoverReadingVisualState(bool active);
     void setLanguage(const QString& language);
@@ -38,13 +41,24 @@ public:
     QString specialRowEntryText(int row, int entryIndex) const;
     QColor specialRowEntryColor(int row, int entryIndex) const;
     bool specialRowHasData(int row) const;
+    bool marketBreadthValid() const;
+    int marketBreadthUpCount() const;
+    int marketBreadthFlatCount() const;
+    int marketBreadthDownCount() const;
+    QColor marketBreadthUpColor() const;
+    QColor marketBreadthFlatColor() const;
+    QColor marketBreadthDownColor() const;
     int firstVisibleLogicalColumn() const;
     int firstContentLogicalColumn() const;
 
 private:
     static QString formatSigned(double value, int precision, bool percent);
+    bool hasMarketBreadthRow() const;
+    int marketBreadthRowIndex() const;
     bool hasHotSectorRow() const;
     bool hasHotConceptRow() const;
+    int quoteStartRow() const;
+    int quoteModelRow(int quoteIndex) const;
     int hotSectorRowIndex() const;
     int hotConceptRowIndex() const;
     void emitSpecialRowsChanged();
@@ -56,6 +70,10 @@ private:
     QVector<QuoteItem> m_rows;
     QVector<HotRankItem> m_hotSectors;
     QVector<HotRankItem> m_hotConcepts;
+    int m_marketBreadthUpCount = 0;
+    int m_marketBreadthFlatCount = 0;
+    int m_marketBreadthDownCount = 0;
+    bool m_marketBreadthValid = false;
     QHash<QString, int> m_rowByCode;
     AppConfig m_cfg;
     QString m_language = "en_US";

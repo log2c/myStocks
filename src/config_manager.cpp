@@ -323,6 +323,14 @@ AppConfig ConfigManager::loadConfig() {
         "ui/timelineChartRefreshSecs",
         cfg.timelineChartRefreshSecs
     ).toInt();
+    cfg.marketBreadthEnabled = s.value(
+        "ui/marketBreadthEnabled",
+        cfg.marketBreadthEnabled
+    ).toBool();
+    cfg.marketBreadthRefreshSecs = s.value(
+        "ui/marketBreadthRefreshSecs",
+        cfg.marketBreadthRefreshSecs
+    ).toInt();
     cfg.timelineChartFixedRangeEnabled = s.value(
         "ui/timelineChartFixedRangeEnabled",
         cfg.timelineChartFixedRangeEnabled
@@ -462,6 +470,7 @@ AppConfig ConfigManager::loadConfig() {
     cfg.floatingWindowFontSize = qBound(0, cfg.floatingWindowFontSize, 72);
     cfg.hoverReadingDelaySecs = qBound(0.1, cfg.hoverReadingDelaySecs, 60.0);
     cfg.timelineChartRefreshSecs = qBound(10, cfg.timelineChartRefreshSecs, 3600);
+    cfg.marketBreadthRefreshSecs = qBound(10, cfg.marketBreadthRefreshSecs, 3600);
     cfg.hoverReadingUiMode = normalizeHoverReadingUiMode(cfg.hoverReadingUiMode);
     cfg.hotRankPollSecs = qBound(10, cfg.hotRankPollSecs, 3600);
     cfg.hotRankFlipSecs = qBound(0.5, cfg.hotRankFlipSecs, 60.0);
@@ -577,6 +586,8 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     );
     s.setValue("ui/timelineChartEnabled", cfg.timelineChartEnabled);
     s.setValue("ui/timelineChartRefreshSecs", qBound(10, cfg.timelineChartRefreshSecs, 3600));
+    s.setValue("ui/marketBreadthEnabled", cfg.marketBreadthEnabled);
+    s.setValue("ui/marketBreadthRefreshSecs", qBound(10, cfg.marketBreadthRefreshSecs, 3600));
     s.setValue("ui/timelineChartFixedRangeEnabled", cfg.timelineChartFixedRangeEnabled);
     s.setValue("ui/timelineChartBgColor", cfg.timelineChartBgColor);
     s.setValue("ui/timelineChartGridColor", cfg.timelineChartGridColor);

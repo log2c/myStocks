@@ -1252,17 +1252,24 @@ public:
             visibleColumns.push_back(logical);
         }
 
-        if (visibleColumns.size() < 2) {
+        if (visibleColumns.isEmpty()) {
             return;
         }
-
-        const int contentColumn = visibleColumns.at(1);
-        const int spanWidth = qMax(1, ColCount - contentColumn);
         for (int row = 0; row < quoteModel->rowCount(); ++row) {
-            if (quoteModel->rowKind(row) == QuoteModel::RowKindQuote) {
+            const QuoteModel::RowKind kind = quoteModel->rowKind(row);
+            if (kind == QuoteModel::RowKindQuote) {
                 continue;
             }
-            setSpan(row, contentColumn, 1, spanWidth);
+
+            if (kind == QuoteModel::RowKindMarketBreadth) {
+                setSpan(row, visibleColumns.first(), 1, visibleColumns.size());
+                continue;
+            }
+
+            if (visibleColumns.size() < 2) {
+                continue;
+            }
+            setSpan(row, visibleColumns.at(1), 1, visibleColumns.size() - 1);
         }
     }
 
@@ -1356,6 +1363,8 @@ public:
             return;
         }
 
+        const QuoteModel::RowKind rowKind = m_model->rowKind(index.row());
+
         QVector<int> visibleColumns;
         QHeaderView* header = m_table->horizontalHeader();
         for (int visual = 0; visual < header->count(); ++visual) {
@@ -1366,14 +1375,21 @@ public:
             visibleColumns.push_back(logical);
         }
 
-        if (visibleColumns.size() < 2) {
+        if (visibleColumns.isEmpty()) {
             QStyledItemDelegate::paint(painter, option, index);
             return;
         }
 
-        const int contentColumn = visibleColumns.at(1);
+        const int contentColumn = (rowKind == QuoteModel::RowKindMarketBreadth || visibleColumns.size() < 2)
+            ? visibleColumns.first()
+            : visibleColumns.at(1);
         if (index.column() != contentColumn) {
             QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+
+        if (rowKind == QuoteModel::RowKindMarketBreadth) {
+            paintMarketBreadthRow(painter, option, index);
             return;
         }
 
@@ -1435,6 +1451,163 @@ private:
     int animationTick() const {
         const auto* table = dynamic_cast<const BottomGridTableView*>(m_table);
         return table ? table->animationTick() : 0;
+    }
+
+    static QColor bestTextColorForBackground(const QColor& bg) {
+        return bg.lightness() < 140 ? QColor(Qt::white) : QColor(Qt::black);
+    }
+
+    void paintMarketBreadthRow(
+        QPainter* painter,
+        const QStyleOptionViewItem& option,
+        const QModelIndex& index
+    ) const {
+        QStyleOptionViewItem baseOption(option);
+        initStyleOption(&baseOption, index);
+        baseOption.text.clear();
+        QStyledItemDelegate::paint(painter, baseOption, index);
+
+        const QRect contentRect = option.rect.adjusted(8, 4, -8, -4);
+        if (contentRect.width() <= 10 || contentRect.height() <= 6) {
+            return;
+        }
+
+        const QString fallbackText = m_model->specialRowText(index.row());
+        const QVariant foreground = index.data(Qt::ForegroundRole);
+        const QColor textColor = foreground.canConvert<QColor>()
+            ? qvariant_cast<QColor>(foreground)
+            : option.palette.color(QPalette::Text);
+
+        painter->save();
+
+        if (!m_model->marketBreadthValid()) {
+            painter->setPen(textColor);
+            painter->drawText(
+                contentRect,
+                Qt::AlignLeft | Qt::AlignVCenter,
+                fallbackText
+            );
+            painter->restore();
+            return;
+        }
+
+        const int up = m_model->marketBreadthUpCount();
+        const int flat = m_model->marketBreadthFlatCount();
+        const int down = m_model->marketBreadthDownCount();
+        const int total = up + flat + down;
+        if (total <= 0) {
+            painter->setPen(textColor);
+            painter->drawText(
+                contentRect,
+                Qt::AlignLeft | Qt::AlignVCenter,
+                fallbackText
+            );
+            painter->restore();
+            return;
+        }
+
+        const int barHeight = qMax(2, contentRect.height() / 5);
+        const int barTop = contentRect.top() + (contentRect.height() - barHeight) / 2;
+        QRect barRect(contentRect.left(), barTop, contentRect.width(), barHeight);
+        if (barRect.width() < 60) {
+            painter->setPen(textColor);
+            painter->drawText(
+                contentRect,
+                Qt::AlignLeft | Qt::AlignVCenter,
+                fallbackText
+            );
+            painter->restore();
+            return;
+        }
+
+        const auto calcWidth = [&barRect, total](int value) -> int {
+            return qRound(static_cast<double>(barRect.width()) * static_cast<double>(value)
+                / static_cast<double>(qMax(1, total)));
+        };
+        int upWidth = calcWidth(up);
+        int flatWidth = calcWidth(flat);
+        int downWidth = barRect.width() - upWidth - flatWidth;
+
+        if (up > 0 && upWidth <= 0) {
+            upWidth = 1;
+        }
+        if (flat > 0 && flatWidth <= 0) {
+            flatWidth = 1;
+        }
+        downWidth = qMax(0, barRect.width() - upWidth - flatWidth);
+
+        const QColor upColor = m_model->marketBreadthUpColor();
+        const QColor flatColor = m_model->marketBreadthFlatColor();
+        const QColor downColor = m_model->marketBreadthDownColor();
+
+        const QRect upRect(barRect.left(), barRect.top(), upWidth, barRect.height());
+        const QRect flatRect(upRect.right() + 1, barRect.top(), flatWidth, barRect.height());
+        const QRect downRect(flatRect.right() + 1, barRect.top(), qMax(0, downWidth), barRect.height());
+        const QRect upTextRect(upRect.left(), contentRect.top(), upRect.width(), contentRect.height());
+        const QRect downTextRect(downRect.left(), contentRect.top(), downRect.width(), contentRect.height());
+
+        QFontMetrics fm(painter->font());
+        const auto centeredLabelRect = [&fm, &contentRect](const QRect& areaRect, const QString& text) -> QRect {
+            const int desiredW = qMax(10, fm.horizontalAdvance(text) + 8);
+            const int w = qMin(contentRect.width(), desiredW);
+            const int h = qMin(contentRect.height(), fm.height());
+
+            int x = areaRect.center().x() - w / 2;
+            x = qMax(contentRect.left(), qMin(x, contentRect.right() - w + 1));
+            const int y = contentRect.center().y() - h / 2;
+
+            return QRect(x, y, w, h);
+        };
+
+        const QString upText = QString::number(up);
+        const QString downText = QString::number(down);
+        const QRect upLabelRect = centeredLabelRect(upTextRect, upText);
+        const QRect downLabelRect = centeredLabelRect(downTextRect, downText);
+
+        const auto fillStripeWithHole = [painter](const QRect& stripe, const QColor& color, const QRect& hole) {
+            if (stripe.width() <= 0 || stripe.height() <= 0) {
+                return;
+            }
+
+            const QRect cut = stripe.intersected(hole);
+            if (cut.isEmpty()) {
+                painter->fillRect(stripe, color);
+                return;
+            }
+
+            const QRect leftPart(stripe.left(), stripe.top(), qMax(0, cut.left() - stripe.left()), stripe.height());
+            const QRect rightPart(cut.right() + 1, stripe.top(), qMax(0, stripe.right() - cut.right()), stripe.height());
+            if (leftPart.width() > 0) {
+                painter->fillRect(leftPart, color);
+            }
+            if (rightPart.width() > 0) {
+                painter->fillRect(rightPart, color);
+            }
+        };
+
+        fillStripeWithHole(upRect, upColor, upLabelRect);
+        if (flatRect.width() > 0) {
+            painter->fillRect(flatRect, flatColor);
+        }
+        fillStripeWithHole(downRect, downColor, downLabelRect);
+
+        const QColor upTextColor = m_model->marketBreadthUpColor();
+        const QColor downTextColor = m_model->marketBreadthDownColor();
+        QBrush eraseBrush = option.backgroundBrush;
+        if (eraseBrush.style() == Qt::NoBrush) {
+            eraseBrush = option.palette.brush(QPalette::Base);
+        }
+
+        // Ensure labels remain fully readable even when the stripe segment is narrow.
+        painter->fillRect(upLabelRect, eraseBrush);
+        painter->fillRect(downLabelRect, eraseBrush);
+
+        painter->setPen(upTextColor);
+        painter->drawText(upLabelRect, Qt::AlignCenter, upText);
+        painter->setPen(downTextColor);
+        painter->drawText(downLabelRect, Qt::AlignCenter, downText);
+
+        painter->restore();
     }
 
     int currentEntryIndex(int entryCount) const {

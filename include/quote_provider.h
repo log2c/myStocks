@@ -151,3 +151,22 @@ private:
     QNetworkAccessManager m_nam;
     QString m_lastError;
 };
+
+class AshareMarketBreadthProvider : public QObject {
+    Q_OBJECT
+public:
+    explicit AshareMarketBreadthProvider(QObject* parent = nullptr);
+
+    void applyConfig(const AppConfig& cfg);
+    void fetch();
+
+signals:
+    void dataReady(int upCount, int flatCount, int downCount);
+    void error(const QString& message);
+
+private:
+    QString m_userAgent = defaultChrome100UserAgent();
+    QNetworkProxy m_proxy = QNetworkProxy(QNetworkProxy::NoProxy);
+    QNetworkAccessManager m_nam;
+    QString m_lastError;
+};

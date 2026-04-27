@@ -167,6 +167,13 @@ AppController::AppController(QObject* parent)
         m_hotRankTimer->start();
     }
 
+    m_marketBreadthTimer = new QTimer(this);
+    m_marketBreadthTimer->setInterval(qMax(10000, m_cfg.marketBreadthRefreshSecs * 1000));
+    connect(m_marketBreadthTimer, &QTimer::timeout, this, [this]() { refreshMarketBreadth(); });
+    if (m_cfg.marketBreadthEnabled) {
+        m_marketBreadthTimer->start();
+    }
+
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() {
         qInfo() << "Application aboutToQuit. Persisting runtime config.";
         if (m_window) {
@@ -177,6 +184,9 @@ AppController::AppController(QObject* parent)
 
     refreshQuotes(true);
     refreshHotRanks(true);
+    if (m_window && m_window->isVisible()) {
+        refreshMarketBreadth(true);
+    }
 }
 
 namespace {
@@ -767,6 +777,7 @@ void AppController::toggleWindow() {
             m_window->raise();
             m_window->activateWindow();
         }
+        refreshMarketBreadth(true);
     }
 }
 
@@ -901,6 +912,14 @@ void AppController::openSettings() {
     if (m_hotRankTimer) {
         m_hotRankTimer->setInterval(qMax(10000, m_cfg.hotRankPollSecs * 1000));
     }
+    if (m_marketBreadthTimer) {
+        m_marketBreadthTimer->setInterval(qMax(10000, m_cfg.marketBreadthRefreshSecs * 1000));
+        if (m_cfg.marketBreadthEnabled) {
+            m_marketBreadthTimer->start();
+        } else {
+            m_marketBreadthTimer->stop();
+        }
+    }
 
     m_hotProbeDate = QDate();
     m_hotProbeCheckedAt = QDateTime();
@@ -915,6 +934,9 @@ void AppController::openSettings() {
     updateTrayTooltip();
     refreshQuotes(true);
     refreshHotRanks(true);
+    if (m_window && m_window->isVisible()) {
+        refreshMarketBreadth(true);
+    }
 }
 
 void AppController::reloadStocksFromYaml() {
@@ -1107,6 +1129,23 @@ void AppController::refreshHotRanks(bool force) {
     }
 }
 
+void AppController::refreshMarketBreadth(bool force) {
+    if (!m_marketBreadthProvider || !m_cfg.marketBreadthEnabled) {
+        return;
+    }
+
+    if (!force) {
+        if (!m_window || !m_window->isVisible()) {
+            return;
+        }
+        if (!shouldPollMarketBreadthNow()) {
+            return;
+        }
+    }
+
+    m_marketBreadthProvider->fetch();
+}
+
 void AppController::onProviderError(const QString& message) {
     const QString text = message.trimmed();
     if (text.isEmpty()) {
@@ -1287,6 +1326,11 @@ void AppController::rebuildProvider() {
         m_sectorProvider->deleteLater();
         m_sectorProvider = nullptr;
     }
+    if (m_marketBreadthProvider) {
+        disconnect(m_marketBreadthProvider, nullptr, this, nullptr);
+        m_marketBreadthProvider->deleteLater();
+        m_marketBreadthProvider = nullptr;
+    }
 
     if (m_cfg.apiSource == "xtick") {
         m_provider = new XTickQuoteProvider(m_cfg.xtickToken, this);
@@ -1358,6 +1402,30 @@ void AppController::rebuildProvider() {
             onProviderError(msg);
         });
     }
+
+    m_marketBreadthProvider = new AshareMarketBreadthProvider(this);
+    m_marketBreadthProvider->applyConfig(m_cfg);
+    connect(
+        m_marketBreadthProvider,
+        &AshareMarketBreadthProvider::dataReady,
+        this,
+        [this](int upCount, int flatCount, int downCount) {
+            if (m_model) {
+                m_model->setMarketBreadth(upCount, flatCount, downCount);
+            }
+        }
+    );
+    connect(
+        m_marketBreadthProvider,
+        &AshareMarketBreadthProvider::error,
+        this,
+        [this](const QString& msg) {
+            if (m_model) {
+                m_model->setMarketBreadthError();
+            }
+            onProviderError(msg);
+        }
+    );
 }
 
 void AppController::rebuildHotRankProvider() {
@@ -1537,6 +1605,10 @@ bool AppController::shouldPollHotRanksNow() {
     }
 
     return m_hotProbeTradingDay;
+}
+
+bool AppController::shouldPollMarketBreadthNow() {
+    return shouldPollHotRanksNow();
 }
 
 bool AppController::hasHongKongStocks() const {

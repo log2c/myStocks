@@ -142,6 +142,8 @@ private:
     QCheckBox* m_hoverReadingTransparentBackgroundCheck = nullptr;
     QCheckBox* m_timelineChartEnabledCheck = nullptr;
     QSpinBox* m_timelineChartRefreshSecsSpin = nullptr;
+    QCheckBox* m_marketBreadthEnabledCheck = nullptr;
+    QSpinBox* m_marketBreadthRefreshSecsSpin = nullptr;
     QCheckBox* m_timelineChartFixedRangeCheck = nullptr;
     QPushButton* m_timelineChartBgBtn = nullptr;
     QPushButton* m_timelineChartGridBtn = nullptr;

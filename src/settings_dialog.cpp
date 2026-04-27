@@ -705,6 +705,12 @@ AppConfig SettingsDialog::config() const {
     out.timelineChartRefreshSecs = m_timelineChartRefreshSecsSpin
         ? qBound(10, m_timelineChartRefreshSecsSpin->value(), 3600)
         : out.timelineChartRefreshSecs;
+    out.marketBreadthEnabled = m_marketBreadthEnabledCheck
+        ? m_marketBreadthEnabledCheck->isChecked()
+        : out.marketBreadthEnabled;
+    out.marketBreadthRefreshSecs = m_marketBreadthRefreshSecsSpin
+        ? qBound(10, m_marketBreadthRefreshSecsSpin->value(), 3600)
+        : out.marketBreadthRefreshSecs;
     out.timelineChartFixedRangeEnabled = m_timelineChartFixedRangeCheck
         ? m_timelineChartFixedRangeCheck->isChecked()
         : out.timelineChartFixedRangeEnabled;
@@ -1870,6 +1876,18 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_timelineChartEnabledCheck->setChecked(m_cfg.timelineChartEnabled);
     addCompactFormRow(timelineForm, m_timelineChartEnabledCheck);
 
+    m_marketBreadthEnabledCheck = new QCheckBox(trText("settings.display.marketBreadthEnabled"), w);
+    m_marketBreadthEnabledCheck->setChecked(m_cfg.marketBreadthEnabled);
+    addCompactFormRow(timelineForm, m_marketBreadthEnabledCheck);
+
+    m_marketBreadthRefreshSecsSpin = new QSpinBox(w);
+    m_marketBreadthRefreshSecsSpin->setRange(10, 3600);
+    m_marketBreadthRefreshSecsSpin->setSingleStep(1);
+    m_marketBreadthRefreshSecsSpin->setSuffix(trText("settings.display.marketBreadthRefreshSuffix"));
+    m_marketBreadthRefreshSecsSpin->setValue(qBound(10, m_cfg.marketBreadthRefreshSecs, 3600));
+    applyNumericSpinBoxWidth(m_marketBreadthRefreshSecsSpin);
+    timelineForm->addRow(trText("settings.display.marketBreadthRefresh"), m_marketBreadthRefreshSecsSpin);
+
     m_timelineChartRefreshSecsSpin = new QSpinBox(w);
     m_timelineChartRefreshSecsSpin->setRange(10, 3600);
     m_timelineChartRefreshSecsSpin->setSingleStep(1);
@@ -1952,16 +1970,25 @@ QWidget* SettingsDialog::buildDisplayTab() {
     addCompactFormRow(timelineForm, resetTimelineColorsButton);
 
     QWidget* timelineRefreshLabel = timelineForm->labelForField(m_timelineChartRefreshSecsSpin);
-    const auto updateTimelineControlsState = [this, timelineRefreshLabel]() {
+    QWidget* marketBreadthRefreshLabel = timelineForm->labelForField(m_marketBreadthRefreshSecsSpin);
+    const auto updateTimelineControlsState = [this, timelineRefreshLabel, marketBreadthRefreshLabel]() {
         const bool enabled = m_timelineChartEnabledCheck && m_timelineChartEnabledCheck->isChecked();
+        const bool marketBreadthEnabled = m_marketBreadthEnabledCheck
+            && m_marketBreadthEnabledCheck->isChecked();
         if (m_timelineChartRefreshSecsSpin) {
             m_timelineChartRefreshSecsSpin->setEnabled(enabled);
+        }
+        if (m_marketBreadthRefreshSecsSpin) {
+            m_marketBreadthRefreshSecsSpin->setEnabled(marketBreadthEnabled);
         }
         if (m_timelineChartFixedRangeCheck) {
             m_timelineChartFixedRangeCheck->setEnabled(enabled);
         }
         if (timelineRefreshLabel) {
             timelineRefreshLabel->setEnabled(enabled);
+        }
+        if (marketBreadthRefreshLabel) {
+            marketBreadthRefreshLabel->setEnabled(marketBreadthEnabled);
         }
         if (m_timelineChartBgBtn) {
             m_timelineChartBgBtn->setEnabled(enabled);
@@ -1987,6 +2014,14 @@ QWidget* SettingsDialog::buildDisplayTab() {
     };
     connect(
         m_timelineChartEnabledCheck,
+        &QCheckBox::toggled,
+        this,
+        [updateTimelineControlsState](bool) {
+            updateTimelineControlsState();
+        }
+    );
+    connect(
+        m_marketBreadthEnabledCheck,
         &QCheckBox::toggled,
         this,
         [updateTimelineControlsState](bool) {

@@ -13,6 +13,7 @@
 
 class FloatingWindow;
 class EastMoneyHotRankProvider;
+class AshareMarketBreadthProvider;
 class IQuoteProvider;
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
 class QHotkey;
@@ -58,7 +59,9 @@ private:
     bool probeTradingDay(const QDate& bjDate);
     bool probeTradingDay(const QDate& bjDate, bool useHongKongProbe);
     bool shouldPollHotRanksNow();
+    bool shouldPollMarketBreadthNow();
     void refreshHotRanks(bool force = false);
+    void refreshMarketBreadth(bool force = false);
     QString probeTradingDateText(const QByteArray& body) const;
     void updateTrayTooltip();
 
@@ -79,9 +82,11 @@ private:
     IQuoteProvider* m_provider = nullptr;
     IQuoteProvider* m_sectorProvider = nullptr;
     EastMoneyHotRankProvider* m_hotRankProvider = nullptr;
+    AshareMarketBreadthProvider* m_marketBreadthProvider = nullptr;
 
     QTimer* m_timer = nullptr;
     QTimer* m_hotRankTimer = nullptr;
+    QTimer* m_marketBreadthTimer = nullptr;
     QSystemTrayIcon* m_tray = nullptr;
 
     QNetworkAccessManager m_probeNam;

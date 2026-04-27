@@ -1493,3 +1493,87 @@ void EastMoneyHotRankProvider::handleHotListResponse(
         emit hotSectorsReady(items);
     }
 }
+
+AshareMarketBreadthProvider::AshareMarketBreadthProvider(QObject* parent)
+    : QObject(parent) {}
+
+void AshareMarketBreadthProvider::applyConfig(const AppConfig& cfg) {
+    m_userAgent = network_utils::effectiveUserAgent(cfg);
+    m_proxy = network_utils::proxyFromConfig(cfg);
+}
+
+void AshareMarketBreadthProvider::fetch() {
+    m_nam.setProxy(m_proxy);
+
+    QUrl url(QStringLiteral("https://dq.10jqka.com.cn/fuyao/up_down_distribution/distribution/v2/realtime"));
+    QNetworkRequest req(url);
+    req.setRawHeader("Accept", "*/*");
+    req.setRawHeader("Origin", "https://52etf.site");
+    req.setRawHeader("Referer", "https://52etf.site/");
+    req.setRawHeader("Content-Type", "application/json; charset=UTF-8");
+    req.setRawHeader("User-Agent", m_userAgent.toUtf8());
+    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
+
+    const network_logger::RequestTrace trace = network_logger::logRequestStart(
+        QStringLiteral("market-breadth"),
+        QStringLiteral("GET"),
+        req,
+        m_proxy
+    );
+
+    QNetworkReply* reply = m_nam.get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, trace]() {
+        const QString networkError = (reply->error() == QNetworkReply::NoError)
+            ? QString()
+            : reply->errorString();
+        const QByteArray body = reply->readAll();
+
+        network_logger::logRequestFinish(trace, reply, body.size(), body);
+        reply->deleteLater();
+
+        QString errorMessage;
+        int upCount = 0;
+        int flatCount = 0;
+        int downCount = 0;
+
+        if (!networkError.isEmpty()) {
+            errorMessage = QStringLiteral("market breadth request failed: %1").arg(networkError);
+        } else {
+            QJsonParseError parseError;
+            const QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
+            if (parseError.error != QJsonParseError::NoError) {
+                errorMessage = QStringLiteral("market breadth json parse error: %1")
+                    .arg(parseError.errorString());
+            } else if (!doc.isObject()) {
+                errorMessage = QStringLiteral("market breadth invalid payload");
+            } else {
+                const QJsonObject root = doc.object();
+                const int statusCode = root.value(QStringLiteral("status_code")).toInt(-1);
+                if (statusCode != 0) {
+                    const QString statusMsg = root.value(QStringLiteral("status_msg")).toString().trimmed();
+                    errorMessage = statusMsg.isEmpty()
+                        ? QStringLiteral("market breadth status_code=%1").arg(statusCode)
+                        : QStringLiteral("market breadth status_code=%1 msg=%2").arg(statusCode).arg(statusMsg);
+                } else if (!root.value(QStringLiteral("data")).isObject()) {
+                    errorMessage = QStringLiteral("market breadth data missing");
+                } else {
+                    const QJsonObject data = root.value(QStringLiteral("data")).toObject();
+                    upCount = qMax(0, data.value(QStringLiteral("up")).toInt(0));
+                    flatCount = qMax(0, data.value(QStringLiteral("flat")).toInt(0));
+                    downCount = qMax(0, data.value(QStringLiteral("down")).toInt(0));
+                }
+            }
+        }
+
+        if (!errorMessage.isEmpty()) {
+            if (errorMessage != m_lastError) {
+                emit error(errorMessage);
+                m_lastError = errorMessage;
+            }
+            return;
+        }
+
+        m_lastError.clear();
+        emit dataReady(upCount, flatCount, downCount);
+    });
+}

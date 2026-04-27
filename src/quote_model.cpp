@@ -143,9 +143,11 @@ int QuoteModel::rowCount(const QModelIndex& parent) const {
     if (parent.isValid()) {
         return 0;
     }
-    return m_rows.size()
+    const int specialCount = (hasMarketBreadthRow() ? 1 : 0)
         + (hasHotSectorRow() ? 1 : 0)
         + (hasHotConceptRow() ? 1 : 0);
+    return m_rows.size()
+        + specialCount;
 }
 
 int QuoteModel::columnCount(const QModelIndex& parent) const {
@@ -178,19 +180,21 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
     const RowKind kind = rowKind(index.row());
     if (kind != RowKindQuote) {
         const int labelCol = firstVisibleLogicalColumn();
-        const int contentCol = firstContentLogicalColumn();
+        const int contentCol = kind == RowKindMarketBreadth
+            ? labelCol
+            : firstContentLogicalColumn();
         const QString label = specialRowLabel(index.row());
         const QString text = specialRowText(index.row());
 
         if (role == Qt::DisplayRole) {
-            if (index.column() == labelCol) {
-                if (contentCol == labelCol && !text.isEmpty()) {
-                    return QStringLiteral("%1 %2").arg(label, text);
+            if (index.column() == contentCol) {
+                if (kind == RowKindMarketBreadth) {
+                    return m_marketBreadthValid ? QString() : text;
                 }
-                return label;
-            }
-            if (contentCol != labelCol && index.column() == contentCol) {
                 return {};
+            }
+            if (index.column() == labelCol) {
+                return label;
             }
             return {};
         }
@@ -216,7 +220,11 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
         return {};
     }
 
-    const QuoteItem& q = m_rows[index.row()];
+    const int quoteIndex = index.row() - quoteStartRow();
+    if (quoteIndex < 0 || quoteIndex >= m_rows.size()) {
+        return {};
+    }
+    const QuoteItem& q = m_rows[quoteIndex];
 
     if (role == Qt::DisplayRole) {
         switch (index.column()) {
@@ -341,8 +349,22 @@ void QuoteModel::updateQuotes(const QVector<QuoteItem>& quotes) {
             }
         }
 
-        emit dataChanged(index(row, 0), index(row, ColCount - 1));
+        const int modelRow = quoteModelRow(row);
+        emit dataChanged(index(modelRow, 0), index(modelRow, ColCount - 1));
     }
+}
+
+void QuoteModel::setMarketBreadth(int upCount, int flatCount, int downCount) {
+    m_marketBreadthUpCount = qMax(0, upCount);
+    m_marketBreadthFlatCount = qMax(0, flatCount);
+    m_marketBreadthDownCount = qMax(0, downCount);
+    m_marketBreadthValid = true;
+    emitSpecialRowsChanged();
+}
+
+void QuoteModel::setMarketBreadthError() {
+    m_marketBreadthValid = false;
+    emitSpecialRowsChanged();
 }
 
 void QuoteModel::setHotSectors(const QVector<HotRankItem>& items) {
@@ -356,10 +378,12 @@ void QuoteModel::setHotConcepts(const QVector<HotRankItem>& items) {
 }
 
 void QuoteModel::setConfig(const AppConfig& cfg) {
+    const bool hadMarketBreadthRow = hasMarketBreadthRow();
     const bool hadHotSectorRow = hasHotSectorRow();
     const bool hadHotConceptRow = hasHotConceptRow();
     m_cfg = cfg;
-    const bool rowCountChanged = hadHotSectorRow != hasHotSectorRow()
+    const bool rowCountChanged = hadMarketBreadthRow != hasMarketBreadthRow()
+        || hadHotSectorRow != hasHotSectorRow()
         || hadHotConceptRow != hasHotConceptRow();
     if (rowCountChanged) {
         beginResetModel();
@@ -367,7 +391,11 @@ void QuoteModel::setConfig(const AppConfig& cfg) {
         return;
     }
     if (!m_rows.isEmpty()) {
-        emit dataChanged(index(0, 0), index(m_rows.size() - 1, ColCount - 1), {Qt::ForegroundRole});
+        emit dataChanged(
+            index(quoteModelRow(0), 0),
+            index(quoteModelRow(m_rows.size() - 1), ColCount - 1),
+            {Qt::ForegroundRole}
+        );
     }
     emitSpecialRowsChanged();
 }
@@ -379,7 +407,11 @@ void QuoteModel::setHoverReadingVisualState(bool active) {
 
     m_hoverReadingVisualActive = active;
     if (!m_rows.isEmpty()) {
-        emit dataChanged(index(0, 0), index(m_rows.size() - 1, ColCount - 1), {Qt::ForegroundRole});
+        emit dataChanged(
+            index(quoteModelRow(0), 0),
+            index(quoteModelRow(m_rows.size() - 1), ColCount - 1),
+            {Qt::ForegroundRole}
+        );
     }
 }
 
@@ -407,7 +439,11 @@ QuoteModel::RowKind QuoteModel::rowKind(int row) const {
     if (row < 0 || row >= rowCount()) {
         return RowKindQuote;
     }
-    if (row < m_rows.size()) {
+    if (hasMarketBreadthRow() && row == marketBreadthRowIndex()) {
+        return RowKindMarketBreadth;
+    }
+    const int firstQuoteRow = quoteStartRow();
+    if (row >= firstQuoteRow && row < firstQuoteRow + m_rows.size()) {
         return RowKindQuote;
     }
     if (hasHotSectorRow() && row == hotSectorRowIndex()) {
@@ -421,6 +457,8 @@ QuoteModel::RowKind QuoteModel::rowKind(int row) const {
 
 QString QuoteModel::specialRowLabel(int row) const {
     switch (rowKind(row)) {
+    case RowKindMarketBreadth:
+        return i18n::t("quote.marketBreadth", m_language);
     case RowKindHotSector:
         return i18n::t("quote.hotSector", m_language);
     case RowKindHotConcept:
@@ -432,6 +470,17 @@ QString QuoteModel::specialRowLabel(int row) const {
 }
 
 QString QuoteModel::specialRowText(int row) const {
+    if (rowKind(row) == RowKindMarketBreadth) {
+        if (!m_marketBreadthValid) {
+            return i18n::t("quote.dataError", m_language);
+        }
+        const int total = m_marketBreadthUpCount + m_marketBreadthFlatCount + m_marketBreadthDownCount;
+        if (total <= 0) {
+            return i18n::t("quote.noData", m_language);
+        }
+        return {};
+    }
+
     const QStringList entries = specialRowEntries(row);
     if (entries.isEmpty()) {
         return i18n::t("quote.noData", m_language);
@@ -487,6 +536,9 @@ QColor QuoteModel::specialRowEntryColor(int row, int entryIndex) const {
 
 bool QuoteModel::specialRowHasData(int row) const {
     switch (rowKind(row)) {
+    case RowKindMarketBreadth:
+        return m_marketBreadthValid
+            && (m_marketBreadthUpCount + m_marketBreadthFlatCount + m_marketBreadthDownCount) > 0;
     case RowKindHotSector:
         return !m_hotSectors.isEmpty();
     case RowKindHotConcept:
@@ -495,6 +547,34 @@ bool QuoteModel::specialRowHasData(int row) const {
     default:
         return false;
     }
+}
+
+bool QuoteModel::marketBreadthValid() const {
+    return m_marketBreadthValid;
+}
+
+int QuoteModel::marketBreadthUpCount() const {
+    return m_marketBreadthUpCount;
+}
+
+int QuoteModel::marketBreadthFlatCount() const {
+    return m_marketBreadthFlatCount;
+}
+
+int QuoteModel::marketBreadthDownCount() const {
+    return m_marketBreadthDownCount;
+}
+
+QColor QuoteModel::marketBreadthUpColor() const {
+    return m_cfg.upColor;
+}
+
+QColor QuoteModel::marketBreadthFlatColor() const {
+    return m_cfg.flatColor;
+}
+
+QColor QuoteModel::marketBreadthDownColor() const {
+    return m_cfg.downColor;
 }
 
 int QuoteModel::firstVisibleLogicalColumn() const {
@@ -534,6 +614,14 @@ QColor QuoteModel::hotRankColorForPct(double pct) const {
     return m_cfg.flatColor;
 }
 
+bool QuoteModel::hasMarketBreadthRow() const {
+    return m_cfg.marketBreadthEnabled;
+}
+
+int QuoteModel::marketBreadthRowIndex() const {
+    return 0;
+}
+
 bool QuoteModel::hasHotSectorRow() const {
     return m_cfg.hotRankEnabled && m_cfg.hotSectorVisible;
 }
@@ -543,14 +631,26 @@ bool QuoteModel::hasHotConceptRow() const {
 }
 
 int QuoteModel::hotSectorRowIndex() const {
-    return m_rows.size();
+    return quoteStartRow() + m_rows.size();
 }
 
 int QuoteModel::hotConceptRowIndex() const {
-    return m_rows.size() + (hasHotSectorRow() ? 1 : 0);
+    return hotSectorRowIndex() + (hasHotSectorRow() ? 1 : 0);
+}
+
+int QuoteModel::quoteStartRow() const {
+    return hasMarketBreadthRow() ? 1 : 0;
+}
+
+int QuoteModel::quoteModelRow(int quoteIndex) const {
+    return quoteStartRow() + quoteIndex;
 }
 
 void QuoteModel::emitSpecialRowsChanged() {
+    if (hasMarketBreadthRow()) {
+        const int row = marketBreadthRowIndex();
+        emit dataChanged(index(row, 0), index(row, ColCount - 1));
+    }
     if (hasHotSectorRow()) {
         const int row = hotSectorRowIndex();
         emit dataChanged(index(row, 0), index(row, ColCount - 1));

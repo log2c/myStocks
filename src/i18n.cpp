@@ -123,6 +123,9 @@ const TranslationMap& translations() {
                 {"settings.display.hoverReadingModeDark", "Dark"},
                 {"settings.display.groupTimeline", "Timeline Chart"},
                 {"settings.display.timelineEnabled", "Show timeline chart"},
+                {"settings.display.marketBreadthEnabled", "Show market breadth"},
+                {"settings.display.marketBreadthRefresh", "Market breadth refresh interval"},
+                {"settings.display.marketBreadthRefreshSuffix", " sec"},
                 {"settings.display.timelineRefresh", "Refresh interval"},
                 {"settings.display.timelineRefreshSuffix", " sec"},
                 {"settings.display.timelineFixedRange", "Fixed height range"},
@@ -200,6 +203,8 @@ const TranslationMap& translations() {
                 {"settings.futures.delConfirm", "Remove '%1' from the futures list?"},
                 {"quote.hotSector", "Hot Sectors"},
                 {"quote.hotConcept", "Hot Concepts"},
+                {"quote.marketBreadth", "Market Breadth"},
+                {"quote.dataError", "Data error"},
                 {"quote.noData", "No data"}
             }
         },
@@ -317,6 +322,9 @@ const TranslationMap& translations() {
                 {"settings.display.hoverReadingModeDark", "Dark"},
                 {"settings.display.groupTimeline", "分时图"},
                 {"settings.display.timelineEnabled", "显示分时图"},
+                {"settings.display.marketBreadthEnabled", "显示大盘行情"},
+                {"settings.display.marketBreadthRefresh", "大盘行情刷新间隔"},
+                {"settings.display.marketBreadthRefreshSuffix", " 秒"},
                 {"settings.display.timelineRefresh", "刷新间隔"},
                 {"settings.display.timelineRefreshSuffix", " 秒"},
                 {"settings.display.timelineFixedRange", "固定高度"},
@@ -394,6 +402,8 @@ const TranslationMap& translations() {
                 {"settings.futures.delConfirm", "确认从期货列表移除 '%1'？"},
                 {"quote.hotSector", "热门板块"},
                 {"quote.hotConcept", "热门概念"},
+                {"quote.marketBreadth", "大盘行情"},
+                {"quote.dataError", "数据异常"},
                 {"quote.noData", "无数据"}
             }
         }
