@@ -142,6 +142,7 @@ private:
     QCheckBox* m_hoverReadingTransparentBackgroundCheck = nullptr;
     QCheckBox* m_mousePassthroughCheck = nullptr;
     QComboBox* m_mousePassthroughKeyCombo = nullptr;
+    QCheckBox* m_doubleClickCloseWindowCheck = nullptr;
     QDoubleSpinBox* m_windowPaddingSpin = nullptr;
     QListWidget* m_columnList = nullptr;
     QVector<QSpinBox*> m_columnMaxWidthSpins;

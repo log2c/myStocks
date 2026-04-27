@@ -895,6 +895,22 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
         }
         break;
     }
+    case QEvent::MouseButtonDblClick: {
+        auto* mouseEvent = static_cast<QMouseEvent*>(event);
+        if (mouseEvent->button() == Qt::LeftButton
+            && m_cfg.floatingWindowDoubleClickToHide
+            && !m_cfg.mousePassthroughEnabled
+            && shouldAllowMouseInteraction()) {
+            if (m_dragging) {
+                m_dragging = false;
+                m_dragButton = Qt::NoButton;
+                releaseMouse();
+            }
+            hide();
+            return true;
+        }
+        break;
+    }
     default:
         break;
     }
@@ -980,6 +996,24 @@ void FloatingWindow::mousePressEvent(QMouseEvent* event) {
         refreshMousePassthroughState();
     }
     QWidget::mousePressEvent(event);
+}
+
+void FloatingWindow::mouseDoubleClickEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton
+        && m_cfg.floatingWindowDoubleClickToHide
+        && !m_cfg.mousePassthroughEnabled
+        && shouldAllowMouseInteraction()) {
+        if (m_dragging) {
+            m_dragging = false;
+            m_dragButton = Qt::NoButton;
+            releaseMouse();
+        }
+        hide();
+        event->accept();
+        return;
+    }
+
+    QWidget::mouseDoubleClickEvent(event);
 }
 
 void FloatingWindow::mouseMoveEvent(QMouseEvent* event) {

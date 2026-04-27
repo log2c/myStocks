@@ -344,6 +344,10 @@ AppConfig ConfigManager::loadConfig() {
             cfg.mousePassthroughActivationKey
         ).toString()
     );
+    cfg.floatingWindowDoubleClickToHide = s.value(
+        "ui/floatingWindowDoubleClickToHide",
+        cfg.floatingWindowDoubleClickToHide
+    ).toBool();
     cfg.floatingWindowPaddingPx = s.value(
         "ui/floatingWindowPaddingPx",
         cfg.floatingWindowPaddingPx
@@ -429,6 +433,9 @@ AppConfig ConfigManager::loadConfig() {
     cfg.mousePassthroughActivationKey = normalizeMousePassthroughActivationKey(
         cfg.mousePassthroughActivationKey
     );
+    if (cfg.mousePassthroughEnabled) {
+        cfg.floatingWindowDoubleClickToHide = false;
+    }
     cfg.floatingWindowPaddingPx = qMax(0.0, cfg.floatingWindowPaddingPx);
 
         qInfo() << "ConfigManager::loadConfig"
@@ -554,6 +561,10 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue(
         "ui/mousePassthroughActivationKey",
         normalizeMousePassthroughActivationKey(cfg.mousePassthroughActivationKey)
+    );
+    s.setValue(
+        "ui/floatingWindowDoubleClickToHide",
+        cfg.floatingWindowDoubleClickToHide && !cfg.mousePassthroughEnabled
     );
     s.setValue("ui/floatingWindowPaddingPx", qMax(0.0, cfg.floatingWindowPaddingPx));
     s.setValue("ui/windowRect", cfg.windowRect);

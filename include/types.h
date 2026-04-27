@@ -182,6 +182,7 @@ struct AppConfig {
     QString hotConceptSortOrder = "desc";
     bool mousePassthroughEnabled = false;
     QString mousePassthroughActivationKey = "ctrl";
+    bool floatingWindowDoubleClickToHide = false;
     double floatingWindowPaddingPx = static_cast<double>(kFloatingWindowPaddingPx);
 
     QMap<int, int> columnWidths;

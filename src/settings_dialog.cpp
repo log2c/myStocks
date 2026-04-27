@@ -732,6 +732,9 @@ AppConfig SettingsDialog::config() const {
             ? m_mousePassthroughKeyCombo->currentData().toString()
             : out.mousePassthroughActivationKey
     );
+    out.floatingWindowDoubleClickToHide = m_doubleClickCloseWindowCheck
+        && m_doubleClickCloseWindowCheck->isChecked()
+        && !out.mousePassthroughEnabled;
 
     for (int i = 0; i < ColCount; ++i) {
         out.visibleColumns[i] = false;
@@ -1335,6 +1338,16 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_floatingTopMostCheck->setChecked(m_cfg.floatingWindowAlwaysOnTop);
     addCompactFormRow(windowForm, m_floatingTopMostCheck);
 
+    m_doubleClickCloseWindowCheck = new QCheckBox(
+        trText("settings.display.doubleClickCloseWindow"),
+        w
+    );
+    m_doubleClickCloseWindowCheck->setChecked(
+        m_cfg.floatingWindowDoubleClickToHide && !m_cfg.mousePassthroughEnabled
+    );
+    m_doubleClickCloseWindowCheck->setEnabled(!m_cfg.mousePassthroughEnabled);
+    addCompactFormRow(windowForm, m_doubleClickCloseWindowCheck);
+
     m_showHeaderCheck = new QCheckBox(trText("settings.display.showHeader"), w);
     m_showHeaderCheck->setChecked(m_cfg.showHeader);
     addCompactFormRow(windowForm, m_showHeaderCheck);
@@ -1730,6 +1743,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
     QWidget* hoverReadingDelayLabel = interactionForm->labelForField(m_hoverReadingDelaySpin);
     QWidget* hoverReadingModeLabel = interactionForm->labelForField(m_hoverReadingModeCombo);
     QWidget* mousePassthroughKeyLabel = interactionForm->labelForField(m_mousePassthroughKeyCombo);
+    QWidget* doubleClickCloseWindowLabel = windowForm->labelForField(m_doubleClickCloseWindowCheck);
     if (hoverReadingDelayLabel) {
         hoverReadingDelayLabel->setEnabled(
             m_cfg.hoverReadingEnabled && !m_cfg.mousePassthroughEnabled
@@ -1740,6 +1754,9 @@ QWidget* SettingsDialog::buildDisplayTab() {
     }
     if (mousePassthroughKeyLabel) {
         mousePassthroughKeyLabel->setEnabled(m_cfg.mousePassthroughEnabled);
+    }
+    if (doubleClickCloseWindowLabel) {
+        doubleClickCloseWindowLabel->setEnabled(!m_cfg.mousePassthroughEnabled);
     }
 
     connect(m_hoverReadingCheck, &QCheckBox::toggled, this, [this](bool checked) {
@@ -1774,6 +1791,12 @@ QWidget* SettingsDialog::buildDisplayTab() {
         if (m_mousePassthroughKeyCombo) {
             m_mousePassthroughKeyCombo->setEnabled(checked);
         }
+        if (m_doubleClickCloseWindowCheck) {
+            if (checked) {
+                m_doubleClickCloseWindowCheck->setChecked(false);
+            }
+            m_doubleClickCloseWindowCheck->setEnabled(!checked);
+        }
     });
     connect(
         m_mousePassthroughCheck,
@@ -1787,6 +1810,9 @@ QWidget* SettingsDialog::buildDisplayTab() {
             }
             if (mousePassthroughKeyLabel) {
                 mousePassthroughKeyLabel->setEnabled(checked);
+            }
+            if (doubleClickCloseWindowLabel) {
+                doubleClickCloseWindowLabel->setEnabled(!checked);
             }
         }
     );
