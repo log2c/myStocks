@@ -770,9 +770,10 @@ public:
     void hidePopup() {
         stopRefreshTimer();
         if (m_reply) {
-            m_reply->abort();
-            m_reply->deleteLater();
+            QNetworkReply* pendingReply = m_reply;
             m_reply = nullptr;
+            pendingReply->abort();
+            pendingReply->deleteLater();
         }
         m_code.clear();
         m_name.clear();
@@ -796,9 +797,10 @@ private:
 
     void requestTimeline(int days, bool fallbackAllowed, bool keepLastTradingDayOnly, int token) {
         if (m_reply) {
-            m_reply->abort();
-            m_reply->deleteLater();
+            QNetworkReply* pendingReply = m_reply;
             m_reply = nullptr;
+            pendingReply->abort();
+            pendingReply->deleteLater();
         }
 
         const QString secId = toTimelineSecId(m_code);
@@ -830,25 +832,23 @@ private:
         req.setRawHeader("Referer", "https://quote.eastmoney.com/");
         req.setTransferTimeout(10000);
 
-        m_reply = m_nam.get(req);
-        connect(m_reply, &QNetworkReply::finished, this, [this, token, days, fallbackAllowed, keepLastTradingDayOnly]() {
-            if (!m_reply) {
-                return;
+        QNetworkReply* reply = m_nam.get(req);
+        m_reply = reply;
+        connect(reply, &QNetworkReply::finished, this, [this, reply, token, days, fallbackAllowed, keepLastTradingDayOnly]() {
+            if (reply == m_reply) {
+                m_reply = nullptr;
             }
-
-            QNetworkReply* finishedReply = m_reply;
-            m_reply = nullptr;
 
             if (token != m_requestToken) {
-                finishedReply->deleteLater();
+                reply->deleteLater();
                 return;
             }
 
-            const QString error = finishedReply->error() == QNetworkReply::NoError
+            const QString error = reply->error() == QNetworkReply::NoError
                 ? QString()
-                : finishedReply->errorString();
-            const QByteArray body = finishedReply->readAll();
-            finishedReply->deleteLater();
+                : reply->errorString();
+            const QByteArray body = reply->readAll();
+            reply->deleteLater();
 
             if (!error.isEmpty()) {
                 m_chart->setStatusText(QStringLiteral("Request failed: %1").arg(error));
