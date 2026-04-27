@@ -547,6 +547,15 @@ void applyNumericSpinBoxWidth(QSpinBox* spin) {
     spin->setMinimumWidth(96);
 }
 
+void applyNumericSpinBoxWidth(QDoubleSpinBox* spin) {
+    if (!spin) {
+        return;
+    }
+
+    // Keep purely numeric spin boxes readable in compact form layouts.
+    spin->setMinimumWidth(96);
+}
+
 QWidget* makeScrollableTab(QWidget* content, QWidget* parent) {
     if (!content) {
         return new QWidget(parent);
