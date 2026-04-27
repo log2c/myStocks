@@ -416,6 +416,7 @@ double fixedRangeLimitPctForAshareStock(const QString& rawCode) {
     }
 
     if (code.startsWith(QStringLiteral("bj"))
+        || symbol.startsWith(QStringLiteral("920"))
         || symbol.startsWith(QLatin1Char('8'))
         || symbol.startsWith(QLatin1Char('4'))) {
         return 30.0;
@@ -591,7 +592,13 @@ bool parseTimelinePayload(
         bool volumeOk = false;
         bool amountOk = false;
         const double price = parts.at(2).toDouble(&priceOk);
-        const double avgPrice = parts.at(3).toDouble(&avgPriceOk);
+        double avgPrice = qQNaN();
+        if (parts.size() >= 8) {
+            avgPrice = parts.at(7).toDouble(&avgPriceOk);
+        }
+        if (!avgPriceOk && parts.size() >= 4) {
+            avgPrice = parts.at(3).toDouble(&avgPriceOk);
+        }
         const double volume = parts.at(5).toDouble(&volumeOk);
         const double amount = parts.at(6).toDouble(&amountOk);
         if (!time.isValid() || !priceOk) {
@@ -839,19 +846,27 @@ protected:
                 }
             }
 
-            if (morningLastIndex >= 0) {
-                const int x1130 = xOfIndex(morningLastIndex);
-                painter.drawText(x1130 - 30, xLabelY, 60, 18, Qt::AlignHCenter | Qt::AlignTop, QStringLiteral("11:30"));
-            }
-            if (afternoonFirstIndex >= 0) {
-                const int x1300 = xOfIndex(afternoonFirstIndex);
-                painter.drawText(x1300 - 30, xLabelY, 60, 18, Qt::AlignHCenter | Qt::AlignTop, QStringLiteral("13:00"));
-            }
-
             if (morningLastIndex >= 0 && afternoonFirstIndex >= 0 && afternoonFirstIndex > morningLastIndex) {
-                const int xSep = (xOfIndex(morningLastIndex) + xOfIndex(afternoonFirstIndex)) / 2;
+                const int x1130 = xOfIndex(morningLastIndex);
+                const int x1300 = xOfIndex(afternoonFirstIndex);
+                const int xSep = (x1130 + x1300) / 2;
                 painter.setPen(QPen(m_cfg.timelineChartGridColor.lighter(130), 1.0, Qt::DashLine));
                 painter.drawLine(xSep, plot.top(), xSep, plot.bottom());
+                painter.setPen(QPen(m_cfg.timelineChartTextColor));
+                painter.drawText(
+                    xSep - 48,
+                    xLabelY,
+                    96,
+                    18,
+                    Qt::AlignHCenter | Qt::AlignTop,
+                    QStringLiteral("11:30/13:00")
+                );
+            } else if (morningLastIndex >= 0) {
+                const int x1130 = xOfIndex(morningLastIndex);
+                painter.drawText(x1130 - 30, xLabelY, 60, 18, Qt::AlignHCenter | Qt::AlignTop, QStringLiteral("11:30"));
+            } else if (afternoonFirstIndex >= 0) {
+                const int x1300 = xOfIndex(afternoonFirstIndex);
+                painter.drawText(x1300 - 30, xLabelY, 60, 18, Qt::AlignHCenter | Qt::AlignTop, QStringLiteral("13:00"));
             }
             painter.setPen(QPen(m_cfg.timelineChartTextColor));
         } else {
