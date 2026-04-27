@@ -39,6 +39,17 @@ struct HotRankItem {
     double mainNetInflow = qQNaN();
 };
 
+struct MarketBreadthSnapshot {
+    int upCount = 0;
+    int flatCount = 0;
+    int downCount = 0;
+    bool breadthValid = false;
+    double turnover = qQNaN();
+    double turnoverPre = qQNaN();
+    double turnoverChange = qQNaN();
+    bool turnoverValid = false;
+};
+
 inline QString defaultChrome100UserAgent() {
     return QStringLiteral(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

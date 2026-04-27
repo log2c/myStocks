@@ -1502,78 +1502,254 @@ void AshareMarketBreadthProvider::applyConfig(const AppConfig& cfg) {
     m_proxy = network_utils::proxyFromConfig(cfg);
 }
 
+namespace {
+
+QString parseMarketBreadthPayload(const QByteArray& body, MarketBreadthSnapshot* snapshot) {
+    if (!snapshot) {
+        return QStringLiteral("market breadth snapshot missing");
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
+    if (parseError.error != QJsonParseError::NoError) {
+        return QStringLiteral("market breadth json parse error: %1")
+            .arg(parseError.errorString());
+    }
+    if (!doc.isObject()) {
+        return QStringLiteral("market breadth invalid payload");
+    }
+
+    const QJsonObject root = doc.object();
+    const int statusCode = root.value(QStringLiteral("status_code")).toInt(-1);
+    if (statusCode != 0) {
+        const QString statusMsg = root.value(QStringLiteral("status_msg")).toString().trimmed();
+        return statusMsg.isEmpty()
+            ? QStringLiteral("market breadth status_code=%1").arg(statusCode)
+            : QStringLiteral("market breadth status_code=%1 msg=%2").arg(statusCode).arg(statusMsg);
+    }
+    if (!root.value(QStringLiteral("data")).isObject()) {
+        return QStringLiteral("market breadth data missing");
+    }
+
+    const QJsonObject data = root.value(QStringLiteral("data")).toObject();
+    snapshot->upCount = qMax(0, data.value(QStringLiteral("up")).toInt(0));
+    snapshot->flatCount = qMax(0, data.value(QStringLiteral("flat")).toInt(0));
+    snapshot->downCount = qMax(0, data.value(QStringLiteral("down")).toInt(0));
+    snapshot->breadthValid = true;
+    return {};
+}
+
+QString parseMarketTurnoverPayload(const QByteArray& body, MarketBreadthSnapshot* snapshot) {
+    if (!snapshot) {
+        return QStringLiteral("market turnover snapshot missing");
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
+    if (parseError.error != QJsonParseError::NoError) {
+        return QStringLiteral("market turnover json parse error: %1")
+            .arg(parseError.errorString());
+    }
+    if (!doc.isObject()) {
+        return QStringLiteral("market turnover invalid payload");
+    }
+
+    const QJsonObject root = doc.object();
+    const int statusCode = root.value(QStringLiteral("status_code")).toInt(-1);
+    if (statusCode != 0) {
+        const QString statusMsg = root.value(QStringLiteral("status_msg")).toString().trimmed();
+        return statusMsg.isEmpty()
+            ? QStringLiteral("market turnover status_code=%1").arg(statusCode)
+            : QStringLiteral("market turnover status_code=%1 msg=%2").arg(statusCode).arg(statusMsg);
+    }
+    if (!root.value(QStringLiteral("data")).isObject()) {
+        return QStringLiteral("market turnover data missing");
+    }
+
+    const QJsonObject data = root.value(QStringLiteral("data")).toObject();
+    if (!data.value(QStringLiteral("charts")).isObject()) {
+        return QStringLiteral("market turnover charts missing");
+    }
+
+    const QJsonObject charts = data.value(QStringLiteral("charts")).toObject();
+    const QJsonArray header = charts.value(QStringLiteral("header")).toArray();
+    if (header.isEmpty()) {
+        return QStringLiteral("market turnover header missing");
+    }
+
+    bool hasTurnover = false;
+    bool hasTurnoverPre = false;
+    bool hasTurnoverChange = false;
+    for (const QJsonValue& itemValue : header) {
+        if (!itemValue.isObject()) {
+            continue;
+        }
+
+        const QJsonObject item = itemValue.toObject();
+        const QString key = item.value(QStringLiteral("key")).toString().trimmed();
+        const double value = item.value(QStringLiteral("val")).toDouble(qQNaN());
+        if (key == QLatin1String("turnover")) {
+            snapshot->turnover = value;
+            hasTurnover = std::isfinite(value);
+        } else if (key == QLatin1String("turnover_pre")) {
+            snapshot->turnoverPre = value;
+            hasTurnoverPre = std::isfinite(value);
+        } else if (key == QLatin1String("turnover_change")) {
+            snapshot->turnoverChange = value;
+            hasTurnoverChange = std::isfinite(value);
+        }
+    }
+
+    if (!hasTurnover || !hasTurnoverPre || !hasTurnoverChange) {
+        return QStringLiteral("market turnover header incomplete");
+    }
+
+    snapshot->turnoverValid = true;
+    return {};
+}
+
+void applyTonghuashunCommonHeaders(QNetworkRequest* req, const QString& userAgent) {
+    if (!req) {
+        return;
+    }
+
+    req->setRawHeader("Accept", "*/*");
+    req->setRawHeader("Origin", "https://52etf.site");
+    req->setRawHeader("Referer", "https://52etf.site/");
+    req->setRawHeader("Content-Type", "application/json; charset=UTF-8");
+    req->setRawHeader("User-Agent", userAgent.toUtf8());
+    req->setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
+}
+
+} // namespace
+
 void AshareMarketBreadthProvider::fetch() {
     m_nam.setProxy(m_proxy);
 
-    QUrl url(QStringLiteral("https://dq.10jqka.com.cn/fuyao/up_down_distribution/distribution/v2/realtime"));
-    QNetworkRequest req(url);
-    req.setRawHeader("Accept", "*/*");
-    req.setRawHeader("Origin", "https://52etf.site");
-    req.setRawHeader("Referer", "https://52etf.site/");
-    req.setRawHeader("Content-Type", "application/json; charset=UTF-8");
-    req.setRawHeader("User-Agent", m_userAgent.toUtf8());
-    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
+    ++m_requestToken;
+    const int token = m_requestToken;
+    m_pendingSnapshot = MarketBreadthSnapshot{};
+    m_breadthDone = false;
+    m_turnoverDone = false;
+    m_pendingErrors.clear();
 
-    const network_logger::RequestTrace trace = network_logger::logRequestStart(
+    if (m_breadthReply) {
+        QNetworkReply* pendingReply = m_breadthReply;
+        m_breadthReply = nullptr;
+        pendingReply->abort();
+        pendingReply->deleteLater();
+    }
+    if (m_turnoverReply) {
+        QNetworkReply* pendingReply = m_turnoverReply;
+        m_turnoverReply = nullptr;
+        pendingReply->abort();
+        pendingReply->deleteLater();
+    }
+
+    QNetworkRequest breadthReq(QUrl(QStringLiteral(
+        "https://dq.10jqka.com.cn/fuyao/up_down_distribution/distribution/v2/realtime"
+    )));
+    applyTonghuashunCommonHeaders(&breadthReq, m_userAgent);
+    const network_logger::RequestTrace breadthTrace = network_logger::logRequestStart(
         QStringLiteral("market-breadth"),
         QStringLiteral("GET"),
-        req,
+        breadthReq,
         m_proxy
     );
 
-    QNetworkReply* reply = m_nam.get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, trace]() {
-        const QString networkError = (reply->error() == QNetworkReply::NoError)
-            ? QString()
-            : reply->errorString();
-        const QByteArray body = reply->readAll();
-
-        network_logger::logRequestFinish(trace, reply, body.size(), body);
-        reply->deleteLater();
-
-        QString errorMessage;
-        int upCount = 0;
-        int flatCount = 0;
-        int downCount = 0;
-
-        if (!networkError.isEmpty()) {
-            errorMessage = QStringLiteral("market breadth request failed: %1").arg(networkError);
-        } else {
-            QJsonParseError parseError;
-            const QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
-            if (parseError.error != QJsonParseError::NoError) {
-                errorMessage = QStringLiteral("market breadth json parse error: %1")
-                    .arg(parseError.errorString());
-            } else if (!doc.isObject()) {
-                errorMessage = QStringLiteral("market breadth invalid payload");
-            } else {
-                const QJsonObject root = doc.object();
-                const int statusCode = root.value(QStringLiteral("status_code")).toInt(-1);
-                if (statusCode != 0) {
-                    const QString statusMsg = root.value(QStringLiteral("status_msg")).toString().trimmed();
-                    errorMessage = statusMsg.isEmpty()
-                        ? QStringLiteral("market breadth status_code=%1").arg(statusCode)
-                        : QStringLiteral("market breadth status_code=%1 msg=%2").arg(statusCode).arg(statusMsg);
-                } else if (!root.value(QStringLiteral("data")).isObject()) {
-                    errorMessage = QStringLiteral("market breadth data missing");
-                } else {
-                    const QJsonObject data = root.value(QStringLiteral("data")).toObject();
-                    upCount = qMax(0, data.value(QStringLiteral("up")).toInt(0));
-                    flatCount = qMax(0, data.value(QStringLiteral("flat")).toInt(0));
-                    downCount = qMax(0, data.value(QStringLiteral("down")).toInt(0));
-                }
-            }
+    m_breadthReply = m_nam.get(breadthReq);
+    QNetworkReply* breadthReply = m_breadthReply;
+    connect(breadthReply, &QNetworkReply::finished, this, [this, breadthReply, token, breadthTrace]() {
+        if (breadthReply == m_breadthReply) {
+            m_breadthReply = nullptr;
         }
 
-        if (!errorMessage.isEmpty()) {
-            if (errorMessage != m_lastError) {
-                emit error(errorMessage);
-                m_lastError = errorMessage;
-            }
+        const QString networkError = (breadthReply->error() == QNetworkReply::NoError)
+            ? QString()
+            : breadthReply->errorString();
+        const QByteArray body = breadthReply->readAll();
+
+        network_logger::logRequestFinish(breadthTrace, breadthReply, body.size(), body);
+        breadthReply->deleteLater();
+
+        if (token != m_requestToken) {
             return;
         }
 
-        m_lastError.clear();
-        emit dataReady(upCount, flatCount, downCount);
+        QString errorMessage;
+        if (!networkError.isEmpty()) {
+            errorMessage = QStringLiteral("market breadth request failed: %1").arg(networkError);
+        } else {
+            errorMessage = parseMarketBreadthPayload(body, &m_pendingSnapshot);
+        }
+        if (!errorMessage.isEmpty()) {
+            m_pendingErrors.push_back(errorMessage);
+        }
+
+        m_breadthDone = true;
+        finalizeFetch(token);
     });
+
+    QNetworkRequest turnoverReq(QUrl(QStringLiteral(
+        "https://dq.10jqka.com.cn/fuyao/market_analysis_api/chart/v1/get_chart_data?chart_key=turnover_minute"
+    )));
+    applyTonghuashunCommonHeaders(&turnoverReq, m_userAgent);
+    const network_logger::RequestTrace turnoverTrace = network_logger::logRequestStart(
+        QStringLiteral("market-breadth-turnover"),
+        QStringLiteral("GET"),
+        turnoverReq,
+        m_proxy
+    );
+
+    m_turnoverReply = m_nam.get(turnoverReq);
+    QNetworkReply* turnoverReply = m_turnoverReply;
+    connect(turnoverReply, &QNetworkReply::finished, this, [this, turnoverReply, token, turnoverTrace]() {
+        if (turnoverReply == m_turnoverReply) {
+            m_turnoverReply = nullptr;
+        }
+
+        const QString networkError = (turnoverReply->error() == QNetworkReply::NoError)
+            ? QString()
+            : turnoverReply->errorString();
+        const QByteArray body = turnoverReply->readAll();
+
+        network_logger::logRequestFinish(turnoverTrace, turnoverReply, body.size(), body);
+        turnoverReply->deleteLater();
+
+        if (token != m_requestToken) {
+            return;
+        }
+
+        QString errorMessage;
+        if (!networkError.isEmpty()) {
+            errorMessage = QStringLiteral("market turnover request failed: %1").arg(networkError);
+        } else {
+            errorMessage = parseMarketTurnoverPayload(body, &m_pendingSnapshot);
+        }
+        if (!errorMessage.isEmpty()) {
+            m_pendingErrors.push_back(errorMessage);
+        }
+
+        m_turnoverDone = true;
+        finalizeFetch(token);
+    });
+}
+
+void AshareMarketBreadthProvider::finalizeFetch(int token) {
+    if (token != m_requestToken || !m_breadthDone || !m_turnoverDone) {
+        return;
+    }
+
+    emit dataReady(m_pendingSnapshot);
+
+    const QString errorMessage = m_pendingErrors.join(QStringLiteral("; "));
+    if (!errorMessage.isEmpty()) {
+        if (errorMessage != m_lastError) {
+            emit error(errorMessage);
+            m_lastError = errorMessage;
+        }
+        return;
+    }
+
+    m_lastError.clear();
 }

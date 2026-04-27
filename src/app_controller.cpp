@@ -1409,9 +1409,9 @@ void AppController::rebuildProvider() {
         m_marketBreadthProvider,
         &AshareMarketBreadthProvider::dataReady,
         this,
-        [this](int upCount, int flatCount, int downCount) {
+        [this](const MarketBreadthSnapshot& snapshot) {
             if (m_model) {
-                m_model->setMarketBreadth(upCount, flatCount, downCount);
+                m_model->setMarketBreadthSnapshot(snapshot);
             }
         }
     );
@@ -1420,9 +1420,6 @@ void AppController::rebuildProvider() {
         &AshareMarketBreadthProvider::error,
         this,
         [this](const QString& msg) {
-            if (m_model) {
-                m_model->setMarketBreadthError();
-            }
             onProviderError(msg);
         }
     );

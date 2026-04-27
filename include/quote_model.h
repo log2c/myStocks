@@ -27,11 +27,11 @@ public:
     void updateQuotes(const QVector<QuoteItem>& quotes);
     void setHotSectors(const QVector<HotRankItem>& items);
     void setHotConcepts(const QVector<HotRankItem>& items);
-    void setMarketBreadth(int upCount, int flatCount, int downCount);
-    void setMarketBreadthError();
+    void setMarketBreadthSnapshot(const MarketBreadthSnapshot& snapshot);
     void setConfig(const AppConfig& cfg);
     void setHoverReadingVisualState(bool active);
     void setLanguage(const QString& language);
+    QString language() const;
     QString trayTooltipText() const;
     RowKind rowKind(int row) const;
     QString specialRowLabel(int row) const;
@@ -48,6 +48,7 @@ public:
     QColor marketBreadthUpColor() const;
     QColor marketBreadthFlatColor() const;
     QColor marketBreadthDownColor() const;
+    MarketBreadthSnapshot marketBreadthSnapshot() const;
     int firstVisibleLogicalColumn() const;
     int firstContentLogicalColumn() const;
 
@@ -70,10 +71,7 @@ private:
     QVector<QuoteItem> m_rows;
     QVector<HotRankItem> m_hotSectors;
     QVector<HotRankItem> m_hotConcepts;
-    int m_marketBreadthUpCount = 0;
-    int m_marketBreadthFlatCount = 0;
-    int m_marketBreadthDownCount = 0;
-    bool m_marketBreadthValid = false;
+    MarketBreadthSnapshot m_marketBreadth;
     QHash<QString, int> m_rowByCode;
     AppConfig m_cfg;
     QString m_language = "en_US";

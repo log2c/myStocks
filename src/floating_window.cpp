@@ -1,5 +1,7 @@
 #include "floating_window.h"
 
+#include "i18n.h"
+
 #include <QDateTime>
 #include <QCursor>
 #include <QEasingCurve>
@@ -180,6 +182,49 @@ QString tableCellPaddingStyle(const AppConfig& cfg) {
     const double rawPadding = qMax(0.0, cfg.floatingWindowPaddingPx);
     return QStringLiteral("padding: 0 %1px;")
         .arg(QString::number(rawPadding, 'f', 1));
+}
+
+QString formatChineseMarketAmount(double value) {
+    if (!std::isfinite(value)) {
+        return QStringLiteral("--");
+    }
+
+    const double absValue = std::abs(value);
+    constexpr double kYi = 100000000.0;
+    constexpr double kWanYi = 1000000000000.0;
+    if (absValue >= kWanYi) {
+        return QStringLiteral("%1万亿").arg(QString::number(absValue / kWanYi, 'f', 2));
+    }
+
+    const double yiValue = absValue / kYi;
+    const int precision = yiValue >= 100.0 ? 0 : 2;
+    return QStringLiteral("%1亿").arg(QString::number(yiValue, 'f', precision));
+}
+
+QString marketBreadthTurnoverChangeText(double value, const QString& language) {
+    if (!std::isfinite(value)) {
+        return i18n::t("quote.noData", language);
+    }
+    if (value > 0.0) {
+        return i18n::t("popup.marketBreadth.expand", language);
+    }
+    if (value < 0.0) {
+        return i18n::t("popup.marketBreadth.shrink", language);
+    }
+    return i18n::t("popup.marketBreadth.same", language);
+}
+
+QColor marketBreadthTurnoverChangeColor(double value, const AppConfig& cfg) {
+    if (!std::isfinite(value)) {
+        return cfg.textColor;
+    }
+    if (value > 0.0) {
+        return cfg.upColor;
+    }
+    if (value < 0.0) {
+        return cfg.downColor;
+    }
+    return cfg.flatColor;
 }
 
 QFont effectiveFloatingWindowFont(const AppConfig& cfg, const QFont& baseFont) {
@@ -1208,6 +1253,192 @@ private:
     int m_requestToken = 0;
 };
 
+class MarketBreadthDetailPopup : public QWidget {
+public:
+    explicit MarketBreadthDetailPopup(QWidget* parent = nullptr)
+        : QWidget(nullptr)
+        , m_parentWindow(parent) {
+        setWindowFlags(Qt::FramelessWindowHint | Qt::Tool | Qt::WindowStaysOnTopHint);
+        setAttribute(Qt::WA_ShowWithoutActivating, true);
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        setAttribute(Qt::WA_TranslucentBackground, true);
+        resize(320, 128);
+    }
+
+    void applyConfig(const AppConfig& cfg) {
+        m_cfg = cfg;
+        setFont(effectiveFloatingWindowFont(cfg, font()));
+        update();
+    }
+
+    void setLanguage(const QString& language) {
+        m_language = i18n::resolveLanguage(language);
+        update();
+    }
+
+    void showForSnapshot(const MarketBreadthSnapshot& snapshot, const QRect& anchorRect, int baseWidth) {
+        m_snapshot = snapshot;
+
+        const int popupWidth = qMax(190, qMin(255, qRound(static_cast<double>(qMax(baseWidth, 220)) * 0.39)));
+        const int popupHeight = 101;
+        resize(popupWidth, popupHeight);
+
+        QRect targetRect(anchorRect.topRight() + QPoint(12, 0), size());
+        QRect screenRect;
+        const QList<QScreen*> screens = QGuiApplication::screens();
+        for (QScreen* screen : screens) {
+            if (screen && screen->geometry().contains(anchorRect.center())) {
+                screenRect = screen->availableGeometry();
+                break;
+            }
+        }
+        if (!screenRect.isValid()) {
+            if (QScreen* screen = QGuiApplication::primaryScreen()) {
+                screenRect = screen->availableGeometry();
+            }
+        }
+
+        if (screenRect.isValid()) {
+            if (targetRect.right() + kTimelinePopupScreenMarginPx > screenRect.right()) {
+                targetRect.moveLeft(anchorRect.left() - popupWidth - 12);
+            }
+            if (targetRect.left() < screenRect.left() + kTimelinePopupScreenMarginPx) {
+                targetRect.moveLeft(screenRect.left() + kTimelinePopupScreenMarginPx);
+            }
+            if (targetRect.bottom() + kTimelinePopupScreenMarginPx > screenRect.bottom()) {
+                targetRect.moveTop(screenRect.bottom() - popupHeight - kTimelinePopupScreenMarginPx);
+            }
+            if (targetRect.top() < screenRect.top() + kTimelinePopupScreenMarginPx) {
+                targetRect.moveTop(screenRect.top() + kTimelinePopupScreenMarginPx);
+            }
+        }
+
+        setGeometry(targetRect);
+        if (!isVisible()) {
+            show();
+            raise();
+        }
+        update();
+    }
+
+    void hidePopup() {
+        hide();
+    }
+
+protected:
+    void paintEvent(QPaintEvent* event) override {
+        Q_UNUSED(event);
+
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(Qt::NoPen);
+
+        QColor background = m_cfg.transparentBackgroundEnabled
+            ? QColor(18, 18, 18, 236)
+            : m_cfg.bgColor;
+        background.setAlpha(qMax(background.alpha(), 236));
+        const QColor textColor = m_cfg.textColor;
+
+        painter.setBrush(background);
+        painter.drawRoundedRect(rect().adjusted(1, 1, -1, -1), 12, 12);
+
+        const QRect content = rect().adjusted(12, 11, -12, -6);
+        const int columnGap = 8;
+        const int colWidth = (content.width() - columnGap * 2) / 3;
+        const int headerY = content.top();
+        const int countY = headerY + 20;
+        const int sectionTitleY = countY + 22;
+        const int sectionValueY = sectionTitleY + 17;
+
+        const QString upLabel = i18n::t("popup.marketBreadth.up", m_language);
+        const QString flatLabel = i18n::t("popup.marketBreadth.flat", m_language);
+        const QString downLabel = i18n::t("popup.marketBreadth.down", m_language);
+        const QString turnoverLabel = i18n::t("popup.marketBreadth.turnover", m_language);
+        const QString comparePrefix = i18n::t(
+            "popup.marketBreadth.vsYesterdayFmt",
+            m_language
+        ).arg(QString());
+        const QString compareWord = marketBreadthTurnoverChangeText(m_snapshot.turnoverChange, m_language);
+        const QColor compareColor = marketBreadthTurnoverChangeColor(m_snapshot.turnoverChange, m_cfg);
+
+        const QRect upRect(content.left(), headerY, colWidth, 16);
+        const QRect flatRect(upRect.right() + 1 + columnGap, headerY, colWidth, 16);
+        const QRect downRect(flatRect.right() + 1 + columnGap, headerY, colWidth, 16);
+
+        QFont headerFont = painter.font();
+        headerFont.setBold(true);
+        headerFont.setPointSizeF(qMax(9.0, headerFont.pointSizeF() - 0.5));
+        painter.setFont(headerFont);
+        painter.setPen(m_cfg.upColor);
+        painter.drawText(upRect, Qt::AlignCenter, upLabel);
+        painter.setPen(m_cfg.flatColor);
+        painter.drawText(flatRect, Qt::AlignCenter, flatLabel);
+        painter.setPen(m_cfg.downColor);
+        painter.drawText(downRect, Qt::AlignCenter, downLabel);
+
+        QFont valueFont = painter.font();
+        valueFont.setBold(false);
+        valueFont.setPointSizeF(qMax(10.0, valueFont.pointSizeF() + 1.0));
+        painter.setFont(valueFont);
+        painter.setPen(m_cfg.upColor);
+        painter.drawText(QRect(upRect.left(), countY, upRect.width(), 20), Qt::AlignCenter, QString::number(m_snapshot.upCount));
+        painter.setPen(textColor);
+        painter.drawText(QRect(flatRect.left(), countY, flatRect.width(), 20), Qt::AlignCenter, QString::number(m_snapshot.flatCount));
+        painter.setPen(m_cfg.downColor);
+        painter.drawText(QRect(downRect.left(), countY, downRect.width(), 20), Qt::AlignCenter, QString::number(m_snapshot.downCount));
+
+        const int lowerColumnGap = 12;
+        const int lowerColWidth = (content.width() - lowerColumnGap) / 2;
+        const QRect turnoverTitleRect(content.left(), sectionTitleY, lowerColWidth, 16);
+        const QRect compareTitleRect(content.left() + lowerColWidth + lowerColumnGap, sectionTitleY, lowerColWidth, 16);
+        const QRect turnoverValueRect(content.left(), sectionValueY, lowerColWidth, 20);
+        const QRect compareValueRect(content.left() + lowerColWidth + lowerColumnGap, sectionValueY, lowerColWidth, 20);
+
+        painter.setFont(headerFont);
+        painter.setPen(textColor);
+        painter.drawText(turnoverTitleRect, Qt::AlignCenter, turnoverLabel);
+
+        QFontMetrics headerMetrics(headerFont);
+        const int prefixWidth = headerMetrics.horizontalAdvance(comparePrefix);
+        const int wordWidth = headerMetrics.horizontalAdvance(compareWord);
+        const int combinedWidth = prefixWidth + wordWidth;
+        const int compareCombinedLeft = compareTitleRect.left() + qMax(0, (compareTitleRect.width() - combinedWidth) / 2);
+
+        painter.setPen(textColor);
+        painter.drawText(
+            QRect(compareCombinedLeft, compareTitleRect.top(), prefixWidth, compareTitleRect.height()),
+            Qt::AlignLeft | Qt::AlignVCenter,
+            comparePrefix
+        );
+        painter.setPen(compareColor);
+        painter.drawText(
+            QRect(compareCombinedLeft + prefixWidth, compareTitleRect.top(), wordWidth, compareTitleRect.height()),
+            Qt::AlignLeft | Qt::AlignVCenter,
+            compareWord
+        );
+
+        painter.setFont(valueFont);
+        painter.setPen(textColor);
+        painter.drawText(
+            turnoverValueRect,
+            Qt::AlignCenter,
+            formatChineseMarketAmount(m_snapshot.turnover)
+        );
+        painter.setPen(compareColor);
+        painter.drawText(
+            compareValueRect,
+            Qt::AlignCenter,
+            formatChineseMarketAmount(m_snapshot.turnoverChange)
+        );
+    }
+
+private:
+    QWidget* m_parentWindow = nullptr;
+    AppConfig m_cfg;
+    QString m_language = QStringLiteral("en_US");
+    MarketBreadthSnapshot m_snapshot;
+};
+
 namespace {
 
 class BottomGridTableView : public QTableView {
@@ -1906,18 +2137,23 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
 
     connect(m_model, &QAbstractItemModel::dataChanged, this, [this]() {
         adjustWindowSize();
+        refreshMarketBreadthDetailPopup();
     });
     connect(m_model, &QAbstractItemModel::modelReset, this, [this]() {
         adjustWindowSize();
+        refreshMarketBreadthDetailPopup();
     });
     connect(m_model, &QAbstractItemModel::layoutChanged, this, [this]() {
         adjustWindowSize();
+        refreshMarketBreadthDetailPopup();
     });
     connect(m_model, &QAbstractItemModel::rowsInserted, this, [this]() {
         adjustWindowSize();
+        refreshMarketBreadthDetailPopup();
     });
     connect(m_model, &QAbstractItemModel::rowsRemoved, this, [this]() {
         adjustWindowSize();
+        refreshMarketBreadthDetailPopup();
     });
 
     m_hoverTimer = new QTimer(this);
@@ -1946,6 +2182,18 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
         refreshMousePassthroughState();
     });
 
+    m_marketBreadthDetailShowTimer = new QTimer(this);
+    m_marketBreadthDetailShowTimer->setSingleShot(true);
+    connect(m_marketBreadthDetailShowTimer, &QTimer::timeout, this, [this]() {
+        showMarketBreadthDetailPopup();
+    });
+
+    m_marketBreadthDetailHideTimer = new QTimer(this);
+    m_marketBreadthDetailHideTimer->setSingleShot(true);
+    connect(m_marketBreadthDetailHideTimer, &QTimer::timeout, this, [this]() {
+        hideMarketBreadthDetailPopup(true);
+    });
+
     m_styleAnimation = new QVariantAnimation(this);
     m_styleAnimation->setDuration(180);
     m_styleAnimation->setEasingCurve(QEasingCurve::InOutCubic);
@@ -1956,6 +2204,9 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
 
     m_timelinePopup = new TimelineChartPopup(this);
     m_timelinePopup->applyConfig(m_cfg);
+    m_marketBreadthDetailPopup = new MarketBreadthDetailPopup(this);
+    m_marketBreadthDetailPopup->applyConfig(m_cfg);
+    m_marketBreadthDetailPopup->setLanguage(m_model ? m_model->language() : QStringLiteral("en_US"));
 }
 
 bool FloatingWindow::isCursorInsideWindow() const {
@@ -2025,6 +2276,7 @@ void FloatingWindow::updateHoverReadingState(bool animated) {
         }
         setHoverReadingActive(false, animated);
         hideTimelinePopup();
+        hideMarketBreadthDetailPopup(true);
         return;
     }
 
@@ -2035,6 +2287,7 @@ void FloatingWindow::updateHoverReadingState(bool animated) {
         setHoverReadingActive(false, animated);
         if (m_cfg.mousePassthroughEnabled) {
             hideTimelinePopup();
+            hideMarketBreadthDetailPopup(true);
         }
         return;
     }
@@ -2064,6 +2317,7 @@ void FloatingWindow::updateHoverReadingState(bool animated) {
     }
     setHoverReadingActive(false, animated);
     hideTimelinePopup();
+    hideMarketBreadthDetailPopup(true);
 }
 
 bool FloatingWindow::canShowTimelinePopup() const {
@@ -2079,6 +2333,45 @@ bool FloatingWindow::canShowTimelinePopup() const {
     }
 
     return true;
+}
+
+bool FloatingWindow::canShowMarketBreadthDetailPopup() const {
+    if (!m_cfg.marketBreadthEnabled || !m_marketBreadthDetailPopup || !m_model) {
+        return false;
+    }
+    if (!isVisible()) {
+        return false;
+    }
+
+    const MarketBreadthSnapshot snapshot = m_model->marketBreadthSnapshot();
+    if (!snapshot.breadthValid || !snapshot.turnoverValid) {
+        return false;
+    }
+    if ((snapshot.upCount + snapshot.flatCount + snapshot.downCount) <= 0) {
+        return false;
+    }
+
+    if (m_cfg.mousePassthroughEnabled) {
+        return m_hoverReadingActive;
+    }
+
+    return true;
+}
+
+void FloatingWindow::updateHoverPopupsForViewport(const QPoint& viewportPos) {
+    if (!m_table || !m_model) {
+        return;
+    }
+
+    const QModelIndex index = m_table->indexAt(viewportPos);
+    if (index.isValid() && m_model->rowKind(index.row()) == QuoteModel::RowKindMarketBreadth) {
+        hideTimelinePopup();
+        updateMarketBreadthDetailPopupForHover(viewportPos);
+        return;
+    }
+
+    hideMarketBreadthDetailPopup();
+    updateTimelinePopupForHover(viewportPos);
 }
 
 void FloatingWindow::updateTimelinePopupForHover(const QPoint& viewportPos) {
@@ -2130,6 +2423,93 @@ void FloatingWindow::hideTimelinePopup() {
     }
 }
 
+void FloatingWindow::updateMarketBreadthDetailPopupForHover(const QPoint& viewportPos) {
+    if (!m_table || !m_model) {
+        return;
+    }
+
+    const QModelIndex index = m_table->indexAt(viewportPos);
+    if (!index.isValid() || m_model->rowKind(index.row()) != QuoteModel::RowKindMarketBreadth) {
+        hideMarketBreadthDetailPopup();
+        return;
+    }
+
+    if (!canShowMarketBreadthDetailPopup()) {
+        hideMarketBreadthDetailPopup(true);
+        return;
+    }
+
+    const QRect visual = m_table->visualRect(index);
+    m_marketBreadthDetailAnchorRect = QRect(
+        m_table->viewport()->mapToGlobal(visual.topLeft()),
+        visual.size()
+    );
+    m_marketBreadthDetailHoverPending = true;
+
+    if (m_marketBreadthDetailHideTimer) {
+        m_marketBreadthDetailHideTimer->stop();
+    }
+
+    if (m_marketBreadthDetailPopup && m_marketBreadthDetailPopup->isVisible()) {
+        showMarketBreadthDetailPopup();
+        return;
+    }
+
+    if (m_marketBreadthDetailShowTimer && !m_marketBreadthDetailShowTimer->isActive()) {
+        m_marketBreadthDetailShowTimer->start(180);
+    }
+}
+
+void FloatingWindow::showMarketBreadthDetailPopup() {
+    if (!m_marketBreadthDetailPopup || !m_model) {
+        return;
+    }
+    if (!m_marketBreadthDetailHoverPending || !canShowMarketBreadthDetailPopup()) {
+        hideMarketBreadthDetailPopup(true);
+        return;
+    }
+
+    m_marketBreadthDetailPopup->setLanguage(m_model->language());
+    m_marketBreadthDetailPopup->showForSnapshot(
+        m_model->marketBreadthSnapshot(),
+        m_marketBreadthDetailAnchorRect,
+        width()
+    );
+}
+
+void FloatingWindow::refreshMarketBreadthDetailPopup() {
+    if (!m_marketBreadthDetailPopup || !m_marketBreadthDetailPopup->isVisible()) {
+        return;
+    }
+    if (!m_marketBreadthDetailHoverPending || !canShowMarketBreadthDetailPopup()) {
+        hideMarketBreadthDetailPopup(true);
+        return;
+    }
+    showMarketBreadthDetailPopup();
+}
+
+void FloatingWindow::hideMarketBreadthDetailPopup(bool immediate) {
+    m_marketBreadthDetailHoverPending = false;
+    if (m_marketBreadthDetailShowTimer) {
+        m_marketBreadthDetailShowTimer->stop();
+    }
+    if (!m_marketBreadthDetailPopup) {
+        return;
+    }
+
+    if (immediate) {
+        if (m_marketBreadthDetailHideTimer) {
+            m_marketBreadthDetailHideTimer->stop();
+        }
+        m_marketBreadthDetailPopup->hidePopup();
+        return;
+    }
+
+    if (m_marketBreadthDetailPopup->isVisible() && m_marketBreadthDetailHideTimer) {
+        m_marketBreadthDetailHideTimer->start(110);
+    }
+}
+
 void FloatingWindow::refreshMousePassthroughState(bool force) {
     const bool shouldPassthrough = m_cfg.mousePassthroughEnabled
         && !shouldCaptureMouseInteraction();
@@ -2145,6 +2525,7 @@ void FloatingWindow::refreshMousePassthroughState(bool force) {
         }
         setHoverReadingActive(false, true);
         hideTimelinePopup();
+        hideMarketBreadthDetailPopup(true);
         return;
     }
 
@@ -2215,7 +2596,7 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
                 } else {
                     hoverPos = m_table->viewport()->mapFromGlobal(QCursor::pos());
                 }
-                updateTimelinePopupForHover(hoverPos);
+                updateHoverPopupsForViewport(hoverPos);
             }
         }
         break;
@@ -2227,6 +2608,7 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
             || watched == m_table->horizontalHeader()) {
             updateHoverReadingState(true);
             hideTimelinePopup();
+            hideMarketBreadthDetailPopup();
         }
         break;
     case QEvent::MouseButtonPress: {
@@ -2237,6 +2619,7 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
             m_dragOffset = mouseEvent->globalPosition().toPoint() - frameGeometry().topLeft();
             grabMouse();
             hideTimelinePopup();
+            hideMarketBreadthDetailPopup(true);
             refreshMousePassthroughState();
             return true;
         }
@@ -2264,7 +2647,7 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
             updateHoverReadingState(false);
 
             if (watched == m_table->viewport()) {
-                updateTimelinePopupForHover(mouseEvent->position().toPoint());
+                updateHoverPopupsForViewport(mouseEvent->position().toPoint());
             }
         }
         break;
@@ -2364,6 +2747,15 @@ void FloatingWindow::applyConfig(const AppConfig& cfg) {
             hideTimelinePopup();
         }
     }
+    if (m_marketBreadthDetailPopup) {
+        m_marketBreadthDetailPopup->applyConfig(m_cfg);
+        m_marketBreadthDetailPopup->setLanguage(m_model ? m_model->language() : QStringLiteral("en_US"));
+        if (!m_cfg.marketBreadthEnabled) {
+            hideMarketBreadthDetailPopup(true);
+        } else {
+            refreshMarketBreadthDetailPopup();
+        }
+    }
 
     if (m_mousePassthroughTimer) {
         if (m_cfg.mousePassthroughEnabled) {
@@ -2402,6 +2794,7 @@ void FloatingWindow::mouseDoubleClickEvent(QMouseEvent* event) {
             releaseMouse();
         }
         hideTimelinePopup();
+        hideMarketBreadthDetailPopup(true);
         hide();
         event->accept();
         return;
@@ -2442,6 +2835,7 @@ void FloatingWindow::showEvent(QShowEvent* event) {
 void FloatingWindow::hideEvent(QHideEvent* event) {
     QWidget::hideEvent(event);
     hideTimelinePopup();
+    hideMarketBreadthDetailPopup(true);
 }
 
 void FloatingWindow::enterEvent(QEnterEvent* event) {
@@ -2455,6 +2849,7 @@ void FloatingWindow::leaveEvent(QEvent* event) {
     refreshMousePassthroughState();
     updateHoverReadingState(true);
     hideTimelinePopup();
+    hideMarketBreadthDetailPopup();
 }
 
 void FloatingWindow::enforceWindowLevel(bool activate) {

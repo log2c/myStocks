@@ -205,7 +205,15 @@ const TranslationMap& translations() {
                 {"quote.hotConcept", "Hot Concepts"},
                 {"quote.marketBreadth", "Market Breadth"},
                 {"quote.dataError", "Data error"},
-                {"quote.noData", "No data"}
+                {"quote.noData", "No data"},
+                {"popup.marketBreadth.up", "Up"},
+                {"popup.marketBreadth.flat", "Flat"},
+                {"popup.marketBreadth.down", "Down"},
+                {"popup.marketBreadth.turnover", "Turnover"},
+                {"popup.marketBreadth.expand", "Expanded"},
+                {"popup.marketBreadth.shrink", "Contracted"},
+                {"popup.marketBreadth.same", "Flat"},
+                {"popup.marketBreadth.vsYesterdayFmt", "vs Yesterday %1"}
             }
         },
         {
@@ -404,7 +412,15 @@ const TranslationMap& translations() {
                 {"quote.hotConcept", "热门概念"},
                 {"quote.marketBreadth", "大盘行情"},
                 {"quote.dataError", "数据异常"},
-                {"quote.noData", "无数据"}
+                {"quote.noData", "无数据"},
+                {"popup.marketBreadth.up", "上涨"},
+                {"popup.marketBreadth.flat", "平盘"},
+                {"popup.marketBreadth.down", "下跌"},
+                {"popup.marketBreadth.turnover", "成交额"},
+                {"popup.marketBreadth.expand", "放量"},
+                {"popup.marketBreadth.shrink", "缩量"},
+                {"popup.marketBreadth.same", "持平"},
+                {"popup.marketBreadth.vsYesterdayFmt", "比昨日%1"}
             }
         }
     };

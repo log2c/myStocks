@@ -189,7 +189,7 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
         if (role == Qt::DisplayRole) {
             if (index.column() == contentCol) {
                 if (kind == RowKindMarketBreadth) {
-                    return m_marketBreadthValid ? QString() : text;
+                    return m_marketBreadth.breadthValid ? QString() : text;
                 }
                 return {};
             }
@@ -354,16 +354,11 @@ void QuoteModel::updateQuotes(const QVector<QuoteItem>& quotes) {
     }
 }
 
-void QuoteModel::setMarketBreadth(int upCount, int flatCount, int downCount) {
-    m_marketBreadthUpCount = qMax(0, upCount);
-    m_marketBreadthFlatCount = qMax(0, flatCount);
-    m_marketBreadthDownCount = qMax(0, downCount);
-    m_marketBreadthValid = true;
-    emitSpecialRowsChanged();
-}
-
-void QuoteModel::setMarketBreadthError() {
-    m_marketBreadthValid = false;
+void QuoteModel::setMarketBreadthSnapshot(const MarketBreadthSnapshot& snapshot) {
+    m_marketBreadth = snapshot;
+    m_marketBreadth.upCount = qMax(0, m_marketBreadth.upCount);
+    m_marketBreadth.flatCount = qMax(0, m_marketBreadth.flatCount);
+    m_marketBreadth.downCount = qMax(0, m_marketBreadth.downCount);
     emitSpecialRowsChanged();
 }
 
@@ -420,6 +415,10 @@ void QuoteModel::setLanguage(const QString& language) {
     emit headerDataChanged(Qt::Horizontal, 0, ColCount - 1);
 }
 
+QString QuoteModel::language() const {
+    return m_language;
+}
+
 QString QuoteModel::trayTooltipText() const {
     QStringList lines;
     for (const QuoteItem& q : m_rows) {
@@ -471,10 +470,10 @@ QString QuoteModel::specialRowLabel(int row) const {
 
 QString QuoteModel::specialRowText(int row) const {
     if (rowKind(row) == RowKindMarketBreadth) {
-        if (!m_marketBreadthValid) {
+        if (!m_marketBreadth.breadthValid) {
             return i18n::t("quote.dataError", m_language);
         }
-        const int total = m_marketBreadthUpCount + m_marketBreadthFlatCount + m_marketBreadthDownCount;
+        const int total = m_marketBreadth.upCount + m_marketBreadth.flatCount + m_marketBreadth.downCount;
         if (total <= 0) {
             return i18n::t("quote.noData", m_language);
         }
@@ -537,8 +536,8 @@ QColor QuoteModel::specialRowEntryColor(int row, int entryIndex) const {
 bool QuoteModel::specialRowHasData(int row) const {
     switch (rowKind(row)) {
     case RowKindMarketBreadth:
-        return m_marketBreadthValid
-            && (m_marketBreadthUpCount + m_marketBreadthFlatCount + m_marketBreadthDownCount) > 0;
+        return m_marketBreadth.breadthValid
+            && (m_marketBreadth.upCount + m_marketBreadth.flatCount + m_marketBreadth.downCount) > 0;
     case RowKindHotSector:
         return !m_hotSectors.isEmpty();
     case RowKindHotConcept:
@@ -550,19 +549,19 @@ bool QuoteModel::specialRowHasData(int row) const {
 }
 
 bool QuoteModel::marketBreadthValid() const {
-    return m_marketBreadthValid;
+    return m_marketBreadth.breadthValid;
 }
 
 int QuoteModel::marketBreadthUpCount() const {
-    return m_marketBreadthUpCount;
+    return m_marketBreadth.upCount;
 }
 
 int QuoteModel::marketBreadthFlatCount() const {
-    return m_marketBreadthFlatCount;
+    return m_marketBreadth.flatCount;
 }
 
 int QuoteModel::marketBreadthDownCount() const {
-    return m_marketBreadthDownCount;
+    return m_marketBreadth.downCount;
 }
 
 QColor QuoteModel::marketBreadthUpColor() const {
@@ -575,6 +574,10 @@ QColor QuoteModel::marketBreadthFlatColor() const {
 
 QColor QuoteModel::marketBreadthDownColor() const {
     return m_cfg.downColor;
+}
+
+MarketBreadthSnapshot QuoteModel::marketBreadthSnapshot() const {
+    return m_marketBreadth;
 }
 
 int QuoteModel::firstVisibleLogicalColumn() const {

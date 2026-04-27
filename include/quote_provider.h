@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QNetworkProxy>
+#include <QNetworkReply>
 #include <QObject>
 #include <QSet>
 #include <QStringList>
@@ -161,12 +162,21 @@ public:
     void fetch();
 
 signals:
-    void dataReady(int upCount, int flatCount, int downCount);
+    void dataReady(const MarketBreadthSnapshot& snapshot);
     void error(const QString& message);
 
 private:
+    void finalizeFetch(int token);
+
     QString m_userAgent = defaultChrome100UserAgent();
     QNetworkProxy m_proxy = QNetworkProxy(QNetworkProxy::NoProxy);
     QNetworkAccessManager m_nam;
     QString m_lastError;
+    QNetworkReply* m_breadthReply = nullptr;
+    QNetworkReply* m_turnoverReply = nullptr;
+    int m_requestToken = 0;
+    MarketBreadthSnapshot m_pendingSnapshot;
+    bool m_breadthDone = false;
+    bool m_turnoverDone = false;
+    QStringList m_pendingErrors;
 };
