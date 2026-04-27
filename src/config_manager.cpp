@@ -323,6 +323,10 @@ AppConfig ConfigManager::loadConfig() {
         "ui/timelineChartRefreshSecs",
         cfg.timelineChartRefreshSecs
     ).toInt();
+    cfg.timelineChartFixedRangeEnabled = s.value(
+        "ui/timelineChartFixedRangeEnabled",
+        cfg.timelineChartFixedRangeEnabled
+    ).toBool();
     cfg.timelineChartBgColor = s.value(
         "ui/timelineChartBgColor",
         cfg.timelineChartBgColor
@@ -342,6 +346,14 @@ AppConfig ConfigManager::loadConfig() {
     cfg.timelineChartTextColor = s.value(
         "ui/timelineChartTextColor",
         cfg.timelineChartTextColor
+    ).value<QColor>();
+    cfg.timelineChartUpColor = s.value(
+        "ui/timelineChartUpColor",
+        cfg.timelineChartUpColor
+    ).value<QColor>();
+    cfg.timelineChartDownColor = s.value(
+        "ui/timelineChartDownColor",
+        cfg.timelineChartDownColor
     ).value<QColor>();
     cfg.hotRankEnabled = s.value("ui/hotRankEnabled", cfg.hotRankEnabled).toBool();
     cfg.hotRankPollSecs = s.value("ui/hotRankPollSecs", cfg.hotRankPollSecs).toInt();
@@ -565,11 +577,14 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     );
     s.setValue("ui/timelineChartEnabled", cfg.timelineChartEnabled);
     s.setValue("ui/timelineChartRefreshSecs", qBound(10, cfg.timelineChartRefreshSecs, 3600));
+    s.setValue("ui/timelineChartFixedRangeEnabled", cfg.timelineChartFixedRangeEnabled);
     s.setValue("ui/timelineChartBgColor", cfg.timelineChartBgColor);
     s.setValue("ui/timelineChartGridColor", cfg.timelineChartGridColor);
     s.setValue("ui/timelineChartPriceLineColor", cfg.timelineChartPriceLineColor);
     s.setValue("ui/timelineChartAvgLineColor", cfg.timelineChartAvgLineColor);
     s.setValue("ui/timelineChartTextColor", cfg.timelineChartTextColor);
+    s.setValue("ui/timelineChartUpColor", cfg.timelineChartUpColor);
+    s.setValue("ui/timelineChartDownColor", cfg.timelineChartDownColor);
     s.setValue("ui/hotRankEnabled", cfg.hotRankEnabled);
     s.setValue("ui/hotRankPollSecs", qBound(10, cfg.hotRankPollSecs, 3600));
     s.setValue("ui/hotRankFlipSecs", qBound(0.5, cfg.hotRankFlipSecs, 60.0));

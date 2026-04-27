@@ -24,6 +24,7 @@
 #include <QSignalBlocker>
 #include <QShowEvent>
 #include <QScreen>
+#include <QSet>
 #include <QStyledItemDelegate>
 #include <QStyleFactory>
 #include <QTimeZone>
@@ -294,9 +295,143 @@ struct TimelinePoint {
     double amount = qQNaN();
 };
 
-QString toTimelineSecId(const QString& rawCode) {
+bool isDigitsOnly(const QString& value) {
+    if (value.isEmpty()) {
+        return false;
+    }
+    for (QChar ch : value) {
+        if (!ch.isDigit()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+const QSet<QString>& predefinedAshareIndexAliases() {
+    static const QSet<QString> aliases {
+        QStringLiteral("sh000001"),
+        QStringLiteral("sz399001"),
+        QStringLiteral("sh000300"),
+        QStringLiteral("sz399300"),
+        QStringLiteral("sh000016"),
+        QStringLiteral("sh000905"),
+        QStringLiteral("sh000852"),
+        QStringLiteral("sz399006"),
+        QStringLiteral("sz399673"),
+        QStringLiteral("sh000688"),
+        QStringLiteral("sh931643"),
+        QStringLiteral("sz931643"),
+        QStringLiteral("sh932133"),
+        QStringLiteral("sz399431"),
+        QStringLiteral("sz399975"),
+        QStringLiteral("sh000808"),
+        QStringLiteral("sh000932"),
+        QStringLiteral("sz399808"),
+        QStringLiteral("sh980017"),
+        QStringLiteral("sz980017"),
+        QStringLiteral("399001"),
+        QStringLiteral("000300"),
+        QStringLiteral("399300"),
+        QStringLiteral("000016"),
+        QStringLiteral("000905"),
+        QStringLiteral("000852"),
+        QStringLiteral("399006"),
+        QStringLiteral("399673"),
+        QStringLiteral("000688"),
+        QStringLiteral("931643"),
+        QStringLiteral("932133"),
+        QStringLiteral("399431"),
+        QStringLiteral("399975"),
+        QStringLiteral("000808"),
+        QStringLiteral("000932"),
+        QStringLiteral("399808"),
+        QStringLiteral("980017"),
+    };
+    return aliases;
+}
+
+bool isAshareIndexCode(const QString& rawCode) {
     const QString code = rawCode.trimmed().toLower();
     if (code.isEmpty()) {
+        return false;
+    }
+    if (code.startsWith(QStringLiteral("bk")) || code.startsWith(QStringLiteral("90."))) {
+        return false;
+    }
+    return predefinedAshareIndexAliases().contains(code);
+}
+
+QString extractSixDigitsSymbol(const QString& rawCode) {
+    QString code = rawCode.trimmed().toLower();
+    if (code.startsWith(QStringLiteral("sh"))
+        || code.startsWith(QStringLiteral("sz"))
+        || code.startsWith(QStringLiteral("bj"))) {
+        code = code.mid(2);
+    } else {
+        const int dot = code.indexOf(QLatin1Char('.'));
+        if (dot > 0 && dot < code.size() - 1) {
+            const QString market = code.left(dot);
+            const QString symbol = code.mid(dot + 1);
+            if ((market == QLatin1String("0") || market == QLatin1String("1"))
+                && symbol.size() == 6
+                && isDigitsOnly(symbol)) {
+                return symbol;
+            }
+            return {};
+        }
+    }
+    return (code.size() == 6 && isDigitsOnly(code)) ? code : QString();
+}
+
+bool isAshareStockCode(const QString& rawCode) {
+    const QString code = rawCode.trimmed().toLower();
+    if (code.isEmpty() || isAshareIndexCode(code)) {
+        return false;
+    }
+
+    if (code.startsWith(QStringLiteral("sh"))
+        || code.startsWith(QStringLiteral("sz"))
+        || code.startsWith(QStringLiteral("bj"))) {
+        const QString symbol = code.mid(2);
+        return symbol.size() == 6 && isDigitsOnly(symbol);
+    }
+
+    if (code.startsWith(QStringLiteral("0.")) || code.startsWith(QStringLiteral("1."))) {
+        const QString symbol = code.mid(2);
+        return symbol.size() == 6 && isDigitsOnly(symbol) && !isAshareIndexCode(symbol);
+    }
+
+    return code.size() == 6 && isDigitsOnly(code) && !isAshareIndexCode(code);
+}
+
+bool isAshareTimelineSupportedCode(const QString& rawCode) {
+    return isAshareStockCode(rawCode) || isAshareIndexCode(rawCode);
+}
+
+double fixedRangeLimitPctForAshareStock(const QString& rawCode) {
+    const QString code = rawCode.trimmed().toLower();
+    const QString symbol = extractSixDigitsSymbol(code);
+    if (symbol.isEmpty()) {
+        return qQNaN();
+    }
+
+    if (code.startsWith(QStringLiteral("bj"))
+        || symbol.startsWith(QLatin1Char('8'))
+        || symbol.startsWith(QLatin1Char('4'))) {
+        return 30.0;
+    }
+    if (symbol.startsWith(QStringLiteral("300"))
+        || symbol.startsWith(QStringLiteral("301"))
+        || symbol.startsWith(QStringLiteral("688"))
+        || symbol.startsWith(QStringLiteral("689"))) {
+        return 20.0;
+    }
+    return 10.0;
+}
+
+QString toTimelineSecId(const QString& rawCode) {
+    const QString code = rawCode.trimmed().toLower();
+    if (code.isEmpty() || !isAshareTimelineSupportedCode(code)) {
         return {};
     }
 
@@ -313,7 +448,10 @@ QString toTimelineSecId(const QString& rawCode) {
             }
         }
         if (marketOk && symbolOk) {
-            return QString::number(market) + QStringLiteral(".") + symbol.toUpper();
+            if ((market == 0 || market == 1) && symbol.size() == 6 && isDigitsOnly(symbol)) {
+                return QString::number(market) + QStringLiteral(".") + symbol.toUpper();
+            }
+            return {};
         }
     }
 
@@ -339,10 +477,15 @@ QString toTimelineSecId(const QString& rawCode) {
         return QStringLiteral("0.") + digits;
     }
 
-    const QChar head = digits[0];
-    const QString market = (head == QLatin1Char('6') || head == QLatin1Char('5') || head == QLatin1Char('9'))
-        ? QStringLiteral("1")
-        : QStringLiteral("0");
+    QString market;
+    if (isAshareIndexCode(code)) {
+        market = digits.startsWith(QStringLiteral("399")) ? QStringLiteral("0") : QStringLiteral("1");
+    } else {
+        const QChar head = digits[0];
+        market = (head == QLatin1Char('6') || head == QLatin1Char('5') || head == QLatin1Char('9'))
+            ? QStringLiteral("1")
+            : QStringLiteral("0");
+    }
     return market + QStringLiteral(".") + digits;
 }
 
@@ -481,8 +624,9 @@ public:
         update();
     }
 
-    void setSeries(const QString& title, const QVector<TimelinePoint>& points, double preClose) {
+    void setSeries(const QString& title, const QString& code, const QVector<TimelinePoint>& points, double preClose) {
         m_title = title;
+        m_code = code;
         m_points = points;
         m_preClose = preClose;
         m_status.clear();
@@ -506,18 +650,28 @@ protected:
         painter.fillRect(rect(), m_cfg.timelineChartBgColor);
 
         const QRect r = rect().adjusted(12, 12, -12, -12);
-        if (r.width() < 40 || r.height() < 40) {
+        if (r.width() < 80 || r.height() < 80) {
+            return;
+        }
+
+        const int headerHeight = 22;
+        const int leftMargin = 56;
+        const int rightMargin = 56;
+        const int bottomMargin = 28;
+        QRect headerRect(r.left(), r.top(), r.width(), headerHeight);
+        QRect plot = QRect(
+            r.left() + leftMargin,
+            r.top() + headerHeight + 6,
+            r.width() - leftMargin - rightMargin,
+            r.height() - headerHeight - bottomMargin - 6
+        );
+        if (plot.width() < 20 || plot.height() < 20) {
             return;
         }
 
         painter.setPen(QPen(m_cfg.timelineChartTextColor));
         if (!m_title.isEmpty()) {
-            painter.drawText(r.left(), r.top(), r.width(), 20, Qt::AlignLeft | Qt::AlignVCenter, m_title);
-        }
-
-        QRect plot = r.adjusted(0, 24, 0, -24);
-        if (plot.width() < 20 || plot.height() < 20) {
-            return;
+            painter.drawText(headerRect, Qt::AlignLeft | Qt::AlignVCenter, m_title);
         }
 
         if (!m_status.isEmpty()) {
@@ -530,40 +684,98 @@ protected:
             return;
         }
 
-        double minValue = std::numeric_limits<double>::max();
-        double maxValue = std::numeric_limits<double>::lowest();
-        for (const TimelinePoint& point : m_points) {
-            if (std::isfinite(point.price)) {
-                minValue = qMin(minValue, point.price);
-                maxValue = qMax(maxValue, point.price);
+        const auto toPct = [](double value, double base) -> double {
+            if (!std::isfinite(value) || !std::isfinite(base) || qFuzzyIsNull(base)) {
+                return qQNaN();
             }
-            if (std::isfinite(point.avgPrice)) {
-                minValue = qMin(minValue, point.avgPrice);
-                maxValue = qMax(maxValue, point.avgPrice);
-            }
-        }
-        if (std::isfinite(m_preClose)) {
-            minValue = qMin(minValue, m_preClose);
-            maxValue = qMax(maxValue, m_preClose);
-        }
+            return (value - base) / base * 100.0;
+        };
 
-        if (!std::isfinite(minValue) || !std::isfinite(maxValue)) {
+        const auto signedNumber = [](double value, int prec) -> QString {
+            if (!std::isfinite(value)) {
+                return QStringLiteral("--");
+            }
+            const QString num = QString::number(std::abs(value), 'f', prec);
+            if (value > 0.0) {
+                return QStringLiteral("+%1").arg(num);
+            }
+            if (value < 0.0) {
+                return QStringLiteral("-%1").arg(num);
+            }
+            return QStringLiteral("0.%1").arg(QStringLiteral("0").repeated(prec));
+        };
+
+        double baseline = m_preClose;
+        if (!std::isfinite(baseline) || qFuzzyIsNull(baseline)) {
+            for (const TimelinePoint& point : m_points) {
+                if (std::isfinite(point.price) && !qFuzzyIsNull(point.price)) {
+                    baseline = point.price;
+                    break;
+                }
+            }
+        }
+        if (!std::isfinite(baseline) || qFuzzyIsNull(baseline)) {
             painter.drawText(plot, Qt::AlignCenter, QStringLiteral("No timeline data"));
             return;
         }
 
-        if (qFuzzyCompare(minValue, maxValue)) {
-            minValue -= 0.01;
-            maxValue += 0.01;
+        double minPct = std::numeric_limits<double>::max();
+        double maxPct = std::numeric_limits<double>::lowest();
+        for (const TimelinePoint& point : m_points) {
+            const double pricePct = toPct(point.price, baseline);
+            if (std::isfinite(pricePct)) {
+                minPct = qMin(minPct, pricePct);
+                maxPct = qMax(maxPct, pricePct);
+            }
+            const double avgPct = toPct(point.avgPrice, baseline);
+            if (std::isfinite(avgPct)) {
+                minPct = qMin(minPct, avgPct);
+                maxPct = qMax(maxPct, avgPct);
+            }
+        }
+        minPct = qMin(minPct, 0.0);
+        maxPct = qMax(maxPct, 0.0);
+
+        if (!std::isfinite(minPct) || !std::isfinite(maxPct)) {
+            painter.drawText(plot, Qt::AlignCenter, QStringLiteral("No timeline data"));
+            return;
         }
 
-        const double range = qMax(0.000001, maxValue - minValue);
-        const double topPadding = range * 0.08;
-        const double bottomPadding = range * 0.08;
-        const double yMin = minValue - bottomPadding;
-        const double yMax = maxValue + topPadding;
+        const bool isAshareStock = isAshareStockCode(m_code);
+        double yMinPct = 0.0;
+        double yMaxPct = 0.0;
+        if (m_cfg.timelineChartFixedRangeEnabled && isAshareStock) {
+            const double limitPct = fixedRangeLimitPctForAshareStock(m_code);
+            if (std::isfinite(limitPct) && limitPct > 0.0) {
+                yMinPct = -limitPct;
+                yMaxPct = limitPct;
+            }
+        }
+        if (!(yMinPct < yMaxPct)) {
+            if (qFuzzyCompare(minPct, maxPct)) {
+                minPct -= 0.5;
+                maxPct += 0.5;
+            }
+            const double pctRange = qMax(0.000001, maxPct - minPct);
+            yMinPct = minPct - pctRange * 0.08;
+            yMaxPct = maxPct + pctRange * 0.08;
+        }
+        const double ySpanPct = qMax(0.000001, yMaxPct - yMinPct);
 
-        painter.setPen(QPen(m_cfg.timelineChartGridColor, 1));
+        const auto yOfPct = [&](double pct) -> int {
+            return plot.bottom() - qRound(((pct - yMinPct) / ySpanPct) * static_cast<double>(plot.height()));
+        };
+
+        const auto xOfIndex = [&](int index) -> int {
+            if (m_points.size() <= 1) {
+                return plot.left();
+            }
+            const double t = static_cast<double>(index) / static_cast<double>(m_points.size() - 1);
+            return plot.left() + qRound(t * static_cast<double>(plot.width()));
+        };
+
+        const QPen gridPen(m_cfg.timelineChartGridColor, 1.0, Qt::DashLine);
+        painter.setPen(gridPen);
         for (int i = 0; i <= 4; ++i) {
             const int y = plot.top() + (plot.height() * i) / 4;
             painter.drawLine(plot.left(), y, plot.right(), y);
@@ -573,87 +785,176 @@ protected:
             painter.drawLine(x, plot.top(), x, plot.bottom());
         }
 
-        if (std::isfinite(m_preClose)) {
-            const int y = plot.bottom()
-                - qRound(((m_preClose - yMin) / (yMax - yMin)) * static_cast<double>(plot.height()));
-            painter.setPen(QPen(m_cfg.timelineChartGridColor.lighter(150), 1, Qt::DashLine));
-            painter.drawLine(plot.left(), y, plot.right(), y);
+        const int yZero = yOfPct(0.0);
+        if (yZero >= plot.top() && yZero <= plot.bottom()) {
+            painter.setPen(QPen(m_cfg.timelineChartGridColor.lighter(150), 1.6, Qt::DashLine));
+            painter.drawLine(plot.left(), yZero, plot.right(), yZero);
+
+            QFont rightLabelFont = painter.font();
+            rightLabelFont.setBold(true);
+            painter.setFont(rightLabelFont);
+            painter.setPen(QPen(m_cfg.timelineChartTextColor));
+            painter.drawText(
+                plot.right() + 6,
+                yZero - 10,
+                rightMargin - 6,
+                20,
+                Qt::AlignLeft | Qt::AlignVCenter,
+                QStringLiteral("0%")
+            );
+
+            QFont normalFont = painter.font();
+            normalFont.setBold(false);
+            painter.setFont(normalFont);
+        }
+
+        painter.setPen(QPen(m_cfg.timelineChartTextColor));
+        for (int i = 0; i <= 4; ++i) {
+            const double pct = yMaxPct - (ySpanPct * static_cast<double>(i) / 4.0);
+            const int y = plot.top() + (plot.height() * i) / 4;
+            painter.drawText(
+                r.left(),
+                y - 10,
+                leftMargin - 6,
+                20,
+                Qt::AlignRight | Qt::AlignVCenter,
+                QStringLiteral("%1%").arg(QString::number(pct, 'f', 2))
+            );
+        }
+
+        const int xLabelY = plot.bottom() + 8;
+        if (isAshareStock) {
+            int morningLastIndex = -1;
+            int afternoonFirstIndex = -1;
+            for (int i = 0; i < m_points.size(); ++i) {
+                if (!m_points.at(i).time.isValid()) {
+                    continue;
+                }
+                const QTime pointTime = m_points.at(i).time.time();
+                if (pointTime <= QTime(11, 30)) {
+                    morningLastIndex = i;
+                }
+                if (afternoonFirstIndex < 0 && pointTime >= QTime(13, 0)) {
+                    afternoonFirstIndex = i;
+                }
+            }
+
+            if (morningLastIndex >= 0) {
+                const int x1130 = xOfIndex(morningLastIndex);
+                painter.drawText(x1130 - 30, xLabelY, 60, 18, Qt::AlignHCenter | Qt::AlignTop, QStringLiteral("11:30"));
+            }
+            if (afternoonFirstIndex >= 0) {
+                const int x1300 = xOfIndex(afternoonFirstIndex);
+                painter.drawText(x1300 - 30, xLabelY, 60, 18, Qt::AlignHCenter | Qt::AlignTop, QStringLiteral("13:00"));
+            }
+
+            if (morningLastIndex >= 0 && afternoonFirstIndex >= 0 && afternoonFirstIndex > morningLastIndex) {
+                const int xSep = (xOfIndex(morningLastIndex) + xOfIndex(afternoonFirstIndex)) / 2;
+                painter.setPen(QPen(m_cfg.timelineChartGridColor.lighter(130), 1.0, Qt::DashLine));
+                painter.drawLine(xSep, plot.top(), xSep, plot.bottom());
+            }
+            painter.setPen(QPen(m_cfg.timelineChartTextColor));
+        } else {
+            const int midIndex = m_points.size() / 2;
+            const QString leftTime = m_points.first().time.isValid()
+                ? m_points.first().time.toString(QStringLiteral("HH:mm"))
+                : QStringLiteral("--:--");
+            const QString midTime = m_points.at(midIndex).time.isValid()
+                ? m_points.at(midIndex).time.toString(QStringLiteral("HH:mm"))
+                : QStringLiteral("--:--");
+            const QString rightTime = m_points.last().time.isValid()
+                ? m_points.last().time.toString(QStringLiteral("HH:mm"))
+                : QStringLiteral("--:--");
+            painter.drawText(plot.left() - 6, xLabelY, 60, 18, Qt::AlignLeft | Qt::AlignTop, leftTime);
+            painter.drawText(xOfIndex(midIndex) - 30, xLabelY, 60, 18, Qt::AlignHCenter | Qt::AlignTop, midTime);
+            painter.drawText(plot.right() - 54, xLabelY, 60, 18, Qt::AlignRight | Qt::AlignTop, rightTime);
         }
 
         QPainterPath pricePath;
         QPainterPath avgPath;
+        bool hasPricePath = false;
+        bool hasAvgPath = false;
         for (int i = 0; i < m_points.size(); ++i) {
-            const double t = (m_points.size() == 1)
-                ? 0.0
-                : static_cast<double>(i) / static_cast<double>(m_points.size() - 1);
-            const int x = plot.left() + qRound(t * static_cast<double>(plot.width()));
-            const int yPrice = plot.bottom()
-                - qRound(((m_points.at(i).price - yMin) / (yMax - yMin)) * static_cast<double>(plot.height()));
-
-            if (i == 0) {
-                pricePath.moveTo(x, yPrice);
-            } else {
-                pricePath.lineTo(x, yPrice);
+            const int x = xOfIndex(i);
+            const double pricePct = toPct(m_points.at(i).price, baseline);
+            if (std::isfinite(pricePct)) {
+                const int yPrice = yOfPct(pricePct);
+                if (!hasPricePath) {
+                    pricePath.moveTo(x, yPrice);
+                    hasPricePath = true;
+                } else {
+                    pricePath.lineTo(x, yPrice);
+                }
             }
 
             if (std::isfinite(m_points.at(i).avgPrice)) {
-                const int yAvg = plot.bottom()
-                    - qRound(((m_points.at(i).avgPrice - yMin) / (yMax - yMin))
-                        * static_cast<double>(plot.height()));
-                if (avgPath.isEmpty()) {
+                const double avgPct = toPct(m_points.at(i).avgPrice, baseline);
+                if (!std::isfinite(avgPct)) {
+                    continue;
+                }
+                const int yAvg = yOfPct(avgPct);
+                if (!hasAvgPath) {
                     avgPath.moveTo(x, yAvg);
+                    hasAvgPath = true;
                 } else {
                     avgPath.lineTo(x, yAvg);
                 }
             }
         }
 
-        painter.setPen(QPen(m_cfg.timelineChartPriceLineColor, 1.8));
-        painter.drawPath(pricePath);
+        const TimelinePoint& lastPoint = m_points.last();
+        const double latestPct = toPct(lastPoint.price, baseline);
+        const double latestChange = std::isfinite(lastPoint.price)
+            ? (lastPoint.price - baseline)
+            : qQNaN();
 
-        if (!avgPath.isEmpty()) {
+        QColor trendColor = m_cfg.timelineChartPriceLineColor;
+        if (std::isfinite(latestPct)) {
+            if (latestPct > 0.0) {
+                trendColor = m_cfg.timelineChartUpColor;
+            } else if (latestPct < 0.0) {
+                trendColor = m_cfg.timelineChartDownColor;
+            }
+        }
+
+        if (hasPricePath) {
+            painter.setPen(QPen(trendColor, 1.8));
+            painter.drawPath(pricePath);
+        }
+
+        if (hasAvgPath) {
             painter.setPen(QPen(m_cfg.timelineChartAvgLineColor, 1.2));
             painter.drawPath(avgPath);
         }
 
-        const TimelinePoint& lastPoint = m_points.last();
-        const double changePct = std::isfinite(m_preClose) && !qFuzzyIsNull(m_preClose)
-            ? ((lastPoint.price - m_preClose) / m_preClose * 100.0)
-            : qQNaN();
-        QColor changeColor = m_cfg.timelineChartTextColor;
-        if (std::isfinite(changePct)) {
-            if (changePct > 0.0) {
-                changeColor = m_cfg.upColor;
-            } else if (changePct < 0.0) {
-                changeColor = m_cfg.downColor;
+        if (std::isfinite(latestPct) && std::isfinite(latestChange)) {
+            const QString changeInfo = QStringLiteral("%1%  %2")
+                .arg(signedNumber(latestPct, 2))
+                .arg(signedNumber(latestChange, 3));
+            painter.setPen(QPen(trendColor));
+
+            QFontMetrics fm(painter.font());
+            const int titleAdvance = fm.horizontalAdvance(m_title + QStringLiteral("  "));
+            const int minRightSpace = 120;
+            if (titleAdvance + minRightSpace < headerRect.width()) {
+                painter.drawText(
+                    headerRect.left() + titleAdvance,
+                    headerRect.top(),
+                    headerRect.width() - titleAdvance,
+                    headerRect.height(),
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    changeInfo
+                );
+            } else {
+                painter.drawText(headerRect, Qt::AlignRight | Qt::AlignVCenter, changeInfo);
             }
         }
-
-        painter.setPen(QPen(m_cfg.timelineChartTextColor));
-        painter.drawText(
-            r.left(),
-            r.bottom() - 16,
-            r.width() / 2,
-            16,
-            Qt::AlignLeft | Qt::AlignVCenter,
-            QStringLiteral("Last: %1").arg(QString::number(lastPoint.price, 'f', 3))
-        );
-        painter.setPen(QPen(changeColor));
-        painter.drawText(
-            r.left() + r.width() / 2,
-            r.bottom() - 16,
-            r.width() / 2,
-            16,
-            Qt::AlignRight | Qt::AlignVCenter,
-            std::isfinite(changePct)
-                ? QStringLiteral("%1%").arg(QString::number(changePct, 'f', 2))
-                : QStringLiteral("--")
-        );
     }
 
 private:
     AppConfig m_cfg;
     QString m_title;
+    QString m_code;
     QString m_status;
     QVector<TimelinePoint> m_points;
     double m_preClose = qQNaN();
@@ -664,7 +965,7 @@ public:
     explicit TimelineChartPopup(QWidget* parent = nullptr)
         : QWidget(nullptr)
         , m_parentWindow(parent) {
-        Qt::WindowFlags flags = Qt::FramelessWindowHint | Qt::Tool;
+        Qt::WindowFlags flags = Qt::FramelessWindowHint | Qt::Tool | Qt::WindowStaysOnTopHint;
         setWindowFlags(flags);
         setAttribute(Qt::WA_ShowWithoutActivating, true);
 
@@ -701,7 +1002,7 @@ public:
     }
 
     void showForStock(const QString& code, const QString& name, const QRect& anchorRect, int baseWidth) {
-        if (code.trimmed().isEmpty()) {
+        if (code.trimmed().isEmpty() || !isAshareTimelineSupportedCode(code)) {
             hidePopup();
             return;
         }
@@ -870,7 +1171,7 @@ private:
             const QString title = m_name.isEmpty()
                 ? m_code
                 : QStringLiteral("%1  %2").arg(m_name, m_code);
-            m_chart->setSeries(title, points, preClose);
+            m_chart->setSeries(title, m_code, points, preClose);
         });
     }
 
@@ -1462,7 +1763,7 @@ void FloatingWindow::updateTimelinePopupForHover(const QPoint& viewportPos) {
     const QString name = m_model->data(m_model->index(index.row(), ColName), Qt::DisplayRole)
         .toString()
         .trimmed();
-    if (code.isEmpty()) {
+    if (code.isEmpty() || !isAshareTimelineSupportedCode(code)) {
         hideTimelinePopup();
         return;
     }
