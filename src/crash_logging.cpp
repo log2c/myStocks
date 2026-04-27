@@ -120,7 +120,7 @@ QByteArray buildStackTraceBlock(const QStringList& lines) {
 }
 
 void storePendingCrashContext(const QByteArray& block) {
-    const size_t copyLen = std::min(
+    const size_t copyLen = (std::min)(
         static_cast<size_t>(block.size()),
         g_pendingCrashContext.size() - 1
     );
