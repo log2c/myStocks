@@ -1547,7 +1547,6 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
     case QEvent::Enter:
     case QEvent::HoverEnter:
     case QEvent::HoverMove:
-    case QEvent::MouseMove:
         if (watched == m_panel
             || watched == m_table
             || watched == m_table->viewport()
@@ -1603,6 +1602,24 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
             move(mouseEvent->globalPosition().toPoint() - m_dragOffset);
             updateHoverReadingState(false);
             return true;
+        }
+
+        if (watched == m_panel
+            || watched == m_table
+            || watched == m_table->viewport()
+            || watched == m_table->horizontalHeader()) {
+            if (!shouldAllowMouseInteraction()) {
+                if (m_hoverTimer) {
+                    m_hoverTimer->stop();
+                }
+                setHoverReadingActive(false, false);
+                return false;
+            }
+            updateHoverReadingState(false);
+
+            if (watched == m_table->viewport()) {
+                updateTimelinePopupForHover(mouseEvent->position().toPoint());
+            }
         }
         break;
     }
