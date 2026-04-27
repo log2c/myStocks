@@ -1802,7 +1802,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
         m_mousePassthroughCheck,
         &QCheckBox::toggled,
         this,
-        [this, hoverReadingDelayLabel, mousePassthroughKeyLabel](bool checked) {
+        [this, hoverReadingDelayLabel, mousePassthroughKeyLabel, doubleClickCloseWindowLabel](bool checked) {
             if (hoverReadingDelayLabel) {
                 const bool hoverReadingEnabled = m_hoverReadingCheck
                     && m_hoverReadingCheck->isChecked();
