@@ -715,10 +715,10 @@ protected:
             return;
         }
 
-        const bool isAshareStock = isAshareStockCode(m_code);
+        const bool isAshareStock = isAshareTimelineSupportedCode(m_code);
         double yMinPct = 0.0;
         double yMaxPct = 0.0;
-        if (m_cfg.timelineChartFixedRangeEnabled && isAshareStock) {
+        if (m_cfg.timelineChartFixedRangeEnabled && isAshareStockCode(m_code)) {
             const double limitPct = fixedRangeLimitPctForAshareStock(m_code);
             if (std::isfinite(limitPct) && limitPct > 0.0) {
                 yMinPct = -limitPct;
