@@ -318,6 +318,20 @@ struct TimelinePoint {
     double amount = qQNaN();
 };
 
+enum class TimelineMarket {
+    Unknown,
+    Ashare,
+    HongKong,
+};
+
+struct TimelineSession {
+    QTime morningStart;
+    QTime morningEnd;
+    QTime afternoonStart;
+    QTime afternoonEnd;
+    QString midLabel;
+};
+
 bool isAshareIndexCode(const QString& rawCode) {
     return watchlist_utils::isPredefinedAshareIndexCode(rawCode);
 }
@@ -373,6 +387,70 @@ bool isAshareTimelineSupportedCode(const QString& rawCode) {
     return isAshareStockCode(rawCode) || isAshareIndexCode(rawCode);
 }
 
+bool isHongKongTimelineSupportedCode(const QString& rawCode) {
+    const QString code = rawCode.trimmed();
+    if (code.isEmpty()) {
+        return false;
+    }
+
+    if (!watchlist_utils::normalizeHongKongIndexCode(code).isEmpty()) {
+        return true;
+    }
+    if (watchlist_utils::isHongKongCode(code)) {
+        return true;
+    }
+
+    const QString lower = code.toLower();
+    const int dot = lower.indexOf(QLatin1Char('.'));
+    if (dot > 0 && dot < lower.size() - 1) {
+        const QString market = lower.left(dot);
+        return market == QLatin1String("100")
+            || market == QLatin1String("124")
+            || market == QLatin1String("128")
+            || market == QLatin1String("116");
+    }
+
+    return lower.endsWith(QStringLiteral(".hk"));
+}
+
+TimelineMarket timelineMarketOfCode(const QString& rawCode) {
+    if (isAshareTimelineSupportedCode(rawCode)) {
+        return TimelineMarket::Ashare;
+    }
+    if (isHongKongTimelineSupportedCode(rawCode)) {
+        return TimelineMarket::HongKong;
+    }
+    return TimelineMarket::Unknown;
+}
+
+bool isTimelineSupportedCode(const QString& rawCode) {
+    return timelineMarketOfCode(rawCode) != TimelineMarket::Unknown;
+}
+
+TimelineSession timelineSessionForMarket(TimelineMarket market) {
+    if (market == TimelineMarket::Ashare) {
+        return {
+            QTime(9, 30),
+            QTime(11, 30),
+            QTime(13, 0),
+            QTime(15, 0),
+            QStringLiteral("11:30/13:00"),
+        };
+    }
+
+    if (market == TimelineMarket::HongKong) {
+        return {
+            QTime(9, 30),
+            QTime(12, 0),
+            QTime(13, 0),
+            QTime(16, 0),
+            QStringLiteral("12:00/13:00"),
+        };
+    }
+
+    return {};
+}
+
 double fixedRangeLimitPctForAshareStock(const QString& rawCode) {
     const QString code = rawCode.trimmed().toLower();
     const QString symbol = extractSixDigitsSymbol(code);
@@ -396,31 +474,110 @@ double fixedRangeLimitPctForAshareStock(const QString& rawCode) {
 }
 
 QString toTimelineSecId(const QString& rawCode) {
-    const QString code = rawCode.trimmed().toLower();
-    if (code.isEmpty() || !isAshareTimelineSupportedCode(code)) {
+    const QString raw = rawCode.trimmed();
+    const QString code = raw.toLower();
+    const TimelineMarket marketType = timelineMarketOfCode(raw);
+    if (code.isEmpty() || marketType == TimelineMarket::Unknown) {
         return {};
     }
 
     const int dot = code.indexOf(QLatin1Char('.'));
     if (dot > 0 && dot < code.size() - 1) {
-        bool marketOk = false;
-        const int market = code.left(dot).toInt(&marketOk);
-        const QString symbol = code.mid(dot + 1);
-        bool symbolOk = !symbol.isEmpty();
-        for (QChar ch : symbol) {
-            if (!ch.isLetterOrNumber()) {
-                symbolOk = false;
-                break;
+        const QString market = code.left(dot);
+        const QString symbol = raw.mid(dot + 1).trimmed();
+
+        if (marketType == TimelineMarket::Ashare) {
+            bool marketOk = false;
+            const int marketValue = market.toInt(&marketOk);
+            bool symbolOk = !symbol.isEmpty();
+            for (QChar ch : symbol) {
+                if (!ch.isLetterOrNumber()) {
+                    symbolOk = false;
+                    break;
+                }
+            }
+            if (marketOk && symbolOk) {
+                if ((marketValue == 0 || marketValue == 1)
+                    && symbol.size() == 6
+                    && watchlist_utils::isDigitsOnly(symbol)) {
+                    return QString::number(marketValue)
+                        + QStringLiteral(".")
+                        + symbol.toUpper();
+                }
+                return {};
             }
         }
-        if (marketOk && symbolOk) {
-            if ((market == 0 || market == 1)
-                && symbol.size() == 6
-                && watchlist_utils::isDigitsOnly(symbol)) {
-                return QString::number(market) + QStringLiteral(".") + symbol.toUpper();
+
+        if (marketType == TimelineMarket::HongKong) {
+            QString hkDigits;
+            for (QChar ch : symbol) {
+                if (ch.isDigit()) {
+                    hkDigits.append(ch);
+                }
             }
+
+            if (market == QLatin1String("116")) {
+                if (hkDigits.isEmpty()) {
+                    return {};
+                }
+                if (hkDigits.size() > 5) {
+                    hkDigits = hkDigits.right(5);
+                }
+                return QStringLiteral("116.") + hkDigits.rightJustified(5, '0');
+            }
+
+            if (market == QLatin1String("100")
+                || market == QLatin1String("124")
+                || market == QLatin1String("128")) {
+                const QString hkIndexCode = watchlist_utils::normalizeHongKongIndexCode(
+                    market + QStringLiteral(".") + symbol
+                );
+                if (!hkIndexCode.isEmpty()) {
+                    return hkIndexCode;
+                }
+
+                const QString upperSymbol = symbol.toUpper();
+                if (!upperSymbol.isEmpty()) {
+                    return market + QStringLiteral(".") + upperSymbol;
+                }
+            }
+
             return {};
         }
+    }
+
+    if (marketType == TimelineMarket::HongKong) {
+        const QString hkIndexCode = watchlist_utils::normalizeHongKongIndexCode(raw);
+        if (!hkIndexCode.isEmpty()) {
+            return hkIndexCode;
+        }
+
+        const auto hkSecIdFromText = [](const QString& text) -> QString {
+            QString digits;
+            for (QChar ch : text) {
+                if (ch.isDigit()) {
+                    digits.append(ch);
+                }
+            }
+            if (digits.isEmpty()) {
+                return {};
+            }
+            if (digits.size() > 5) {
+                digits = digits.right(5);
+            }
+            return QStringLiteral("116.") + digits.rightJustified(5, '0');
+        };
+
+        if (code.endsWith(QStringLiteral(".hk"))) {
+            return hkSecIdFromText(code);
+        }
+        if (code.startsWith(QStringLiteral("hk"))) {
+            return hkSecIdFromText(code);
+        }
+        if (code.size() == 5 && watchlist_utils::isDigitsOnly(code)) {
+            return QStringLiteral("116.") + code;
+        }
+        return {};
     }
 
     QString digits;
@@ -475,15 +632,43 @@ bool isAshareTradingTimeNow() {
     return morning || afternoon;
 }
 
+bool isHongKongTradingTimeNow(const QDate& halfDayDate = QDate()) {
+    const QTimeZone bjZone("Asia/Shanghai");
+    if (!bjZone.isValid()) {
+        return false;
+    }
+
+    const QDateTime now = QDateTime::currentDateTimeUtc().toTimeZone(bjZone);
+    const int dayOfWeek = now.date().dayOfWeek();
+    if (dayOfWeek < 1 || dayOfWeek > 5) {
+        return false;
+    }
+
+    const bool isHalfDayToday = halfDayDate.isValid() && halfDayDate == now.date();
+    const QTime time = now.time();
+    const bool morning = time >= QTime(9, 30) && time <= QTime(12, 0);
+    const bool afternoon = !isHalfDayToday
+        && time >= QTime(13, 0)
+        && time <= QTime(16, 0);
+    return morning || afternoon;
+}
+
 QString stripJsonp(const QByteArray& body) {
     const QString text = QString::fromUtf8(body).trimmed();
+    if (text.isEmpty()) {
+        return {};
+    }
+    if (text.startsWith(QLatin1Char('{')) || text.startsWith(QLatin1Char('['))) {
+        return text;
+    }
+
     const int open = text.indexOf(QLatin1Char('('));
     const int close = text.lastIndexOf(QLatin1Char(')'));
     if (open <= 0 || close <= open) {
         return {};
     }
     const QString callback = text.left(open).trimmed();
-    if (!callback.startsWith(QStringLiteral("jQuery"))) {
+    if (callback.isEmpty()) {
         return {};
     }
     return text.mid(open + 1, close - open - 1).trimmed();
@@ -715,7 +900,9 @@ protected:
             return;
         }
 
-        const bool isAshareStock = isAshareTimelineSupportedCode(m_code);
+        const TimelineMarket market = timelineMarketOfCode(m_code);
+        const bool hasSessionAxis = market != TimelineMarket::Unknown;
+        const TimelineSession session = timelineSessionForMarket(market);
         double yMinPct = 0.0;
         double yMaxPct = 0.0;
         if (m_cfg.timelineChartFixedRangeEnabled && isAshareStockCode(m_code)) {
@@ -749,16 +936,40 @@ protected:
             return plot.left() + qRound(t * static_cast<double>(plot.width()));
         };
 
-        // Time-based x mapping for A-share trading hours (9:30-11:30, 13:00-15:00 = 240 min total)
-        const auto tradingMinOf = [](const QTime& t) -> int {
-            if (t <= QTime(9, 30))  return 0;
-            if (t <= QTime(11, 30)) return QTime(9, 30).secsTo(t) / 60;
-            if (t <  QTime(13, 0))  return 120;
-            if (t <= QTime(15, 0))  return 120 + QTime(13, 0).secsTo(t) / 60;
-            return 240;
-        };
-        const auto xOfAshareTime = [&](const QTime& t) -> int {
-            return plot.left() + qRound(tradingMinOf(t) / 240.0 * plot.width());
+        const auto xOfSessionTime = [&](const QTime& t) -> int {
+            if (!hasSessionAxis) {
+                return plot.left();
+            }
+
+            const int xLeft = plot.left();
+            const int xMid = xLeft + qRound(static_cast<double>(plot.width()) * 0.5);
+            const int xRight = plot.right();
+
+            if (t <= session.morningStart) {
+                return xLeft;
+            }
+            if (t < session.morningEnd) {
+                const int morningSpan = qMax(1, session.morningStart.secsTo(session.morningEnd));
+                const int elapsed = qBound(0, session.morningStart.secsTo(t), morningSpan);
+                return xLeft + qRound(
+                    (static_cast<double>(elapsed) / static_cast<double>(morningSpan))
+                    * (xMid - xLeft)
+                );
+            }
+
+            if (t < session.afternoonStart) {
+                return xMid;
+            }
+            if (t < session.afternoonEnd) {
+                const int afternoonSpan = qMax(1, session.afternoonStart.secsTo(session.afternoonEnd));
+                const int elapsed = qBound(0, session.afternoonStart.secsTo(t), afternoonSpan);
+                return xMid + qRound(
+                    (static_cast<double>(elapsed) / static_cast<double>(afternoonSpan))
+                    * (xRight - xMid)
+                );
+            }
+
+            return xRight;
         };
 
         const QPen gridPen(m_cfg.timelineChartGridColor, 1.0, Qt::DashLine);
@@ -767,12 +978,23 @@ protected:
             const int y = plot.top() + (plot.height() * i) / 4;
             painter.drawLine(plot.left(), y, plot.right(), y);
         }
-        if (isAshareStock) {
-            // Vertical grid at trading-time quarter marks:
-            // 9:30 (0%), 10:30 (25%), 11:30/13:00 (50%), 14:00 (75%), 15:00 (100%)
-            const QTime vTimes[] = { QTime(9,30), QTime(10,30), QTime(11,30), QTime(14,0), QTime(15,0) };
+        if (hasSessionAxis) {
+            const QTime morningQuarter = session.morningStart.addSecs(
+                session.morningStart.secsTo(session.morningEnd) / 2
+            );
+            const QTime afternoonQuarter = session.afternoonStart.addSecs(
+                session.afternoonStart.secsTo(session.afternoonEnd) / 2
+            );
+            const QTime vTimes[] = {
+                session.morningStart,
+                morningQuarter,
+                session.morningEnd,
+                afternoonQuarter,
+                session.afternoonEnd,
+            };
             for (const QTime& t : vTimes) {
-                painter.drawLine(xOfAshareTime(t), plot.top(), xOfAshareTime(t), plot.bottom());
+                const int x = xOfSessionTime(t);
+                painter.drawLine(x, plot.top(), x, plot.bottom());
             }
         } else {
             for (int i = 0; i <= 4; ++i) {
@@ -819,14 +1041,16 @@ protected:
         }
 
         const int xLabelY = plot.bottom() + 8;
-        if (isAshareStock) {
-            const int xOpen  = xOfAshareTime(QTime(9, 30));
-            const int xMid   = xOfAshareTime(QTime(11, 30));
-            const int xClose = xOfAshareTime(QTime(15, 0));
+        if (hasSessionAxis) {
+            const int xOpen  = xOfSessionTime(session.morningStart);
+            const int xMid   = xOfSessionTime(session.morningEnd);
+            const int xClose = xOfSessionTime(session.afternoonEnd);
+            const QString openLabel = session.morningStart.toString(QStringLiteral("H:mm"));
+            const QString closeLabel = session.afternoonEnd.toString(QStringLiteral("H:mm"));
             painter.setPen(QPen(m_cfg.timelineChartTextColor));
-            painter.drawText(xOpen - 6,   xLabelY, 60, 18, Qt::AlignLeft    | Qt::AlignTop, QStringLiteral("9:30"));
-            painter.drawText(xMid - 48,   xLabelY, 96, 18, Qt::AlignHCenter | Qt::AlignTop, QStringLiteral("11:30/13:00"));
-            painter.drawText(xClose - 54, xLabelY, 60, 18, Qt::AlignRight   | Qt::AlignTop, QStringLiteral("15:00"));
+            painter.drawText(xOpen - 6,   xLabelY, 64, 18, Qt::AlignLeft    | Qt::AlignTop, openLabel);
+            painter.drawText(xMid - 54,   xLabelY, 108, 18, Qt::AlignHCenter | Qt::AlignTop, session.midLabel);
+            painter.drawText(xClose - 58, xLabelY, 64, 18, Qt::AlignRight   | Qt::AlignTop, closeLabel);
         } else {
             const int midIndex = m_points.size() / 2;
             const QString leftTime = m_points.first().time.isValid()
@@ -848,8 +1072,8 @@ protected:
         bool hasPricePath = false;
         bool hasAvgPath = false;
         for (int i = 0; i < m_points.size(); ++i) {
-            const int x = (isAshareStock && m_points.at(i).time.isValid())
-                ? xOfAshareTime(m_points.at(i).time.time())
+            const int x = (hasSessionAxis && m_points.at(i).time.isValid())
+                ? xOfSessionTime(m_points.at(i).time.time())
                 : xOfIndex(i);
             const double pricePct = toPct(m_points.at(i).price, baseline);
             if (std::isfinite(pricePct)) {
@@ -952,7 +1176,7 @@ public:
 
         m_refreshTimer = new QTimer(this);
         connect(m_refreshTimer, &QTimer::timeout, this, [this]() {
-            if (!isVisible() || !isAshareTradingTimeNow()) {
+            if (!isVisible() || !isCurrentMarketTradingTimeNow()) {
                 m_refreshTimer->stop();
                 return;
             }
@@ -969,7 +1193,7 @@ public:
             return;
         }
 
-        if (isAshareTradingTimeNow()) {
+        if (isCurrentMarketTradingTimeNow()) {
             startRefreshTimer();
         } else {
             stopRefreshTimer();
@@ -977,7 +1201,7 @@ public:
     }
 
     void showForStock(const QString& code, const QString& name, const QRect& anchorRect, int baseWidth) {
-        if (code.trimmed().isEmpty() || !isAshareTimelineSupportedCode(code)) {
+        if (code.trimmed().isEmpty() || !isTimelineSupportedCode(code)) {
             hidePopup();
             return;
         }
@@ -985,6 +1209,9 @@ public:
         const bool changed = (m_code.compare(code, Qt::CaseInsensitive) != 0);
         m_code = code.trimmed();
         m_name = name.trimmed();
+        if (changed) {
+            m_hongKongHalfDayDate = QDate();
+        }
 
         const int popupWidth = qMax(
             kTimelinePopupMinWidth,
@@ -1033,7 +1260,7 @@ public:
             fetchTimeline(true);
         }
 
-        if (isAshareTradingTimeNow()) {
+        if (isCurrentMarketTradingTimeNow()) {
             startRefreshTimer();
         } else {
             stopRefreshTimer();
@@ -1050,10 +1277,62 @@ public:
         }
         m_code.clear();
         m_name.clear();
+        m_hongKongHalfDayDate = QDate();
         hide();
     }
 
 private:
+    bool isCurrentMarketTradingTimeNow() const {
+        const TimelineMarket market = timelineMarketOfCode(m_code);
+        if (market == TimelineMarket::Ashare) {
+            return isAshareTradingTimeNow();
+        }
+        if (market == TimelineMarket::HongKong) {
+            return isHongKongTradingTimeNow(m_hongKongHalfDayDate);
+        }
+        return false;
+    }
+
+    void updateHongKongHalfDayState(const QVector<TimelinePoint>& points) {
+        m_hongKongHalfDayDate = QDate();
+        if (timelineMarketOfCode(m_code) != TimelineMarket::HongKong || points.isEmpty()) {
+            return;
+        }
+
+        bool hasAfternoon = false;
+        QDate tradeDate;
+        QTime lastTime;
+        for (const TimelinePoint& point : points) {
+            if (!point.time.isValid()) {
+                continue;
+            }
+            tradeDate = point.time.date();
+            lastTime = point.time.time();
+            if (lastTime >= QTime(13, 0)) {
+                hasAfternoon = true;
+                break;
+            }
+        }
+
+        if (hasAfternoon || !tradeDate.isValid() || lastTime < QTime(12, 0)) {
+            return;
+        }
+
+        const QTimeZone bjZone("Asia/Shanghai");
+        if (!bjZone.isValid()) {
+            return;
+        }
+
+        const QDateTime now = QDateTime::currentDateTimeUtc().toTimeZone(bjZone);
+        if (!now.isValid() || now.date() != tradeDate) {
+            return;
+        }
+
+        if (now.time() >= QTime(13, 5)) {
+            m_hongKongHalfDayDate = tradeDate;
+        }
+    }
+
     void startRefreshTimer() {
         if (!m_refreshTimer) {
             return;
@@ -1140,6 +1419,11 @@ private:
                 return;
             }
 
+            updateHongKongHalfDayState(points);
+            if (!isCurrentMarketTradingTimeNow()) {
+                stopRefreshTimer();
+            }
+
             const QString title = m_name.isEmpty()
                 ? m_code
                 : QStringLiteral("%1  %2").arg(m_name, m_code);
@@ -1165,6 +1449,7 @@ private:
     QNetworkReply* m_reply = nullptr;
     QString m_code;
     QString m_name;
+    QDate m_hongKongHalfDayDate;
     int m_requestToken = 0;
 };
 
@@ -2316,7 +2601,7 @@ void FloatingWindow::updateTimelinePopupForHover(const QPoint& viewportPos) {
     const QString name = m_model->data(m_model->index(index.row(), ColName), Qt::DisplayRole)
         .toString()
         .trimmed();
-    if (code.isEmpty() || !isAshareTimelineSupportedCode(code)) {
+    if (code.isEmpty() || !isTimelineSupportedCode(code)) {
         hideTimelinePopup();
         return;
     }
