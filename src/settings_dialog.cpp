@@ -30,7 +30,6 @@
 #include <QPixmap>
 #include <QScrollArea>
 #include <QSet>
-#include <QStringConverter>
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTimer>
@@ -43,9 +42,7 @@
 
 namespace {
 
-using watchlist_utils::isDigitsOnly;
-using watchlist_utils::normalizeFutureCode;
-using watchlist_utils::normalizeSectorCode;
+using watchlist_utils::normalizeApiWatchCode;
 using watchlist_utils::watchCodeKey;
 
 struct IndexPreset {
@@ -56,24 +53,15 @@ struct IndexPreset {
 
 const QVector<IndexPreset>& indexPresets() {
     static const QVector<IndexPreset> presets {
-        {QStringLiteral("sh000001"), QStringLiteral("上证指数（上证综指）"), QStringLiteral("沪市主板整体")},
-        {QStringLiteral("sz399001"), QStringLiteral("深证成指"), QStringLiteral("深市主板 + 创业板核心 500 只")},
-        {QStringLiteral("sh000300"), QStringLiteral("沪深300"), QStringLiteral("两市大盘核心资产")},
-        {QStringLiteral("sh000016"), QStringLiteral("上证50"), QStringLiteral("沪市超大盘龙头")},
-        {QStringLiteral("sh000905"), QStringLiteral("中证500"), QStringLiteral("中盘成长代表")},
-        {QStringLiteral("sh000852"), QStringLiteral("中证1000"), QStringLiteral("小盘成长")},
-        {QStringLiteral("sz399006"), QStringLiteral("创业板指"), QStringLiteral("创业板整体（新能源、医药为主）")},
-        {QStringLiteral("sz399673"), QStringLiteral("创业板50"), QStringLiteral("创业板龙头 50 只")},
-        {QStringLiteral("sh000688"), QStringLiteral("科创50（科创板指）"), QStringLiteral("科创板硬科技龙头 50 只")},
-        {QStringLiteral("sh931643"), QStringLiteral("科创创业50（双创50）"), QStringLiteral("科创板 + 创业板龙头 50 只")},
-        {QStringLiteral("sz399431"), QStringLiteral("中证银行指数"), QStringLiteral("银行板块")},
-        {QStringLiteral("sz399975"), QStringLiteral("中证券商指数"), QStringLiteral("证券 / 券商板块")},
-        {QStringLiteral("sh000808"), QStringLiteral("中证医药生物"), QStringLiteral("医药全板块")},
-        {QStringLiteral("sh000932"), QStringLiteral("中证消费指数"), QStringLiteral("主要消费（食品饮料、家电等）")},
-        {QStringLiteral("sz399808"), QStringLiteral("中证新能源指数"), QStringLiteral("光伏、锂电、风电等")},
-        {QStringLiteral("sh980017"), QStringLiteral("中证半导体指数"), QStringLiteral("芯片 / 半导体")},
+        {QStringLiteral("1.000001"), QStringLiteral("上证指数"), QStringLiteral("沪市主板综合指数")},
+        {QStringLiteral("0.399001"), QStringLiteral("深证成指"), QStringLiteral("深市核心宽基指数")},
+        {QStringLiteral("0.399006"), QStringLiteral("创业板指"), QStringLiteral("创业板市场代表指数")},
+        {QStringLiteral("1.000688"), QStringLiteral("科创50"), QStringLiteral("科创板龙头 50 只")},
+        {QStringLiteral("1.000300"), QStringLiteral("沪深300"), QStringLiteral("沪深两市核心蓝筹")},
+        {QStringLiteral("1.000905"), QStringLiteral("中证500"), QStringLiteral("A股中盘代表指数")},
         {QStringLiteral("100.HSI"), QStringLiteral("恒生指数"), QStringLiteral("港股大盘基准指数")},
         {QStringLiteral("124.HSTECH"), QStringLiteral("恒生科技指数"), QStringLiteral("港股科技龙头指数")},
+        {QStringLiteral("100.XIN9"), QStringLiteral("富时中国A50"), QStringLiteral("离岸A50指数")},
     };
 
     return presets;
@@ -82,6 +70,23 @@ const QVector<IndexPreset>& indexPresets() {
 bool isPredefinedIndexCode(const QString& rawCode) {
     return watchlist_utils::isPredefinedIndexCode(rawCode);
 }
+
+namespace headers {
+
+inline constexpr auto kUserAgent = "User-Agent";
+inline constexpr auto kReferer = "Referer";
+inline constexpr auto kAccept = "Accept";
+inline constexpr auto kConnection = "Connection";
+inline constexpr auto kContentType = "Content-Type";
+
+inline constexpr auto kEastMoneyReferer = "https://quote.eastmoney.com/";
+inline constexpr auto kEastMoneyContentType = "application/json;charset=UTF-8";
+
+} // namespace headers
+
+inline constexpr int kStockSearchDebounceMs = 400;
+inline constexpr int kStockSearchMinLength = 2;
+inline constexpr int kStockSearchResultLimit = 20;
 
 QIcon dialogWindowIcon(QWidget* parent) {
     if (parent && !parent->windowIcon().isNull()) {
@@ -326,36 +331,6 @@ QKeySequence normalizedHotkeySequence(const QKeySequence& sequence) {
     return sequence;
 }
 
-QStringList normalizeSinaCodesForMarket(const QString& rawCode, const QString& marketFilter) {
-    const QString code = rawCode.trimmed().toLower();
-    if (code.isEmpty()) {
-        return {};
-    }
-
-    if (marketFilter == QLatin1String("a")) {
-        if (code.startsWith(QLatin1String("sh")) || code.startsWith(QLatin1String("sz"))) {
-            return {code};
-        }
-        return {};
-    }
-
-    if (marketFilter == QLatin1String("hk")) {
-        if (code.startsWith(QLatin1String("hk"))) {
-            return {code};
-        }
-        return {};
-    }
-
-    if (marketFilter == QLatin1String("etf")) {
-        if (!code.startsWith(QLatin1String("of")) || code.size() <= 2) {
-            return {};
-        }
-        return {code};
-    }
-
-    return {};
-}
-
 void applyCompactFormLayout(QFormLayout* form) {
     if (!form) {
         return;
@@ -415,8 +390,6 @@ SettingsDialog::SettingsDialog(
     const AppConfig& cfg,
     const QVector<StockItem>& stocks,
     const QVector<StockItem>& indexes,
-    const QVector<StockItem>& sectors,
-    const QVector<StockItem>& futures,
     const QHash<QString, QString>& apiNamesByCode,
     const QString& dataYamlPath,
     QWidget* parent
@@ -425,8 +398,6 @@ SettingsDialog::SettingsDialog(
     , m_cfg(cfg)
     , m_stocks(stocks)
     , m_indexes(indexes)
-    , m_sectors(sectors)
-    , m_futures(futures)
     , m_apiNamesByCode(apiNamesByCode)
     , m_dataYamlPath(dataYamlPath)
     , m_uiLanguage(i18n::resolveLanguage(cfg.language)) {
@@ -449,7 +420,6 @@ SettingsDialog::SettingsDialog(
     tabs->addTab(makeScrollableTab(buildDisplayTab(), tabs), trText("settings.tab.display"));
     tabs->addTab(makeScrollableTab(buildStocksTab(), tabs), trText("settings.tab.stocks"));
     tabs->addTab(buildIndexSectorTab(), trText("settings.tab.indexSector"));
-    tabs->addTab(buildFuturesTab(), trText("settings.tab.futures"));
     tabs->addTab(makeScrollableTab(buildOtherTab(), tabs), trText("settings.tab.other"));
     tabs->addTab(makeScrollableTab(buildAboutTab(), tabs), trText("settings.tab.about"));
     root->addWidget(tabs);
@@ -674,62 +644,6 @@ QVector<StockItem> SettingsDialog::selectedIndexes() const {
         seen.insert(key);
 
         out.push_back({code, name});
-    }
-
-    return out;
-}
-
-QVector<StockItem> SettingsDialog::selectedSectors() const {
-    if (!m_sectorTable) {
-        return m_sectors;
-    }
-
-    QVector<StockItem> out;
-    QSet<QString> seen;
-
-    const QVector<StockItem> sectors = static_cast<StockTableWidget*>(m_sectorTable)->stocks();
-    for (const StockItem& sector : sectors) {
-        const QString code = normalizeSectorCode(sector.code);
-        if (code.isEmpty()) {
-            continue;
-        }
-
-        const QString key = watchCodeKey(code);
-        if (seen.contains(key)) {
-            continue;
-        }
-        seen.insert(key);
-
-        const QString name = sector.name.trimmed();
-        out.push_back({code, name.isEmpty() ? code : name});
-    }
-
-    return out;
-}
-
-QVector<StockItem> SettingsDialog::selectedFutures() const {
-    if (!m_futureTable) {
-        return m_futures;
-    }
-
-    QVector<StockItem> out;
-    QSet<QString> seen;
-
-    const QVector<StockItem> futures = static_cast<StockTableWidget*>(m_futureTable)->stocks();
-    for (const StockItem& future : futures) {
-        const QString code = normalizeFutureCode(future.code);
-        if (code.isEmpty()) {
-            continue;
-        }
-
-        const QString key = watchCodeKey(code);
-        if (seen.contains(key)) {
-            continue;
-        }
-        seen.insert(key);
-
-        const QString name = future.name.trimmed();
-        out.push_back({code, name.isEmpty() ? code : name});
     }
 
     return out;
@@ -1784,19 +1698,12 @@ QWidget* SettingsDialog::buildStocksTab() {
     searchLayout->setContentsMargins(0, 0, 0, 0);
     searchLayout->setSpacing(5);
 
-    m_stockMarketCombo = new QComboBox(searchRow);
-    m_stockMarketCombo->setFixedWidth(98);
-    m_stockMarketCombo->addItem(trText("settings.stocks.market1"), QStringLiteral("a"));
-    m_stockMarketCombo->addItem(trText("settings.stocks.market2"), QStringLiteral("hk"));
-    m_stockMarketCombo->addItem(trText("settings.stocks.market6"), QStringLiteral("etf"));
-
     m_stockSearchEdit = new QLineEdit(searchRow);
     m_stockSearchEdit->setPlaceholderText(trText("settings.stocks.searchPlaceholder"));
 
     m_stockSearchBtn = new QPushButton(trText("settings.stocks.search"), searchRow);
     m_stockSearchBtn->setMinimumWidth(76);
 
-    searchLayout->addWidget(m_stockMarketCombo);
     searchLayout->addWidget(m_stockSearchEdit, 1);
     searchLayout->addWidget(m_stockSearchBtn);
     vbox->addWidget(searchRow);
@@ -1890,7 +1797,7 @@ QWidget* SettingsDialog::buildStocksTab() {
 
     m_stockSearchDebounce = new QTimer(this);
     m_stockSearchDebounce->setSingleShot(true);
-    m_stockSearchDebounce->setInterval(400);
+    m_stockSearchDebounce->setInterval(kStockSearchDebounceMs);
 
     // --- Connections ---
 
@@ -1917,32 +1824,22 @@ QWidget* SettingsDialog::buildStocksTab() {
 
     // Filter spaces; trigger debounce on 3+ chars
     connect(m_stockSearchEdit, &QLineEdit::textEdited, this, [this](const QString& rawText) {
-        qInfo() << "[StockSearch] textEdited:" << rawText;
         QString text = rawText;
         text.remove(QLatin1Char(' '));
         if (text != rawText) {
             m_stockSearchEdit->setText(text);
         }
-        if (text.length() < 3) {
+        if (text.length() < kStockSearchMinLength) {
             m_stockSearchDebounce->stop();
             m_stockSuggestList->clear();
             m_stockSuggestList->hide();
             return;
         }
-        qInfo() << "[StockSearch] starting debounce for:" << text;
         m_stockSearchDebounce->start();
-    });
-
-    // When market type changes, re-trigger search if text is ready
-    connect(m_stockMarketCombo, &QComboBox::currentIndexChanged, this, [this](int) {
-        if (m_stockSearchEdit->text().length() >= 3) {
-            m_stockSearchDebounce->start();
-        }
     });
 
     // Manual search button: fire immediately (bypass debounce and min-length)
     connect(m_stockSearchBtn, &QPushButton::clicked, this, [this]() {
-        qInfo() << "[StockSearch] button clicked, keyword:" << m_stockSearchEdit->text();
         m_stockSearchDebounce->stop();
         doStockSearch(true);
     });
@@ -2138,750 +2035,89 @@ QWidget* SettingsDialog::buildIndexSectorTab() {
     indexLayout->addWidget(m_indexList, 1);
     root->addWidget(indexGroup, 1);
 
-    // --- Sector section ---
-    QGroupBox* sectorGroup = new QGroupBox(trText("settings.indexSector.sectorGroup"), w);
-    QVBoxLayout* sectorLayout = new QVBoxLayout(sectorGroup);
-    sectorLayout->setContentsMargins(6, 6, 6, 6);
-    sectorLayout->setSpacing(5);
-
-    QLabel* sectorHint = new QLabel(trText("settings.indexSector.sectorHint"), sectorGroup);
-    sectorHint->setWordWrap(true);
-    sectorLayout->addWidget(sectorHint);
-
-    QWidget* searchRow = new QWidget(sectorGroup);
-    QHBoxLayout* searchLayout = new QHBoxLayout(searchRow);
-    searchLayout->setContentsMargins(0, 0, 0, 0);
-    searchLayout->setSpacing(5);
-
-    m_sectorSearchEdit = new QLineEdit(searchRow);
-    m_sectorSearchEdit->setPlaceholderText(trText("settings.indexSector.sectorSearchPlaceholder"));
-    m_sectorSearchBtn = new QPushButton(trText("settings.stocks.search"), searchRow);
-    m_sectorSearchBtn->setMinimumWidth(76);
-
-    searchLayout->addWidget(m_sectorSearchEdit, 1);
-    searchLayout->addWidget(m_sectorSearchBtn);
-    sectorLayout->addWidget(searchRow);
-
-    m_sectorSuggestList = new QListWidget(this);
-    m_sectorSuggestList->setMaximumHeight(180);
-    m_sectorSuggestList->setFrameShape(QFrame::StyledPanel);
-    m_sectorSuggestList->hide();
-
-    StockTableWidget* table = new StockTableWidget(sectorGroup);
-    table->setHorizontalHeaderLabels({
-        trText("settings.stocks.colSeq"),
-        trText("settings.stocks.colCode"),
-        trText("settings.stocks.colName"),
-        trText("settings.stocks.colDel")
-    });
-    table->setMinimumHeight(140);
-
-    for (const StockItem& sector : m_sectors) {
-        const QString code = normalizeSectorCode(sector.code);
-        if (code.isEmpty() || table->containsCode(code)) {
-            continue;
-        }
-        table->addStockRow(code, sector.name);
-    }
-
-    m_sectorTable = table;
-    table->setConfirmDelete([this](const QString& display) -> bool {
-        const QMessageBox::StandardButton ret = showIconMessageBox(
-            this,
-            QMessageBox::Question,
-            trText("app.name"),
-            trText("settings.indexSector.sectorDelConfirm").arg(display),
-            QMessageBox::Yes | QMessageBox::No,
-            QMessageBox::No
-        );
-        return ret == QMessageBox::Yes;
-    });
-
-    QWidget* tableArea = new QWidget(sectorGroup);
-    QHBoxLayout* tableAreaLayout = new QHBoxLayout(tableArea);
-    tableAreaLayout->setContentsMargins(0, 0, 0, 0);
-    tableAreaLayout->setSpacing(6);
-    tableAreaLayout->addWidget(m_sectorTable, 1);
-
-    QWidget* orderBtnCol = new QWidget(tableArea);
-    QVBoxLayout* orderBtnLayout = new QVBoxLayout(orderBtnCol);
-    orderBtnLayout->setContentsMargins(0, 0, 0, 0);
-    orderBtnLayout->setSpacing(5);
-
-    auto makeOrderBtn = [&](const QString& label) -> QPushButton* {
-        QPushButton* btn = new QPushButton(label, orderBtnCol);
-        btn->setFixedWidth(56);
-        return btn;
-    };
-
-    QPushButton* btnTop = makeOrderBtn(trText("settings.stocks.moveTop"));
-    QPushButton* btnUp = makeOrderBtn(trText("settings.stocks.moveUp"));
-    QPushButton* btnDown = makeOrderBtn(trText("settings.stocks.moveDown"));
-    QPushButton* btnBottom = makeOrderBtn(trText("settings.stocks.moveBottom"));
-
-    orderBtnLayout->addStretch();
-    orderBtnLayout->addWidget(btnTop);
-    orderBtnLayout->addWidget(btnUp);
-    orderBtnLayout->addWidget(btnDown);
-    orderBtnLayout->addWidget(btnBottom);
-    orderBtnLayout->addStretch();
-
-    tableAreaLayout->addWidget(orderBtnCol);
-    sectorLayout->addWidget(tableArea, 1);
-    root->addWidget(sectorGroup, 1);
-
-    m_sectorSearchNam = new QNetworkAccessManager(this);
-    m_sectorSearchNam->setProxy(network_utils::proxyFromConfig(m_cfg));
-
-    m_sectorSearchDebounce = new QTimer(this);
-    m_sectorSearchDebounce->setSingleShot(true);
-    m_sectorSearchDebounce->setInterval(400);
-
-    auto currentTableRow = [this]() -> int {
-        return m_sectorTable ? m_sectorTable->currentRow() : -1;
-    };
-    connect(btnTop, &QPushButton::clicked, this, [this, currentTableRow]() {
-        const int newRow = static_cast<StockTableWidget*>(m_sectorTable)->moveRowTop(currentTableRow());
-        m_sectorTable->setCurrentCell(newRow, 0);
-    });
-    connect(btnUp, &QPushButton::clicked, this, [this, currentTableRow]() {
-        const int newRow = static_cast<StockTableWidget*>(m_sectorTable)->moveRowUp(currentTableRow());
-        m_sectorTable->setCurrentCell(newRow, 0);
-    });
-    connect(btnDown, &QPushButton::clicked, this, [this, currentTableRow]() {
-        const int newRow = static_cast<StockTableWidget*>(m_sectorTable)->moveRowDown(currentTableRow());
-        m_sectorTable->setCurrentCell(newRow, 0);
-    });
-    connect(btnBottom, &QPushButton::clicked, this, [this, currentTableRow]() {
-        const int newRow = static_cast<StockTableWidget*>(m_sectorTable)->moveRowBottom(currentTableRow());
-        m_sectorTable->setCurrentCell(newRow, 0);
-    });
-
-    connect(m_sectorSearchEdit, &QLineEdit::textEdited, this, [this](const QString& rawText) {
-        QString text = rawText;
-        text.remove(QLatin1Char(' '));
-        if (text != rawText) {
-            m_sectorSearchEdit->setText(text);
-        }
-
-        if (text.length() < 2) {
-            m_sectorSearchDebounce->stop();
-            if (m_sectorSearchReply) {
-                m_sectorSearchReply->abort();
-                m_sectorSearchReply->deleteLater();
-                m_sectorSearchReply = nullptr;
-            }
-            m_sectorSuggestList->clear();
-            m_sectorSuggestList->hide();
-            return;
-        }
-
-        m_sectorSearchDebounce->start();
-    });
-
-    connect(m_sectorSearchBtn, &QPushButton::clicked, this, [this]() {
-        if (m_sectorSearchDebounce) {
-            m_sectorSearchDebounce->stop();
-        }
-        doSectorSearch(true);
-    });
-
-    connect(m_sectorSearchDebounce, &QTimer::timeout, this, [this]() {
-        doSectorSearch();
-    });
-
-    connect(m_sectorSuggestList, &QListWidget::itemClicked, this, [this](QListWidgetItem* listItem) {
-        if (!listItem) {
-            return;
-        }
-
-        const QString code = normalizeSectorCode(listItem->data(Qt::UserRole).toString());
-        const QString name = listItem->data(Qt::UserRole + 1).toString().trimmed();
-        if (code.isEmpty()) {
-            return;
-        }
-
-        StockTableWidget* tbl = static_cast<StockTableWidget*>(m_sectorTable);
-        if (tbl->containsCode(code)) {
-            showIconMessageBox(
-                this,
-                QMessageBox::Information,
-                trText("app.name"),
-                trText("settings.indexSector.sectorDuplicate")
-            );
-        } else {
-            tbl->addStockRow(code, name);
-        }
-
-        m_sectorSuggestList->clear();
-        m_sectorSuggestList->hide();
-        m_sectorSearchEdit->clear();
-    });
-
     return w;
 }
 
-QWidget* SettingsDialog::buildFuturesTab() {
-    QWidget* w = new QWidget(this);
-    QVBoxLayout* root = new QVBoxLayout(w);
-    root->setSpacing(8);
-    root->setContentsMargins(6, 6, 6, 6);
-
-    QGroupBox* futureGroup = new QGroupBox(trText("settings.futures.group"), w);
-    QVBoxLayout* futureLayout = new QVBoxLayout(futureGroup);
-    futureLayout->setContentsMargins(6, 6, 6, 6);
-    futureLayout->setSpacing(5);
-
-    QLabel* futureHint = new QLabel(trText("settings.futures.hint"), futureGroup);
-    futureHint->setWordWrap(true);
-    futureLayout->addWidget(futureHint);
-
-    QWidget* searchRow = new QWidget(futureGroup);
-    QHBoxLayout* searchLayout = new QHBoxLayout(searchRow);
-    searchLayout->setContentsMargins(0, 0, 0, 0);
-    searchLayout->setSpacing(5);
-
-    m_futureSearchEdit = new QLineEdit(searchRow);
-    m_futureSearchEdit->setPlaceholderText(trText("settings.futures.searchPlaceholder"));
-    m_futureSearchBtn = new QPushButton(trText("settings.stocks.search"), searchRow);
-    m_futureSearchBtn->setMinimumWidth(76);
-
-    searchLayout->addWidget(m_futureSearchEdit, 1);
-    searchLayout->addWidget(m_futureSearchBtn);
-    futureLayout->addWidget(searchRow);
-
-    m_futureSuggestList = new QListWidget(this);
-    m_futureSuggestList->setMaximumHeight(180);
-    m_futureSuggestList->setFrameShape(QFrame::StyledPanel);
-    m_futureSuggestList->hide();
-
-    StockTableWidget* table = new StockTableWidget(futureGroup);
-    table->setHorizontalHeaderLabels({
-        trText("settings.stocks.colSeq"),
-        trText("settings.stocks.colCode"),
-        trText("settings.stocks.colName"),
-        trText("settings.stocks.colDel")
-    });
-    table->setMinimumHeight(180);
-
-    for (const StockItem& future : m_futures) {
-        const QString code = normalizeFutureCode(future.code);
-        if (code.isEmpty() || table->containsCode(code)) {
-            continue;
-        }
-        table->addStockRow(code, future.name);
-    }
-
-    m_futureTable = table;
-    table->setConfirmDelete([this](const QString& display) -> bool {
-        const QMessageBox::StandardButton ret = showIconMessageBox(
-            this,
-            QMessageBox::Question,
-            trText("app.name"),
-            trText("settings.futures.delConfirm").arg(display),
-            QMessageBox::Yes | QMessageBox::No,
-            QMessageBox::No
-        );
-        return ret == QMessageBox::Yes;
-    });
-
-    QWidget* tableArea = new QWidget(futureGroup);
-    QHBoxLayout* tableAreaLayout = new QHBoxLayout(tableArea);
-    tableAreaLayout->setContentsMargins(0, 0, 0, 0);
-    tableAreaLayout->setSpacing(6);
-    tableAreaLayout->addWidget(m_futureTable, 1);
-
-    QWidget* orderBtnCol = new QWidget(tableArea);
-    QVBoxLayout* orderBtnLayout = new QVBoxLayout(orderBtnCol);
-    orderBtnLayout->setContentsMargins(0, 0, 0, 0);
-    orderBtnLayout->setSpacing(5);
-
-    auto makeOrderBtn = [&](const QString& label) -> QPushButton* {
-        QPushButton* btn = new QPushButton(label, orderBtnCol);
-        btn->setFixedWidth(56);
-        return btn;
-    };
-
-    QPushButton* btnTop = makeOrderBtn(trText("settings.stocks.moveTop"));
-    QPushButton* btnUp = makeOrderBtn(trText("settings.stocks.moveUp"));
-    QPushButton* btnDown = makeOrderBtn(trText("settings.stocks.moveDown"));
-    QPushButton* btnBottom = makeOrderBtn(trText("settings.stocks.moveBottom"));
-
-    orderBtnLayout->addStretch();
-    orderBtnLayout->addWidget(btnTop);
-    orderBtnLayout->addWidget(btnUp);
-    orderBtnLayout->addWidget(btnDown);
-    orderBtnLayout->addWidget(btnBottom);
-    orderBtnLayout->addStretch();
-
-    tableAreaLayout->addWidget(orderBtnCol);
-    futureLayout->addWidget(tableArea, 1);
-    root->addWidget(futureGroup, 1);
-
-    m_futureSearchNam = new QNetworkAccessManager(this);
-    m_futureSearchNam->setProxy(network_utils::proxyFromConfig(m_cfg));
-
-    m_futureSearchDebounce = new QTimer(this);
-    m_futureSearchDebounce->setSingleShot(true);
-    m_futureSearchDebounce->setInterval(400);
-
-    auto currentTableRow = [this]() -> int {
-        return m_futureTable ? m_futureTable->currentRow() : -1;
-    };
-    connect(btnTop, &QPushButton::clicked, this, [this, currentTableRow]() {
-        const int newRow = static_cast<StockTableWidget*>(m_futureTable)->moveRowTop(currentTableRow());
-        m_futureTable->setCurrentCell(newRow, 0);
-    });
-    connect(btnUp, &QPushButton::clicked, this, [this, currentTableRow]() {
-        const int newRow = static_cast<StockTableWidget*>(m_futureTable)->moveRowUp(currentTableRow());
-        m_futureTable->setCurrentCell(newRow, 0);
-    });
-    connect(btnDown, &QPushButton::clicked, this, [this, currentTableRow]() {
-        const int newRow = static_cast<StockTableWidget*>(m_futureTable)->moveRowDown(currentTableRow());
-        m_futureTable->setCurrentCell(newRow, 0);
-    });
-    connect(btnBottom, &QPushButton::clicked, this, [this, currentTableRow]() {
-        const int newRow = static_cast<StockTableWidget*>(m_futureTable)->moveRowBottom(currentTableRow());
-        m_futureTable->setCurrentCell(newRow, 0);
-    });
-
-    connect(m_futureSearchEdit, &QLineEdit::textEdited, this, [this](const QString& rawText) {
-        QString text = rawText;
-        text.remove(QLatin1Char(' '));
-        if (text != rawText) {
-            m_futureSearchEdit->setText(text);
-        }
-
-        if (text.length() < 2) {
-            m_futureSearchDebounce->stop();
-            if (m_futureSearchReply) {
-                m_futureSearchReply->abort();
-                m_futureSearchReply->deleteLater();
-                m_futureSearchReply = nullptr;
-            }
-            m_futureSuggestList->clear();
-            m_futureSuggestList->hide();
-            return;
-        }
-
-        m_futureSearchDebounce->start();
-    });
-
-    connect(m_futureSearchBtn, &QPushButton::clicked, this, [this]() {
-        if (m_futureSearchDebounce) {
-            m_futureSearchDebounce->stop();
-        }
-        doFutureSearch(true);
-    });
-
-    connect(m_futureSearchDebounce, &QTimer::timeout, this, [this]() {
-        doFutureSearch();
-    });
-
-    connect(m_futureSuggestList, &QListWidget::itemClicked, this, [this](QListWidgetItem* listItem) {
-        if (!listItem) {
-            return;
-        }
-
-        const QString code = normalizeFutureCode(listItem->data(Qt::UserRole).toString());
-        const QString name = listItem->data(Qt::UserRole + 1).toString().trimmed();
-        if (code.isEmpty()) {
-            return;
-        }
-
-        StockTableWidget* tbl = static_cast<StockTableWidget*>(m_futureTable);
-        if (tbl->containsCode(code)) {
-            showIconMessageBox(
-                this,
-                QMessageBox::Information,
-                trText("app.name"),
-                trText("settings.futures.duplicate")
-            );
-        } else {
-            tbl->addStockRow(code, name);
-        }
-
-        m_futureSuggestList->clear();
-        m_futureSuggestList->hide();
-        m_futureSearchEdit->clear();
-    });
-
-    return w;
-}
-
-void SettingsDialog::parseSectorSuggestResult(const QByteArray& data) {
-    if (!m_sectorSuggestList || !m_sectorSearchEdit || !m_sectorSearchBtn) {
+void SettingsDialog::parseSearchResult(const QByteArray& data) {
+    if (!m_stockSuggestList || !m_stockSearchEdit || !m_stockSearchBtn) {
         return;
     }
 
     if (data.isEmpty()) {
-        m_sectorSuggestList->clear();
-        m_sectorSuggestList->hide();
+        m_stockSuggestList->clear();
+        m_stockSuggestList->hide();
         return;
     }
 
     QJsonParseError parseError;
     const QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
     if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-        qWarning() << "[SectorSearch] parse failed:" << parseError.errorString();
-        m_sectorSuggestList->clear();
-        m_sectorSuggestList->hide();
-        return;
-    }
-
-    const QJsonObject root = doc.object();
-    const QJsonObject tableObj = root.value(QStringLiteral("QuotationCodeTable")).toObject();
-    const QJsonArray items = tableObj.value(QStringLiteral("Data")).toArray();
-
-    m_sectorSuggestList->clear();
-
-    QSet<QString> addedCodes;
-    for (const QJsonValue& value : items) {
-        if (!value.isObject()) {
-            continue;
-        }
-
-        static const QString kSectorSecurityType = QStringLiteral("9");
-
-        const QJsonObject obj = value.toObject();
-        if (obj.value(QStringLiteral("SecurityType")).toString() != kSectorSecurityType) {
-            continue;
-        }
-        const QString code = normalizeSectorCode(obj.value(QStringLiteral("Code")).toString());
-        const QString name = obj.value(QStringLiteral("Name")).toString().trimmed();
-        if (code.isEmpty()) {
-            continue;
-        }
-
-        const QString key = watchCodeKey(code);
-        if (addedCodes.contains(key)) {
-            continue;
-        }
-        addedCodes.insert(key);
-
-        const QString displayText = name.isEmpty()
-            ? code
-            : (code + QStringLiteral(" - ") + name);
-        QListWidgetItem* item = new QListWidgetItem(displayText, m_sectorSuggestList);
-        item->setData(Qt::UserRole, code);
-        item->setData(Qt::UserRole + 1, name);
-    }
-
-    if (m_sectorSuggestList->count() > 0) {
-        const QPoint topLeft = m_sectorSearchEdit->mapTo(this,
-            QPoint(0, m_sectorSearchEdit->height() + 2));
-        const int w = m_sectorSearchEdit->width() + 6 + m_sectorSearchBtn->width();
-        const int itemH = m_sectorSuggestList->sizeHintForRow(0);
-        const int h = qMin(m_sectorSuggestList->count() * (itemH > 0 ? itemH : 22) + 6, 180);
-        m_sectorSuggestList->setGeometry(topLeft.x(), topLeft.y(), w, h);
-        m_sectorSuggestList->raise();
-        m_sectorSuggestList->setVisible(true);
-    } else {
-        m_sectorSuggestList->setVisible(false);
-    }
-}
-
-void SettingsDialog::doSectorSearch(bool forceSearch) {
-    if (!m_sectorSearchEdit || !m_sectorSearchNam) {
-        return;
-    }
-
-    const QString keyword = m_sectorSearchEdit->text().trimmed();
-    if (!forceSearch && keyword.length() < 2) {
-        return;
-    }
-    if (keyword.isEmpty()) {
-        return;
-    }
-
-    if (m_sectorSearchReply) {
-        m_sectorSearchReply->abort();
-        m_sectorSearchReply->deleteLater();
-        m_sectorSearchReply = nullptr;
-    }
-
-    static constexpr int kSectorSearchCount = 10;
-
-    QUrl url(QStringLiteral("https://searchapi.eastmoney.com/api/suggest/get"));
-    QUrlQuery query;
-    query.addQueryItem(QStringLiteral("input"), keyword);
-    query.addQueryItem(
-        QStringLiteral("type"),
-        QString::fromLatin1(QUrl::toPercentEncoding(QStringLiteral("14")))
-    );
-    query.addQueryItem(QStringLiteral("count"), QString::number(kSectorSearchCount));
-    url.setQuery(query);
-
-    qInfo().noquote() << "[SectorSearch] GET" << url.toString(QUrl::FullyEncoded);
-
-    QNetworkRequest req(url);
-    req.setHeader(
-        QNetworkRequest::UserAgentHeader,
-        network_utils::effectiveUserAgent(m_cfg)
-    );
-    req.setRawHeader("Referer", "https://quote.eastmoney.com");
-    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
-
-    const network_logger::RequestTrace trace = network_logger::logRequestStart(
-        "eastmoney-sector-search",
-        "GET",
-        req,
-        m_sectorSearchNam->proxy()
-    );
-
-    m_sectorSearchReply = m_sectorSearchNam->get(req);
-    connect(m_sectorSearchReply, &QNetworkReply::finished, this, [this, trace]() {
-        if (!m_sectorSearchReply) {
-            return;
-        }
-
-        const QNetworkReply::NetworkError netErr = m_sectorSearchReply->error();
-        const QByteArray data = m_sectorSearchReply->readAll();
-
-        network_logger::logRequestFinish(trace, m_sectorSearchReply, data.size(), data);
-
-        m_sectorSearchReply->deleteLater();
-        m_sectorSearchReply = nullptr;
-
-        if (netErr != QNetworkReply::NoError) {
-            qWarning() << "[SectorSearch] network error" << netErr;
-            m_sectorSuggestList->clear();
-            m_sectorSuggestList->hide();
-            return;
-        }
-
-        parseSectorSuggestResult(data);
-    });
-}
-
-void SettingsDialog::parseFutureSuggestResult(const QByteArray& data) {
-    if (!m_futureSuggestList || !m_futureSearchEdit || !m_futureSearchBtn) {
-        return;
-    }
-
-    if (data.isEmpty()) {
-        m_futureSuggestList->clear();
-        m_futureSuggestList->hide();
-        return;
-    }
-
-    QJsonParseError parseError;
-    const QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
-    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-        qWarning() << "[FutureSearch] parse failed:" << parseError.errorString();
-        m_futureSuggestList->clear();
-        m_futureSuggestList->hide();
-        return;
-    }
-
-    const QJsonObject root = doc.object();
-    const QJsonObject tableObj = root.value(QStringLiteral("QuotationCodeTable")).toObject();
-    const QJsonArray items = tableObj.value(QStringLiteral("Data")).toArray();
-
-    m_futureSuggestList->clear();
-
-    QSet<QString> addedCodes;
-    for (const QJsonValue& value : items) {
-        if (!value.isObject()) {
-            continue;
-        }
-
-        static const QSet<QString> kFutureSecurityTypes {
-            QStringLiteral("12"),
-            QStringLiteral("13"),
-        };
-
-        const QJsonObject obj = value.toObject();
-        if (!kFutureSecurityTypes.contains(obj.value(QStringLiteral("SecurityType")).toString())) {
-            continue;
-        }
-
-        const QString code = normalizeFutureCode(obj.value(QStringLiteral("QuoteID")).toString());
-        const QString name = obj.value(QStringLiteral("Name")).toString().trimmed();
-        if (code.isEmpty()) {
-            continue;
-        }
-
-        const QString key = watchCodeKey(code);
-        if (addedCodes.contains(key)) {
-            continue;
-        }
-        addedCodes.insert(key);
-
-        const QString displayText = name.isEmpty()
-            ? code
-            : (code + QStringLiteral(" - ") + name);
-        QListWidgetItem* item = new QListWidgetItem(displayText, m_futureSuggestList);
-        item->setData(Qt::UserRole, code);
-        item->setData(Qt::UserRole + 1, name);
-    }
-
-    if (m_futureSuggestList->count() > 0) {
-        const QPoint topLeft = m_futureSearchEdit->mapTo(this,
-            QPoint(0, m_futureSearchEdit->height() + 2));
-        const int w = m_futureSearchEdit->width() + 6 + m_futureSearchBtn->width();
-        const int itemH = m_futureSuggestList->sizeHintForRow(0);
-        const int h = qMin(m_futureSuggestList->count() * (itemH > 0 ? itemH : 22) + 6, 180);
-        m_futureSuggestList->setGeometry(topLeft.x(), topLeft.y(), w, h);
-        m_futureSuggestList->raise();
-        m_futureSuggestList->setVisible(true);
-    } else {
-        m_futureSuggestList->setVisible(false);
-    }
-}
-
-void SettingsDialog::doFutureSearch(bool forceSearch) {
-    if (!m_futureSearchEdit || !m_futureSearchNam) {
-        return;
-    }
-
-    const QString keyword = m_futureSearchEdit->text().trimmed();
-    if (!forceSearch && keyword.length() < 2) {
-        return;
-    }
-    if (keyword.isEmpty()) {
-        return;
-    }
-
-    if (m_futureSearchReply) {
-        m_futureSearchReply->abort();
-        m_futureSearchReply->deleteLater();
-        m_futureSearchReply = nullptr;
-    }
-
-    static constexpr int kFutureSearchCount = 10;
-
-    QUrl url(QStringLiteral("https://searchapi.eastmoney.com/api/suggest/get"));
-    QUrlQuery query;
-    query.addQueryItem(QStringLiteral("input"), keyword);
-    query.addQueryItem(
-        QStringLiteral("type"),
-        QString::fromLatin1(QUrl::toPercentEncoding(QStringLiteral("14")))
-    );
-    query.addQueryItem(QStringLiteral("count"), QString::number(kFutureSearchCount));
-    url.setQuery(query);
-
-    qInfo().noquote() << "[FutureSearch] GET" << url.toString(QUrl::FullyEncoded);
-
-    QNetworkRequest req(url);
-    req.setHeader(
-        QNetworkRequest::UserAgentHeader,
-        network_utils::effectiveUserAgent(m_cfg)
-    );
-    req.setRawHeader("Referer", "https://quote.eastmoney.com");
-    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
-
-    const network_logger::RequestTrace trace = network_logger::logRequestStart(
-        "eastmoney-future-search",
-        "GET",
-        req,
-        m_futureSearchNam->proxy()
-    );
-
-    m_futureSearchReply = m_futureSearchNam->get(req);
-    connect(m_futureSearchReply, &QNetworkReply::finished, this, [this, trace]() {
-        if (!m_futureSearchReply) {
-            return;
-        }
-
-        const QNetworkReply::NetworkError netErr = m_futureSearchReply->error();
-        const QByteArray data = m_futureSearchReply->readAll();
-
-        network_logger::logRequestFinish(trace, m_futureSearchReply, data.size(), data);
-
-        m_futureSearchReply->deleteLater();
-        m_futureSearchReply = nullptr;
-
-        if (netErr != QNetworkReply::NoError) {
-            qWarning() << "[FutureSearch] network error" << netErr;
-            m_futureSuggestList->clear();
-            m_futureSuggestList->hide();
-            return;
-        }
-
-        parseFutureSuggestResult(data);
-    });
-}
-
-void SettingsDialog::parseSinaSearchResult(const QByteArray& data) {
-    if (data.isEmpty()) {
-        qInfo() << "[StockSearch] parseSinaSearchResult: empty data";
+        qWarning() << "[StockSearch] parse failed:" << parseError.errorString();
         m_stockSuggestList->clear();
         m_stockSuggestList->hide();
         return;
     }
 
-    // Sina suggest API returns GBK-encoded text; decode accordingly.
-    QString response;
-    auto decoder = QStringDecoder(QStringDecoder::System);
-    // Try GB18030 first (superset of GBK/GB2312)
-    auto gb18030 = QStringDecoder("GB18030");
-    if (gb18030.isValid()) {
-        response = gb18030.decode(data);
-    } else {
-        // Fallback: system encoding or UTF-8
-        response = decoder.isValid() ? decoder.decode(data) : QString::fromUtf8(data);
-    }
-
-    qInfo() << "[StockSearch] parseSinaSearchResult response:" << response.left(300);
-
-    QString content = response.trimmed();
-    const QString prefix = QStringLiteral("var suggestvalue=\"");
-    const QString suffix = QStringLiteral("\";");
-    if (content.startsWith(prefix)) {
-        content.remove(0, prefix.size());
-    }
-    if (content.endsWith(suffix)) {
-        content.chop(suffix.size());
-    }
-    content = content.trimmed();
-
-    if (content.isEmpty()) {
-        qInfo() << "[StockSearch] Empty parsed content";
-        m_stockSuggestList->clear();
-        m_stockSuggestList->hide();
-        return;
-    }
-
-    qInfo() << "[StockSearch] Parsed content:" << content.left(300);
-
-    const QStringList entries = content.split(QLatin1Char(';'), Qt::SkipEmptyParts);
-    const QString marketFilter = m_stockMarketCombo
-        ? m_stockMarketCombo->currentData().toString().trimmed().toLower()
-        : QStringLiteral("a");
-    QSet<QString> addedCodes;
+    const QJsonObject root = doc.object();
+    const QJsonArray items = root.value(QStringLiteral("Data")).toArray();
 
     m_stockSuggestList->clear();
+    QSet<QString> addedCodes;
 
-    for (const QString& entry : entries) {
-        const QStringList fields = entry.split(QLatin1Char(','));
-        qInfo() << "[StockSearch] entry fields count:" << fields.size() << fields;
-        if (fields.isEmpty()) {
+    for (const QJsonValue& value : items) {
+        if (!value.isObject()) {
             continue;
         }
 
-        const QString rawCode = fields.at(0).trimmed();
-        const QString name = (fields.size() > 4) ? fields.at(4).trimmed() : QString();
-        const QStringList normalizedCodes = normalizeSinaCodesForMarket(rawCode, marketFilter);
-        for (const QString& code : normalizedCodes) {
-            if (addedCodes.contains(code)) {
-                continue;
-            }
-            addedCodes.insert(code);
+        const QJsonObject obj = value.toObject();
+        QString quoteId = obj.value(QStringLiteral("QuoteID")).toString().trimmed();
 
-            const QString displayText = name.isEmpty()
-                ? code
-                : (code + QStringLiteral(" - ") + name);
-            QListWidgetItem* item = new QListWidgetItem(displayText, m_stockSuggestList);
-            item->setData(Qt::UserRole, code);
-            item->setData(Qt::UserRole + 1, name);
+        if (quoteId.isEmpty()) {
+            QString market;
+            const QJsonValue marketValue = obj.value(QStringLiteral("MktNum"));
+            if (marketValue.isString()) {
+                market = marketValue.toString().trimmed();
+            } else if (marketValue.isDouble()) {
+                market = QString::number(static_cast<int>(marketValue.toDouble()));
+            }
+
+            const QString symbol = obj.value(QStringLiteral("Code")).toString().trimmed();
+            if (!market.isEmpty() && !symbol.isEmpty()) {
+                quoteId = market + QStringLiteral(".") + symbol;
+            } else {
+                quoteId = symbol;
+            }
         }
+
+        QString normalizedCode = normalizeApiWatchCode(quoteId);
+        if (normalizedCode.isEmpty()) {
+            normalizedCode = normalizeApiWatchCode(obj.value(QStringLiteral("Code")).toString());
+        }
+        if (normalizedCode.isEmpty()) {
+            continue;
+        }
+
+        const QString key = watchCodeKey(normalizedCode);
+        if (addedCodes.contains(key)) {
+            continue;
+        }
+        addedCodes.insert(key);
+
+        const QString name = obj.value(QStringLiteral("Name")).toString().trimmed();
+        const QString securityType = obj.value(QStringLiteral("SecurityTypeName")).toString().trimmed();
+        QString displayText = name.isEmpty()
+            ? normalizedCode
+            : (normalizedCode + QStringLiteral(" - ") + name);
+        if (!securityType.isEmpty()) {
+            displayText += QStringLiteral(" [") + securityType + QStringLiteral("]");
+        }
+
+        QListWidgetItem* item = new QListWidgetItem(displayText, m_stockSuggestList);
+        item->setData(Qt::UserRole, normalizedCode);
+        item->setData(Qt::UserRole + 1, name);
     }
 
-    qInfo() << "[StockSearch] suggestion count:" << m_stockSuggestList->count();
-
     if (m_stockSuggestList->count() > 0) {
-        // Position floating list below the search edit, overlaying the table
         const QPoint topLeft = m_stockSearchEdit->mapTo(this,
             QPoint(0, m_stockSearchEdit->height() + 2));
         const int w = m_stockSearchEdit->width() + 6 + m_stockSearchBtn->width();
@@ -2896,48 +2132,46 @@ void SettingsDialog::parseSinaSearchResult(const QByteArray& data) {
 }
 
 void SettingsDialog::doStockSearch(bool forceSearch) {
-    qInfo() << "[StockSearch] doStockSearch called"
-             << "edit:" << (m_stockSearchEdit ? "ok" : "null")
-             << "nam:" << (m_stockSearchNam ? "ok" : "null");
     if (!m_stockSearchEdit || !m_stockSearchNam) {
         return;
     }
 
     const QString keyword = m_stockSearchEdit->text().trimmed();
-    qInfo() << "[StockSearch] keyword:" << keyword << "length:" << keyword.length();
-    if (!forceSearch && keyword.length() < 3) {
+    if (!forceSearch && keyword.length() < kStockSearchMinLength) {
         return;
     }
     if (keyword.isEmpty()) {
         return;
     }
 
-    // Cancel in-flight request
     if (m_stockSearchReply) {
         m_stockSearchReply->abort();
         m_stockSearchReply->deleteLater();
         m_stockSearchReply = nullptr;
     }
 
-    const QUrl url(
-        QStringLiteral("http://suggest3.sinajs.cn/suggest/type=2&key=")
-        + QString::fromUtf8(QUrl::toPercentEncoding(keyword))
-        + QStringLiteral("&name=suggestvalue")
+    QUrl url(QStringLiteral("https://searchapi.eastmoney.com/api/Info/Search"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("type"), QStringLiteral("14"));
+    query.addQueryItem(
+        QStringLiteral("and14"),
+        QStringLiteral("MultiMatch/Name,Code,PinYin/%1/true").arg(keyword)
     );
-
-    qInfo().noquote() << "[StockSearch] GET" << url.toString(QUrl::FullyEncoded);
+    query.addQueryItem(QStringLiteral("pageIndex14"), QStringLiteral("1"));
+    query.addQueryItem(QStringLiteral("pageSize14"), QString::number(kStockSearchResultLimit));
+    url.setQuery(query);
 
     QNetworkRequest req(url);
-    req.setHeader(
-        QNetworkRequest::UserAgentHeader,
-        network_utils::effectiveUserAgent(m_cfg)
-    );
-    req.setRawHeader("Referer", "https://finance.sina.com.cn");
+    req.setRawHeader(headers::kUserAgent, network_utils::effectiveUserAgent(m_cfg).toUtf8());
+    req.setRawHeader(headers::kReferer, headers::kEastMoneyReferer);
+    req.setRawHeader(headers::kAccept, "*/*");
+    req.setRawHeader(headers::kConnection, "keep-alive");
+    req.setRawHeader(headers::kContentType, headers::kEastMoneyContentType);
     req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
 
     const network_logger::RequestTrace trace = network_logger::logRequestStart(
-        "sina-stock-search",
-        "GET",
+        QStringLiteral("eastmoney-search"),
+        QStringLiteral("GET"),
         req,
         m_stockSearchNam->proxy()
     );
@@ -2947,9 +2181,7 @@ void SettingsDialog::doStockSearch(bool forceSearch) {
         if (!m_stockSearchReply) {
             return;
         }
-        const int httpStatus = m_stockSearchReply->attribute(
-            QNetworkRequest::HttpStatusCodeAttribute
-        ).toInt();
+
         const QNetworkReply::NetworkError netErr = m_stockSearchReply->error();
         const QByteArray data = m_stockSearchReply->readAll();
 
@@ -2959,15 +2191,13 @@ void SettingsDialog::doStockSearch(bool forceSearch) {
         m_stockSearchReply = nullptr;
 
         if (netErr != QNetworkReply::NoError) {
-            qWarning() << "[StockSearch] Network error" << netErr
-                       << "HTTP status" << httpStatus;
-        } else {
-            qInfo() << "[StockSearch] HTTP" << httpStatus
-                     << "body size" << data.size()
-                     << "preview:" << data.left(200);
+            qWarning() << "[StockSearch] network error" << netErr;
+            m_stockSuggestList->clear();
+            m_stockSuggestList->hide();
+            return;
         }
 
-        parseSinaSearchResult(data);
+        parseSearchResult(data);
     });
 }
 

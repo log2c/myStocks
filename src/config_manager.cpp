@@ -125,10 +125,17 @@ QString ConfigManager::appSettingsFilePath() {
     return QDir(cacheDir).filePath(QString::fromLatin1(app_constants::kSettingsFileName));
 }
 
-QVector<StockItem> ConfigManager::loadStocksFromYaml(const QString& filePath) {
+QVector<StockItem> ConfigManager::loadStocksFromYaml(
+    const QString& filePath,
+    bool* migratedLegacyCodes
+) {
     QVector<StockItem> out;
+    bool migrated = false;
     if (filePath.trimmed().isEmpty()) {
         qWarning() << "ConfigManager::loadStocksFromYaml path is empty.";
+        if (migratedLegacyCodes) {
+            *migratedLegacyCodes = false;
+        }
         return out;
     }
 
@@ -136,6 +143,9 @@ QVector<StockItem> ConfigManager::loadStocksFromYaml(const QString& filePath) {
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         qWarning() << "ConfigManager::loadStocksFromYaml failed to open"
                    << filePath << file.errorString();
+        if (migratedLegacyCodes) {
+            *migratedLegacyCodes = false;
+        }
         return out;
     }
 
@@ -148,6 +158,26 @@ QVector<StockItem> ConfigManager::loadStocksFromYaml(const QString& filePath) {
     QString curCode;
     QString curName;
 
+    const auto flushCurrent = [&]() {
+        const QString rawCode = curCode.trimmed();
+        if (rawCode.isEmpty()) {
+            return;
+        }
+
+        const QString normalizedCode = watchlist_utils::normalizeApiWatchCode(rawCode);
+        if (normalizedCode.isEmpty()) {
+            qWarning() << "ConfigManager::loadStocksFromYaml skip invalid code"
+                       << rawCode << "in" << filePath;
+            return;
+        }
+
+        if (normalizedCode.compare(rawCode, Qt::CaseSensitive) != 0) {
+            migrated = true;
+        }
+
+        out.push_back({normalizedCode, curName.isEmpty() ? normalizedCode : curName});
+    };
+
     while (!file.atEnd()) {
         const QString line = QString::fromUtf8(file.readLine()).trimmed();
         if (line.isEmpty() || line.startsWith('#')) {
@@ -157,9 +187,7 @@ QVector<StockItem> ConfigManager::loadStocksFromYaml(const QString& filePath) {
         const QRegularExpressionMatch mCode =
             QRegularExpression("^-\\s*code\\s*:\\s*(\\S+)").match(line);
         if (mCode.hasMatch()) {
-            if (!curCode.isEmpty()) {
-                out.push_back({curCode, curName.isEmpty() ? curCode : curName});
-            }
+            flushCurrent();
             curCode = mCode.captured(1).trimmed();
             curName.clear();
             continue;
@@ -172,12 +200,15 @@ QVector<StockItem> ConfigManager::loadStocksFromYaml(const QString& filePath) {
         }
     }
 
-    if (!curCode.isEmpty()) {
-        out.push_back({curCode, curName.isEmpty() ? curCode : curName});
+    flushCurrent();
+
+    if (migratedLegacyCodes) {
+        *migratedLegacyCodes = migrated;
     }
 
     qInfo() << "ConfigManager::loadStocksFromYaml loaded"
-            << out.size() << "stocks from" << filePath;
+            << out.size() << "stocks from" << filePath
+            << "migratedLegacyCodes=" << migrated;
 
     return out;
 }
@@ -196,8 +227,14 @@ bool ConfigManager::saveStocksToYaml(const QString& filePath, const QVector<Stoc
     content += QStringLiteral("# stocks\n");
     content += QStringLiteral("stocks:\n");
     for (const StockItem& s : stocks) {
-        content += QStringLiteral("  - code: ") + s.code + QStringLiteral("\n");
-        content += QStringLiteral("    name: ") + s.name + QStringLiteral("\n");
+        const QString normalizedCode = watchlist_utils::normalizeApiWatchCode(s.code);
+        if (normalizedCode.isEmpty()) {
+            continue;
+        }
+
+        content += QStringLiteral("  - code: ") + normalizedCode + QStringLiteral("\n");
+        const QString normalizedName = s.name.trimmed().isEmpty() ? normalizedCode : s.name.trimmed();
+        content += QStringLiteral("    name: ") + normalizedName + QStringLiteral("\n");
     }
 
     QSaveFile file(filePath);

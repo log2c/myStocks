@@ -16,6 +16,22 @@
 
 namespace {
 
+namespace headers {
+
+inline constexpr auto kUserAgent = "User-Agent";
+inline constexpr auto kReferer = "Referer";
+inline constexpr auto kAccept = "Accept";
+inline constexpr auto kOrigin = "Origin";
+inline constexpr auto kConnection = "Connection";
+inline constexpr auto kContentType = "Content-Type";
+
+inline constexpr auto kEastMoneyReferer = "https://quote.eastmoney.com/";
+inline constexpr auto kTonghuashunOrigin = "https://52etf.site";
+inline constexpr auto kTonghuashunReferer = "https://52etf.site/";
+inline constexpr auto kJsonContentType = "application/json; charset=UTF-8";
+
+} // namespace headers
+
 bool isDigitsOnly(const QString& text) {
     if (text.isEmpty()) {
         return false;
@@ -368,18 +384,22 @@ void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
         return;
     }
 
-    QUrl url("https://push2.eastmoney.com/api/qt/ulist.np/get");
+    QUrl url("https://push2delay.eastmoney.com/api/qt/ulist.np/get");
     QUrlQuery query;
     query.addQueryItem("secids", secIds.join(','));
-    query.addQueryItem("fields", "f12,f13,f14,f2,f3,f4,f18");
-    query.addQueryItem("ut", "fa5fd1943c7b386f172d6893dbfba10b");
+    query.addQueryItem(
+        "fields",
+        "f2,f3,f4,f6,f8,f9,f12,f13,f14,f18,f20,f22,f25,f62,f100,f145,f265,f266,f297"
+    );
     query.addQueryItem("invt", "2");
     query.addQueryItem("fltt", "2");
     url.setQuery(query);
 
     QNetworkRequest req(url);
-    req.setRawHeader("User-Agent", m_userAgent.toUtf8());
-    req.setRawHeader("Referer", "https://quote.eastmoney.com/");
+    req.setRawHeader(headers::kUserAgent, m_userAgent.toUtf8());
+    req.setRawHeader(headers::kReferer, headers::kEastMoneyReferer);
+    req.setRawHeader(headers::kAccept, "*/*");
+    req.setRawHeader(headers::kConnection, "keep-alive");
     req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
 
     const network_logger::RequestTrace trace = network_logger::logRequestStart(
@@ -464,6 +484,17 @@ QString EastMoneyQuoteProvider::toSecId(const QString& rawCode) {
             if (!symbol.isEmpty()) {
                 return market + QStringLiteral(".") + symbol;
             }
+        }
+
+        if (market == QStringLiteral("0") || market == QStringLiteral("1")) {
+            QString digits = digitsOnly(symbolPart);
+            if (digits.isEmpty()) {
+                return {};
+            }
+            if (digits.size() > 6) {
+                digits = digits.right(6);
+            }
+            return market + QStringLiteral(".") + digits.rightJustified(6, '0');
         }
     }
 
@@ -675,8 +706,10 @@ void EastMoneyHotRankProvider::fetchHotList(
     url.setQuery(query);
 
     QNetworkRequest req(url);
-    req.setRawHeader("User-Agent", m_userAgent.toUtf8());
-    req.setRawHeader("Referer", "https://quote.eastmoney.com/");
+    req.setRawHeader(headers::kUserAgent, m_userAgent.toUtf8());
+    req.setRawHeader(headers::kReferer, headers::kEastMoneyReferer);
+    req.setRawHeader(headers::kAccept, "*/*");
+    req.setRawHeader(headers::kConnection, "keep-alive");
     req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
 
     const network_logger::RequestTrace trace = network_logger::logRequestStart(
@@ -883,11 +916,12 @@ void applyTonghuashunCommonHeaders(QNetworkRequest* req, const QString& userAgen
         return;
     }
 
-    req->setRawHeader("Accept", "*/*");
-    req->setRawHeader("Origin", "https://52etf.site");
-    req->setRawHeader("Referer", "https://52etf.site/");
-    req->setRawHeader("Content-Type", "application/json; charset=UTF-8");
-    req->setRawHeader("User-Agent", userAgent.toUtf8());
+    req->setRawHeader(headers::kAccept, "*/*");
+    req->setRawHeader(headers::kOrigin, headers::kTonghuashunOrigin);
+    req->setRawHeader(headers::kReferer, headers::kTonghuashunReferer);
+    req->setRawHeader(headers::kConnection, "keep-alive");
+    req->setRawHeader(headers::kContentType, headers::kJsonContentType);
+    req->setRawHeader(headers::kUserAgent, userAgent.toUtf8());
     req->setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
 }
 

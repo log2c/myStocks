@@ -44,11 +44,9 @@
 namespace {
 
 using watchlist_utils::defaultDataYamlTemplate;
-using watchlist_utils::isDigitsOnly;
 using watchlist_utils::isHongKongCode;
+using watchlist_utils::normalizeApiWatchCode;
 using watchlist_utils::normalizeFutureCode;
-using watchlist_utils::normalizeHongKongIndexCode;
-using watchlist_utils::normalizeSectorCode;
 using watchlist_utils::watchCodeKey;
 
 QRect resetFloatingWindowRect() {
@@ -96,11 +94,24 @@ AppController::AppController(QObject* parent)
             << "logEnabled=" << m_cfg.logEnabled
             << "logLevel=" << m_cfg.logLevel;
 
-    QStringList ignoredYamlIndexes;
-    m_stocks = filterYamlStocks(
-        ConfigManager::loadStocksFromYaml(findDataYaml()),
-        &ignoredYamlIndexes
+    const QString dataYamlPath = findDataYaml();
+    bool migratedLegacyCodes = false;
+    const QVector<StockItem> loadedYamlStocks = ConfigManager::loadStocksFromYaml(
+        dataYamlPath,
+        &migratedLegacyCodes
     );
+
+    QStringList ignoredYamlIndexes;
+    m_stocks = filterYamlStocks(loadedYamlStocks, &ignoredYamlIndexes);
+
+    if (migratedLegacyCodes && !dataYamlPath.isEmpty()) {
+        if (!ConfigManager::saveStocksToYaml(dataYamlPath, loadedYamlStocks)) {
+            qWarning() << "Failed to persist migrated YAML stock codes:" << dataYamlPath;
+        } else {
+            qInfo() << "Persisted migrated YAML stock codes:" << dataYamlPath;
+        }
+    }
+
     if (m_stocks.isEmpty()) {
         m_stocks = watchlist_utils::defaultWatchStocks();
         qInfo() << "Stock list is empty; fallback defaults loaded count=" << m_stocks.size();
@@ -113,8 +124,6 @@ AppController::AppController(QObject* parent)
     qInfo() << "Initial watch counts"
             << "stocks=" << m_stocks.size()
             << "indexes=" << m_indexes.size()
-            << "sectors=" << m_sectors.size()
-            << "futures=" << m_futures.size()
             << "merged=" << merged.size();
 
     m_model = new QuoteModel(this);
@@ -385,10 +394,6 @@ QString AppController::findDataYaml() const {
 #endif
 }
 
-bool AppController::isSectorCode(const QString& code) {
-    return !normalizeSectorCode(code).isEmpty();
-}
-
 bool AppController::isFutureCode(const QString& code) {
     return !normalizeFutureCode(code).isEmpty();
 }
@@ -403,7 +408,7 @@ QVector<StockItem> AppController::filterYamlStocks(
     QSet<QString> seen;
     QStringList ignored;
     for (const StockItem& item : loaded) {
-        const QString code = item.code.trimmed();
+        const QString code = normalizeApiWatchCode(item.code);
         if (code.isEmpty()) {
             continue;
         }
@@ -432,7 +437,7 @@ QVector<StockItem> AppController::filterYamlStocks(
 
 QVector<StockItem> AppController::mergedWatchItems() const {
     QVector<StockItem> out;
-    out.reserve(m_indexes.size() + m_sectors.size() + m_stocks.size() + m_futures.size());
+    out.reserve(m_indexes.size() + m_stocks.size());
 
     QSet<QString> seen;
     const auto appendUnique = [&out, &seen](const StockItem& item) {
@@ -452,24 +457,8 @@ QVector<StockItem> AppController::mergedWatchItems() const {
         appendUnique(item);
     }
 
-    for (const StockItem& item : m_sectors) {
-        const QString sectorCode = normalizeSectorCode(item.code);
-        if (sectorCode.isEmpty()) {
-            continue;
-        }
-        appendUnique({sectorCode, item.name});
-    }
-
     for (const StockItem& item : m_stocks) {
         appendUnique(item);
-    }
-
-    for (const StockItem& item : m_futures) {
-        const QString futureCode = normalizeFutureCode(item.code);
-        if (futureCode.isEmpty()) {
-            continue;
-        }
-        appendUnique({futureCode, item.name});
     }
 
     return out;
@@ -479,50 +468,26 @@ void AppController::loadExtraWatchItems() {
     std::unique_ptr<QSettings> settings = ConfigManager::createAppSettings();
     QSettings& s = *settings;
 
-    m_indexes = decodeWatchItems(s.value(app_constants::kWatchIndexesKey).toStringList());
-
-    QVector<StockItem> decodedSectors = decodeWatchItems(
-        s.value(app_constants::kWatchSectorsKey).toStringList()
+    const QVector<StockItem> decodedIndexes = decodeWatchItems(
+        s.value(app_constants::kWatchIndexesKey).toStringList()
     );
-    m_sectors.clear();
-    m_sectors.reserve(decodedSectors.size());
+    m_indexes.clear();
+    m_indexes.reserve(decodedIndexes.size());
 
-    QSet<QString> sectorSeen;
-    for (const StockItem& sector : decodedSectors) {
-        const QString code = normalizeSectorCode(sector.code);
-        if (code.isEmpty()) {
+    QSet<QString> indexSeen;
+    for (const StockItem& index : decodedIndexes) {
+        const QString normalizedCode = normalizeApiWatchCode(index.code);
+        if (normalizedCode.isEmpty() || !isPredefinedIndexCode(normalizedCode)) {
             continue;
         }
 
-        const QString key = watchCodeKey(code);
-        if (sectorSeen.contains(key)) {
+        const QString key = watchCodeKey(normalizedCode);
+        if (indexSeen.contains(key)) {
             continue;
         }
-        sectorSeen.insert(key);
+        indexSeen.insert(key);
 
-        m_sectors.push_back({code, sector.name.trimmed()});
-    }
-
-    QVector<StockItem> decodedFutures = decodeWatchItems(
-        s.value(app_constants::kWatchFuturesKey).toStringList()
-    );
-    m_futures.clear();
-    m_futures.reserve(decodedFutures.size());
-
-    QSet<QString> futureSeen;
-    for (const StockItem& future : decodedFutures) {
-        const QString code = normalizeFutureCode(future.code);
-        if (code.isEmpty()) {
-            continue;
-        }
-
-        const QString key = watchCodeKey(code);
-        if (futureSeen.contains(key)) {
-            continue;
-        }
-        futureSeen.insert(key);
-
-        m_futures.push_back({code, future.name.trimmed()});
+        m_indexes.push_back({normalizedCode, index.name.trimmed()});
     }
 }
 
@@ -531,8 +496,6 @@ void AppController::saveExtraWatchItems() const {
     QSettings& s = *settings;
 
     s.setValue(app_constants::kWatchIndexesKey, encodeWatchItems(m_indexes));
-    s.setValue(app_constants::kWatchSectorsKey, encodeWatchItems(m_sectors));
-    s.setValue(app_constants::kWatchFuturesKey, encodeWatchItems(m_futures));
     s.sync();
 }
 
@@ -587,8 +550,6 @@ void AppController::openSettings() {
             m_cfg,
             m_stocks,
             m_indexes,
-            m_sectors,
-            m_futures,
             currentApiNamesByCode(),
             findDataYaml(),
             m_window
@@ -597,8 +558,6 @@ void AppController::openSettings() {
         if (accepted) {
             updatedCfg = dlg.config();
             m_indexes = dlg.selectedIndexes();
-            m_sectors = dlg.selectedSectors();
-            m_futures = dlg.selectedFutures();
             saveExtraWatchItems();
         }
     }
@@ -793,27 +752,8 @@ void AppController::refreshQuotes(bool force) {
     }
 
     const QVector<StockItem> merged = mergedWatchItems();
-    QVector<StockItem> allItems;
-    allItems.reserve(merged.size());
-
-    for (const StockItem& item : merged) {
-        const QString sectorCode = normalizeSectorCode(item.code);
-        if (!sectorCode.isEmpty()) {
-            allItems.push_back({sectorCode, item.name});
-            continue;
-        }
-
-        const QString hkIndexCode = normalizeHongKongIndexCode(item.code);
-        if (!hkIndexCode.isEmpty()) {
-            allItems.push_back({hkIndexCode, item.name});
-            continue;
-        }
-
-        allItems.push_back(item);
-    }
-
-    if (!allItems.isEmpty()) {
-        m_provider->fetchQuotes(allItems);
+    if (!merged.isEmpty()) {
+        m_provider->fetchQuotes(merged);
     }
 }
 

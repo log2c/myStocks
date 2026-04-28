@@ -6,43 +6,25 @@ namespace {
 
 const QSet<QString>& predefinedAshareIndexAliases() {
     static const QSet<QString> aliases {
+        QStringLiteral("1.000001"),
         QStringLiteral("sh000001"),
+        QStringLiteral("0.399001"),
         QStringLiteral("sz399001"),
+        QStringLiteral("399001"),
+        QStringLiteral("0.399006"),
+        QStringLiteral("399006"),
+        QStringLiteral("sz399006"),
+        QStringLiteral("1.000688"),
+        QStringLiteral("sh000688"),
+        QStringLiteral("1.000300"),
+        QStringLiteral("0.399300"),
         QStringLiteral("sh000300"),
         QStringLiteral("sz399300"),
-        QStringLiteral("sh000016"),
-        QStringLiteral("sh000905"),
-        QStringLiteral("sh000852"),
-        QStringLiteral("sz399006"),
-        QStringLiteral("sz399673"),
-        QStringLiteral("sh000688"),
-        QStringLiteral("sh931643"),
-        QStringLiteral("sz931643"),
-        QStringLiteral("sh932133"),
-        QStringLiteral("sz399431"),
-        QStringLiteral("sz399975"),
-        QStringLiteral("sh000808"),
-        QStringLiteral("sh000932"),
-        QStringLiteral("sz399808"),
-        QStringLiteral("sh980017"),
-        QStringLiteral("sz980017"),
-        QStringLiteral("399001"),
         QStringLiteral("000300"),
         QStringLiteral("399300"),
-        QStringLiteral("000016"),
+        QStringLiteral("1.000905"),
+        QStringLiteral("sh000905"),
         QStringLiteral("000905"),
-        QStringLiteral("000852"),
-        QStringLiteral("399006"),
-        QStringLiteral("399673"),
-        QStringLiteral("000688"),
-        QStringLiteral("931643"),
-        QStringLiteral("932133"),
-        QStringLiteral("399431"),
-        QStringLiteral("399975"),
-        QStringLiteral("000808"),
-        QStringLiteral("000932"),
-        QStringLiteral("399808"),
-        QStringLiteral("980017"),
     };
 
     return aliases;
@@ -53,14 +35,27 @@ const QSet<QString>& predefinedIndexAliases() {
         QSet<QString> values = predefinedAshareIndexAliases();
         values.insert(QStringLiteral("hsi"));
         values.insert(QStringLiteral("hstech"));
+        values.insert(QStringLiteral("xin9"));
         values.insert(QStringLiteral("100.hsi"));
         values.insert(QStringLiteral("124.hsi"));
         values.insert(QStringLiteral("100.hstech"));
         values.insert(QStringLiteral("124.hstech"));
+        values.insert(QStringLiteral("100.xin9"));
         return values;
     }();
 
     return aliases;
+}
+
+QString digitsOnly(const QString& text) {
+    QString digits;
+    digits.reserve(text.size());
+    for (const QChar ch : text) {
+        if (ch.isDigit()) {
+            digits.append(ch);
+        }
+    }
+    return digits;
 }
 
 } // namespace
@@ -107,6 +102,122 @@ QVector<int> normalizedColumnOrder(const QVector<int>& order) {
     }
 
     return out;
+}
+
+QString normalizeApiWatchCode(const QString& rawCode) {
+    const QString raw = rawCode.trimmed();
+    if (raw.isEmpty()) {
+        return {};
+    }
+
+    const QString key = watchCodeKey(raw);
+    if (key == QStringLiteral("xin9") || key == QStringLiteral("100.xin9")) {
+        return QStringLiteral("100.XIN9");
+    }
+
+    const QString normalizedHongKongIndex = normalizeHongKongIndexCode(raw);
+    if (!normalizedHongKongIndex.isEmpty()) {
+        return normalizedHongKongIndex;
+    }
+
+    const QString sectorCode = normalizeSectorCode(raw);
+    if (!sectorCode.isEmpty()) {
+        return QStringLiteral("90.") + sectorCode;
+    }
+
+    const QString futureCode = normalizeFutureCode(raw);
+    if (!futureCode.isEmpty()) {
+        return futureCode;
+    }
+
+    const int dot = raw.indexOf(QLatin1Char('.'));
+    if (dot > 0 && dot < raw.size() - 1) {
+        const QString market = raw.left(dot).trimmed();
+        QString symbol = raw.mid(dot + 1).trimmed();
+
+        if (isDigitsOnly(market) && !symbol.isEmpty()) {
+            if (market == QStringLiteral("90")) {
+                const QString normalizedSector = normalizeSectorCode(symbol);
+                return normalizedSector.isEmpty()
+                    ? QString()
+                    : (QStringLiteral("90.") + normalizedSector);
+            }
+
+            if (market == QStringLiteral("116")) {
+                QString hkDigits = digitsOnly(symbol);
+                if (hkDigits.isEmpty()) {
+                    return {};
+                }
+                if (hkDigits.size() > 5) {
+                    hkDigits = hkDigits.right(5);
+                }
+                return QStringLiteral("116.")
+                    + hkDigits.rightJustified(5, QLatin1Char('0'));
+            }
+
+            const QString normalizedIndex = normalizeHongKongIndexCode(
+                market + QStringLiteral(".") + symbol
+            );
+            if (!normalizedIndex.isEmpty()) {
+                return normalizedIndex;
+            }
+
+            bool hasLetter = false;
+            for (const QChar ch : symbol) {
+                if (ch.isLetter()) {
+                    hasLetter = true;
+                    break;
+                }
+            }
+            if (hasLetter) {
+                symbol = symbol.toUpper();
+            }
+
+            return market + QStringLiteral(".") + symbol;
+        }
+    }
+
+    const QString lower = raw.toLower();
+    if (lower.endsWith(QStringLiteral(".hk")) || lower.startsWith(QStringLiteral("hk"))) {
+        QString hkDigits = digitsOnly(lower);
+        if (hkDigits.isEmpty()) {
+            return {};
+        }
+        if (hkDigits.size() > 5) {
+            hkDigits = hkDigits.right(5);
+        }
+        return QStringLiteral("116.") + hkDigits.rightJustified(5, QLatin1Char('0'));
+    }
+
+    if (raw.size() == 5 && isDigitsOnly(raw)) {
+        return QStringLiteral("116.") + raw;
+    }
+
+    if (lower.startsWith(QStringLiteral("sh")) || lower.startsWith(QStringLiteral("sz"))) {
+        QString digits = digitsOnly(lower.mid(2));
+        if (digits.size() > 6) {
+            digits = digits.right(6);
+        }
+        if (digits.size() == 6) {
+            const QString market = lower.startsWith(QStringLiteral("sh"))
+                ? QStringLiteral("1")
+                : QStringLiteral("0");
+            return market + QStringLiteral(".") + digits;
+        }
+        return {};
+    }
+
+    if (raw.size() == 6 && isDigitsOnly(raw)) {
+        const QChar head = raw.at(0);
+        const QString market = (head == QLatin1Char('5')
+            || head == QLatin1Char('6')
+            || head == QLatin1Char('9'))
+            ? QStringLiteral("1")
+            : QStringLiteral("0");
+        return market + QStringLiteral(".") + raw;
+    }
+
+    return {};
 }
 
 QString normalizeSectorCode(const QString& rawCode) {
@@ -228,9 +339,9 @@ bool isHongKongCode(const QString& rawCode) {
 
 QVector<StockItem> defaultWatchStocks() {
     return {
-        {QStringLiteral("sh600519"), QStringLiteral("Kweichow Moutai")},
-        {QStringLiteral("sz000001"), QStringLiteral("Ping An Bank")},
-        {QStringLiteral("sz300750"), QStringLiteral("CATL")}
+        {QStringLiteral("1.600519"), QStringLiteral("Kweichow Moutai")},
+        {QStringLiteral("0.000001"), QStringLiteral("Ping An Bank")},
+        {QStringLiteral("0.300750"), QStringLiteral("CATL")}
     };
 }
 

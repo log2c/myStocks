@@ -10,6 +10,7 @@ namespace watchlist_utils {
 QString watchCodeKey(const QString& code);
 bool isDigitsOnly(const QString& text);
 QVector<int> normalizedColumnOrder(const QVector<int>& order);
+QString normalizeApiWatchCode(const QString& rawCode);
 QString normalizeSectorCode(const QString& rawCode);
 QString normalizeFutureCode(const QString& rawCode);
 QString normalizeHongKongIndexCode(const QString& rawCode);

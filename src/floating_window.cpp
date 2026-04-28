@@ -324,6 +324,8 @@ enum class TimelineMarket {
     Unknown,
     Ashare,
     HongKong,
+    Sector,
+    Future,
 };
 
 struct TimelineSession {
@@ -421,12 +423,26 @@ bool isHongKongTimelineSupportedCode(const QString& rawCode) {
     return lower.endsWith(QStringLiteral(".hk"));
 }
 
+bool isSectorTimelineSupportedCode(const QString& rawCode) {
+    return !watchlist_utils::normalizeSectorCode(rawCode).isEmpty();
+}
+
+bool isFutureTimelineSupportedCode(const QString& rawCode) {
+    return !watchlist_utils::normalizeFutureCode(rawCode).isEmpty();
+}
+
 TimelineMarket timelineMarketOfCode(const QString& rawCode) {
     if (isAshareTimelineSupportedCode(rawCode)) {
         return TimelineMarket::Ashare;
     }
     if (isHongKongTimelineSupportedCode(rawCode)) {
         return TimelineMarket::HongKong;
+    }
+    if (isSectorTimelineSupportedCode(rawCode)) {
+        return TimelineMarket::Sector;
+    }
+    if (isFutureTimelineSupportedCode(rawCode)) {
+        return TimelineMarket::Future;
     }
     return TimelineMarket::Unknown;
 }
@@ -436,7 +452,7 @@ bool isTimelineSupportedCode(const QString& rawCode) {
 }
 
 TimelineSession timelineSessionForMarket(TimelineMarket market) {
-    if (market == TimelineMarket::Ashare) {
+    if (market == TimelineMarket::Ashare || market == TimelineMarket::Sector) {
         return {
             QTime(9, 30),
             QTime(11, 30),
@@ -457,6 +473,15 @@ TimelineSession timelineSessionForMarket(TimelineMarket market) {
     }
 
     return {};
+}
+
+bool hasValidTimelineSession(const TimelineSession& session) {
+    return session.morningStart.isValid()
+        && session.morningEnd.isValid()
+        && session.afternoonStart.isValid()
+        && session.afternoonEnd.isValid()
+        && session.morningStart < session.morningEnd
+        && session.afternoonStart < session.afternoonEnd;
 }
 
 double fixedRangeLimitPctForAshareStock(const QString& rawCode) {
@@ -487,6 +512,15 @@ QString toTimelineSecId(const QString& rawCode) {
     const TimelineMarket marketType = timelineMarketOfCode(raw);
     if (code.isEmpty() || marketType == TimelineMarket::Unknown) {
         return {};
+    }
+
+    if (marketType == TimelineMarket::Sector) {
+        const QString sector = watchlist_utils::normalizeSectorCode(raw);
+        return sector.isEmpty() ? QString() : (QStringLiteral("90.") + sector);
+    }
+
+    if (marketType == TimelineMarket::Future) {
+        return watchlist_utils::normalizeFutureCode(raw);
     }
 
     const int dot = code.indexOf(QLatin1Char('.'));
@@ -724,10 +758,16 @@ bool parseTimelinePayload(
     }
 
     QString targetDate;
+    const auto hasDatePrefix = [](const QString& text) {
+        return text.size() >= 10
+            && text.at(4) == QLatin1Char('-')
+            && text.at(7) == QLatin1Char('-');
+    };
+
     if (keepLastTradingDayOnly) {
         for (int i = trends.size() - 1; i >= 0; --i) {
             const QString row = trends.at(i).toString().trimmed();
-            if (row.size() >= 10) {
+            if (hasDatePrefix(row)) {
                 targetDate = row.left(10);
                 break;
             }
@@ -742,32 +782,64 @@ bool parseTimelinePayload(
         }
 
         const QStringList parts = row.split(QLatin1Char(','));
-        if (parts.size() < 7) {
+        if (parts.size() < 2) {
             continue;
         }
 
         const QString timeText = parts.at(0).trimmed();
-        if (keepLastTradingDayOnly && !targetDate.isEmpty() && !timeText.startsWith(targetDate)) {
+        if (keepLastTradingDayOnly
+            && !targetDate.isEmpty()
+            && hasDatePrefix(timeText)
+            && !timeText.startsWith(targetDate)) {
             continue;
         }
 
-        const QDateTime time = QDateTime::fromString(timeText, QStringLiteral("yyyy-MM-dd HH:mm"));
+        QDateTime time = QDateTime::fromString(timeText, QStringLiteral("yyyy-MM-dd HH:mm"));
+        if (!time.isValid()) {
+            const QTime hhmm = QTime::fromString(timeText, QStringLiteral("HH:mm"));
+            if (hhmm.isValid()) {
+                time = QDateTime(QDate::currentDate(), hhmm);
+            }
+        }
+
         bool priceOk = false;
         bool avgPriceOk = false;
         bool volumeOk = false;
         bool amountOk = false;
-        const double price = parts.at(2).toDouble(&priceOk);
+        double price = qQNaN();
         double avgPrice = qQNaN();
+        double volume = qQNaN();
+        double amount = qQNaN();
+
         if (parts.size() >= 8) {
+            price = parts.at(2).toDouble(&priceOk);
+            volume = parts.at(5).toDouble(&volumeOk);
+            amount = parts.at(6).toDouble(&amountOk);
             avgPrice = parts.at(7).toDouble(&avgPriceOk);
+            if (!avgPriceOk && parts.size() >= 4) {
+                avgPrice = parts.at(3).toDouble(&avgPriceOk);
+            }
+        } else {
+            price = parts.at(1).toDouble(&priceOk);
+            if (parts.size() >= 3) {
+                volume = parts.at(2).toDouble(&volumeOk);
+            }
+            if (parts.size() >= 4) {
+                avgPrice = parts.at(3).toDouble(&avgPriceOk);
+            }
+            if (parts.size() >= 5) {
+                amount = parts.at(4).toDouble(&amountOk);
+            }
         }
-        if (!avgPriceOk && parts.size() >= 4) {
-            avgPrice = parts.at(3).toDouble(&avgPriceOk);
-        }
-        const double volume = parts.at(5).toDouble(&volumeOk);
-        const double amount = parts.at(6).toDouble(&amountOk);
+
         if (!time.isValid() || !priceOk) {
             continue;
+        }
+
+        // Some markets (e.g. HK indexes) may return avgPrice=0.000 in the first row.
+        // Treat non-positive averages as missing data to avoid distorting chart y-range.
+        if (avgPriceOk && (!std::isfinite(avgPrice) || avgPrice <= 0.0)) {
+            avgPriceOk = false;
         }
 
         TimelinePoint point;
@@ -914,8 +986,8 @@ protected:
         }
 
         const TimelineMarket market = timelineMarketOfCode(m_code);
-        const bool hasSessionAxis = market != TimelineMarket::Unknown;
         const TimelineSession session = timelineSessionForMarket(market);
+        const bool hasSessionAxis = hasValidTimelineSession(session);
         double yMinPct = 0.0;
         double yMaxPct = 0.0;
         if (m_cfg.timelineChartFixedRangeEnabled && isAshareStockCode(m_code)) {
@@ -1297,11 +1369,15 @@ public:
 private:
     bool isCurrentMarketTradingTimeNow() const {
         const TimelineMarket market = timelineMarketOfCode(m_code);
-        if (market == TimelineMarket::Ashare) {
+        if (market == TimelineMarket::Ashare || market == TimelineMarket::Sector) {
             return isAshareTradingTimeNow();
         }
         if (market == TimelineMarket::HongKong) {
             return isHongKongTradingTimeNow(m_hongKongHalfDayDate);
+        }
+        if (market == TimelineMarket::Future) {
+            // Futures trading sessions vary by instrument; keep refresh on while popup is visible.
+            return true;
         }
         return false;
     }
@@ -1427,6 +1503,8 @@ private:
             return;
         }
 
+        const TimelineMarket marketType = timelineMarketOfCode(m_code);
+
         cancelPendingReply();
 
         const QString cacheKey = timelineRequestCacheKey(secId, days, keepLastTradingDayOnly);
@@ -1434,17 +1512,24 @@ private:
             return;
         }
 
-        QUrl url(QStringLiteral("https://push2his.eastmoney.com/api/qt/stock/trends2/get"));
+        QUrl url(QStringLiteral("https://push2delay.eastmoney.com/api/qt/stock/trends2/get"));
         QUrlQuery query;
         const QString callback = QStringLiteral("jQuery%1_%2")
             .arg(QDateTime::currentMSecsSinceEpoch() % 1000000)
             .arg(QDateTime::currentMSecsSinceEpoch());
+        const QString fields1 = (marketType == TimelineMarket::Ashare)
+            ? QStringLiteral("f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13")
+            : QStringLiteral("f1,f2,f8,f10");
+        const QString fields2 = (marketType == TimelineMarket::Ashare)
+            ? QStringLiteral("f51,f52,f53,f54,f55,f56,f57,f58")
+            : QStringLiteral("f51,f53,f56,f58");
         query.addQueryItem(QStringLiteral("cb"), callback);
         query.addQueryItem(QStringLiteral("secid"), secId);
         query.addQueryItem(QStringLiteral("ut"), QStringLiteral("fa5fd1943c7b386f172d6893dbfba10b"));
-        query.addQueryItem(QStringLiteral("fields1"), QStringLiteral("f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13"));
-        query.addQueryItem(QStringLiteral("fields2"), QStringLiteral("f51,f52,f53,f54,f55,f56,f57,f58"));
+        query.addQueryItem(QStringLiteral("fields1"), fields1);
+        query.addQueryItem(QStringLiteral("fields2"), fields2);
         query.addQueryItem(QStringLiteral("iscr"), QStringLiteral("0"));
+        query.addQueryItem(QStringLiteral("iscca"), QStringLiteral("0"));
         query.addQueryItem(QStringLiteral("ndays"), QString::number(days));
         query.addQueryItem(QStringLiteral("_"), QString::number(QDateTime::currentMSecsSinceEpoch()));
         url.setQuery(query);

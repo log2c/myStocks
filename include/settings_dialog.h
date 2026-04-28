@@ -30,8 +30,6 @@ public:
         const AppConfig& cfg,
         const QVector<StockItem>& stocks,
         const QVector<StockItem>& indexes,
-        const QVector<StockItem>& sectors,
-        const QVector<StockItem>& futures,
         const QHash<QString, QString>& apiNamesByCode,
         const QString& dataYamlPath,
         QWidget* parent = nullptr
@@ -39,8 +37,6 @@ public:
 
     AppConfig config() const;
     QVector<StockItem> selectedIndexes() const;
-    QVector<StockItem> selectedSectors() const;
-    QVector<StockItem> selectedFutures() const;
 
 private:
     QString trText(const QString& key) const;
@@ -59,24 +55,17 @@ private:
     QWidget* buildOtherTab();
     QWidget* buildStocksTab();
     QWidget* buildIndexSectorTab();
-    QWidget* buildFuturesTab();
     QWidget* buildAboutTab();
 
     void updateHotkeyIndicator(const QKeySequence& seq);
 
-    void parseSinaSearchResult(const QByteArray& data);
+    void parseSearchResult(const QByteArray& data);
     void doStockSearch(bool forceSearch = false);
-    void parseSectorSuggestResult(const QByteArray& data);
-    void doSectorSearch(bool forceSearch = false);
-    void parseFutureSuggestResult(const QByteArray& data);
-    void doFutureSearch(bool forceSearch = false);
 
 private:
     AppConfig m_cfg;
     QVector<StockItem> m_stocks;
     QVector<StockItem> m_indexes;
-    QVector<StockItem> m_sectors;
-    QVector<StockItem> m_futures;
     QHash<QString, QString> m_apiNamesByCode;
     QString m_dataYamlPath;
     QString m_uiLanguage;
@@ -154,7 +143,6 @@ private:
     bool m_normalizingHotkeySequence = false;
 
     // Stocks tab
-    QComboBox* m_stockMarketCombo = nullptr;
     QLineEdit* m_stockSearchEdit = nullptr;
     QPushButton* m_stockSearchBtn = nullptr;
     QTimer* m_stockSearchDebounce = nullptr;
@@ -163,22 +151,6 @@ private:
     QListWidget* m_stockSuggestList = nullptr;
     QTableWidget* m_stockTable = nullptr;
 
-    // Index / sector tab
+    // Common indexes tab
     QListWidget* m_indexList = nullptr;
-    QLineEdit* m_sectorSearchEdit = nullptr;
-    QPushButton* m_sectorSearchBtn = nullptr;
-    QTimer* m_sectorSearchDebounce = nullptr;
-    QNetworkAccessManager* m_sectorSearchNam = nullptr;
-    QNetworkReply* m_sectorSearchReply = nullptr;
-    QListWidget* m_sectorSuggestList = nullptr;
-    QTableWidget* m_sectorTable = nullptr;
-
-    // Futures tab
-    QLineEdit* m_futureSearchEdit = nullptr;
-    QPushButton* m_futureSearchBtn = nullptr;
-    QTimer* m_futureSearchDebounce = nullptr;
-    QNetworkAccessManager* m_futureSearchNam = nullptr;
-    QNetworkReply* m_futureSearchReply = nullptr;
-    QListWidget* m_futureSuggestList = nullptr;
-    QTableWidget* m_futureTable = nullptr;
 };
