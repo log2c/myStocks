@@ -39,11 +39,21 @@ struct HotRankItem {
     double mainNetInflow = qQNaN();
 };
 
+struct MarketBreadthDistributionItem {
+    QString bucket;
+    int value = 0;
+};
+
 struct MarketBreadthSnapshot {
     int upCount = 0;
     int flatCount = 0;
     int downCount = 0;
+    int limitUpCount = 0;
+    int limitDownCount = 0;
+    bool overviewValid = false;
     bool breadthValid = false;
+    QVector<MarketBreadthDistributionItem> distribution;
+    bool distributionValid = false;
     double turnover = qQNaN();
     double turnoverPre = qQNaN();
     double turnoverChange = qQNaN();

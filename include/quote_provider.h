@@ -100,11 +100,16 @@ private:
     QNetworkProxy m_proxy = QNetworkProxy(QNetworkProxy::NoProxy);
     QNetworkAccessManager m_nam;
     QString m_lastError;
-    QNetworkReply* m_breadthReply = nullptr;
+    QNetworkReply* m_overviewReply = nullptr;
+    QNetworkReply* m_distributionReply = nullptr;
     QNetworkReply* m_turnoverReply = nullptr;
     int m_requestToken = 0;
     MarketBreadthSnapshot m_pendingSnapshot;
-    bool m_breadthDone = false;
+    MarketBreadthSnapshot m_cachedSnapshot;
+    qint64 m_cacheExpiresAtMs = 0;
+    bool m_cacheValid = false;
+    bool m_overviewDone = false;
+    bool m_distributionDone = false;
     bool m_turnoverDone = false;
     QStringList m_pendingErrors;
 };

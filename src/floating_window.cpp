@@ -1633,7 +1633,7 @@ public:
         m_snapshot = snapshot;
 
         const int popupWidth = qMax(190, qMin(255, qRound(static_cast<double>(qMax(baseWidth, 220)) * 0.39)));
-        const int popupHeight = 101;
+        const int popupHeight = 196;
         resize(popupWidth, popupHeight);
 
         QRect targetRect(anchorRect.topRight() + QPoint(12, 0), size());
@@ -1695,18 +1695,25 @@ protected:
         painter.setBrush(background);
         painter.drawRoundedRect(rect().adjusted(1, 1, -1, -1), 12, 12);
 
-        const QRect content = rect().adjusted(12, 11, -12, -6);
+        const QRect content = rect().adjusted(12, 10, -12, -10);
         const int columnGap = 8;
         const int colWidth = (content.width() - columnGap * 2) / 3;
         const int headerY = content.top();
-        const int countY = headerY + 20;
-        const int sectionTitleY = countY + 22;
-        const int sectionValueY = sectionTitleY + 17;
+        const int countY = headerY + 18;
+        const int sectionTitleY = countY + 24;
+        const int sectionValueY = sectionTitleY + 16;
+        const int limitStatsY = sectionValueY + 20;
+        const int chartTitleY = limitStatsY + 16;
+        const int chartTopY = chartTitleY + 16;
+        const int chartBottomY = content.bottom() - 14;
 
         const QString upLabel = i18n::t("popup.marketBreadth.up", m_language);
         const QString flatLabel = i18n::t("popup.marketBreadth.flat", m_language);
         const QString downLabel = i18n::t("popup.marketBreadth.down", m_language);
         const QString turnoverLabel = i18n::t("popup.marketBreadth.turnover", m_language);
+        const QString limitUpLabel = i18n::t("popup.marketBreadth.limitUp", m_language);
+        const QString limitDownLabel = i18n::t("popup.marketBreadth.limitDown", m_language);
+        const QString distributionLabel = i18n::t("popup.marketBreadth.distribution", m_language);
         const QString comparePrefix = i18n::t(
             "popup.marketBreadth.vsYesterdayFmt",
             m_language
@@ -1714,9 +1721,9 @@ protected:
         const QString compareWord = marketBreadthTurnoverChangeText(m_snapshot.turnoverChange, m_language);
         const QColor compareColor = marketBreadthTurnoverChangeColor(m_snapshot.turnoverChange, m_cfg);
 
-        const QRect upRect(content.left(), headerY, colWidth, 16);
-        const QRect flatRect(upRect.right() + 1 + columnGap, headerY, colWidth, 16);
-        const QRect downRect(flatRect.right() + 1 + columnGap, headerY, colWidth, 16);
+        const QRect upRect(content.left(), headerY, colWidth, 14);
+        const QRect flatRect(upRect.right() + 1 + columnGap, headerY, colWidth, 14);
+        const QRect downRect(flatRect.right() + 1 + columnGap, headerY, colWidth, 14);
 
         QFont headerFont = painter.font();
         headerFont.setBold(true);
@@ -1782,6 +1789,126 @@ protected:
             compareValueRect,
             Qt::AlignCenter,
             formatChineseMarketAmount(m_snapshot.turnoverChange)
+        );
+
+        const QRect limitUpRect(content.left(), limitStatsY, lowerColWidth, 14);
+        const QRect limitDownRect(
+            content.left() + lowerColWidth + lowerColumnGap,
+            limitStatsY,
+            lowerColWidth,
+            14
+        );
+        QFont limitFont = painter.font();
+        limitFont.setBold(true);
+        limitFont.setPointSizeF(qMax(8.0, limitFont.pointSizeF() - 0.8));
+        painter.setFont(limitFont);
+        painter.setPen(m_cfg.upColor);
+        painter.drawText(
+            limitUpRect,
+            Qt::AlignCenter,
+            QStringLiteral("%1 %2").arg(limitUpLabel).arg(m_snapshot.limitUpCount)
+        );
+        painter.setPen(m_cfg.downColor);
+        painter.drawText(
+            limitDownRect,
+            Qt::AlignCenter,
+            QStringLiteral("%1 %2").arg(limitDownLabel).arg(m_snapshot.limitDownCount)
+        );
+
+        painter.setFont(headerFont);
+        painter.setPen(textColor);
+        painter.drawText(
+            QRect(content.left(), chartTitleY, content.width(), 14),
+            Qt::AlignLeft | Qt::AlignVCenter,
+            distributionLabel
+        );
+
+        const QRect chartRect(
+            content.left(),
+            chartTopY,
+            content.width(),
+            qMax(24, chartBottomY - chartTopY + 1)
+        );
+
+        if (m_snapshot.distributionValid && !m_snapshot.distribution.isEmpty()) {
+            int maxValue = 0;
+            for (const MarketBreadthDistributionItem& item : m_snapshot.distribution) {
+                maxValue = qMax(maxValue, item.value);
+            }
+
+            if (maxValue > 0) {
+                painter.setPen(QColor(textColor.red(), textColor.green(), textColor.blue(), 90));
+                painter.drawLine(chartRect.bottomLeft(), chartRect.bottomRight());
+
+                const int barCount = m_snapshot.distribution.size();
+                const int barGap = (barCount > 18) ? 1 : 2;
+                int x = chartRect.left();
+                for (int i = 0; i < barCount; ++i) {
+                    const int remainingBars = barCount - i;
+                    const int remainingWidth = chartRect.right() - x + 1 - barGap * (remainingBars - 1);
+                    const int barWidth = qMax(1, remainingWidth / remainingBars);
+
+                    const int value = qMax(0, m_snapshot.distribution.at(i).value);
+                    const int barHeight = qMax(
+                        1,
+                        qRound(static_cast<double>(value) / static_cast<double>(maxValue) * chartRect.height())
+                    );
+                    const QRect barRect(x, chartRect.bottom() - barHeight + 1, barWidth, barHeight);
+
+                    QColor barColor;
+                    if (i < barCount / 2) {
+                        barColor = m_cfg.upColor;
+                    } else if (barCount % 2 == 1 && i == barCount / 2) {
+                        barColor = m_cfg.flatColor;
+                    } else {
+                        barColor = m_cfg.downColor;
+                    }
+                    barColor.setAlpha(205);
+
+                    painter.setPen(Qt::NoPen);
+                    painter.setBrush(barColor);
+                    painter.drawRoundedRect(barRect, 1.5, 1.5);
+
+                    x += barWidth + barGap;
+                }
+
+                QFont axisFont = painter.font();
+                axisFont.setBold(false);
+                axisFont.setPointSizeF(qMax(8.0, axisFont.pointSizeF() - 1.0));
+                painter.setFont(axisFont);
+                painter.setPen(QColor(textColor.red(), textColor.green(), textColor.blue(), 180));
+
+                const int middleIndex = m_snapshot.distribution.size() / 2;
+                const QString leftLabel = m_snapshot.distribution.first().bucket;
+                const QString middleLabel = m_snapshot.distribution.at(middleIndex).bucket;
+                const QString rightLabel = m_snapshot.distribution.last().bucket;
+                const int labelY = chartRect.bottom() + 2;
+
+                painter.drawText(
+                    QRect(chartRect.left(), labelY, chartRect.width() / 3, 12),
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    leftLabel
+                );
+                painter.drawText(
+                    QRect(chartRect.left() + chartRect.width() / 3, labelY, chartRect.width() / 3, 12),
+                    Qt::AlignHCenter | Qt::AlignVCenter,
+                    middleLabel
+                );
+                painter.drawText(
+                    QRect(chartRect.left() + chartRect.width() * 2 / 3, labelY, chartRect.width() / 3, 12),
+                    Qt::AlignRight | Qt::AlignVCenter,
+                    rightLabel
+                );
+                return;
+            }
+        }
+
+        painter.setFont(valueFont);
+        painter.setPen(textColor);
+        painter.drawText(
+            chartRect,
+            Qt::AlignCenter,
+            i18n::t("quote.noData", m_language)
         );
     }
 
