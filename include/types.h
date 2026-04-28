@@ -184,7 +184,7 @@ struct AppConfig {
     int timelineChartRefreshSecs = 10;
     bool marketBreadthEnabled = true;
     int marketBreadthRefreshSecs = 10;
-    bool timelineChartFixedRangeEnabled = true;
+    bool timelineChartFixedRangeEnabled = false;
     QColor timelineChartBgColor = QColor(14, 18, 24, 238);
     QColor timelineChartGridColor = QColor(255, 255, 255, 45);
     QColor timelineChartPriceLineColor = QColor(255, 89, 94);

@@ -749,15 +749,36 @@ protected:
             return plot.left() + qRound(t * static_cast<double>(plot.width()));
         };
 
+        // Time-based x mapping for A-share trading hours (9:30-11:30, 13:00-15:00 = 240 min total)
+        const auto tradingMinOf = [](const QTime& t) -> int {
+            if (t <= QTime(9, 30))  return 0;
+            if (t <= QTime(11, 30)) return QTime(9, 30).secsTo(t) / 60;
+            if (t <  QTime(13, 0))  return 120;
+            if (t <= QTime(15, 0))  return 120 + QTime(13, 0).secsTo(t) / 60;
+            return 240;
+        };
+        const auto xOfAshareTime = [&](const QTime& t) -> int {
+            return plot.left() + qRound(tradingMinOf(t) / 240.0 * plot.width());
+        };
+
         const QPen gridPen(m_cfg.timelineChartGridColor, 1.0, Qt::DashLine);
         painter.setPen(gridPen);
         for (int i = 0; i <= 4; ++i) {
             const int y = plot.top() + (plot.height() * i) / 4;
             painter.drawLine(plot.left(), y, plot.right(), y);
         }
-        for (int i = 0; i <= 4; ++i) {
-            const int x = plot.left() + (plot.width() * i) / 4;
-            painter.drawLine(x, plot.top(), x, plot.bottom());
+        if (isAshareStock) {
+            // Vertical grid at trading-time quarter marks:
+            // 9:30 (0%), 10:30 (25%), 11:30/13:00 (50%), 14:00 (75%), 15:00 (100%)
+            const QTime vTimes[] = { QTime(9,30), QTime(10,30), QTime(11,30), QTime(14,0), QTime(15,0) };
+            for (const QTime& t : vTimes) {
+                painter.drawLine(xOfAshareTime(t), plot.top(), xOfAshareTime(t), plot.bottom());
+            }
+        } else {
+            for (int i = 0; i <= 4; ++i) {
+                const int x = plot.left() + (plot.width() * i) / 4;
+                painter.drawLine(x, plot.top(), x, plot.bottom());
+            }
         }
 
         const int yZero = yOfPct(0.0);
@@ -799,44 +820,13 @@ protected:
 
         const int xLabelY = plot.bottom() + 8;
         if (isAshareStock) {
-            int morningLastIndex = -1;
-            int afternoonFirstIndex = -1;
-            for (int i = 0; i < m_points.size(); ++i) {
-                if (!m_points.at(i).time.isValid()) {
-                    continue;
-                }
-                const QTime pointTime = m_points.at(i).time.time();
-                if (pointTime <= QTime(11, 30)) {
-                    morningLastIndex = i;
-                }
-                if (afternoonFirstIndex < 0 && pointTime >= QTime(13, 0)) {
-                    afternoonFirstIndex = i;
-                }
-            }
-
-            if (morningLastIndex >= 0 && afternoonFirstIndex >= 0 && afternoonFirstIndex > morningLastIndex) {
-                const int x1130 = xOfIndex(morningLastIndex);
-                const int x1300 = xOfIndex(afternoonFirstIndex);
-                const int xSep = (x1130 + x1300) / 2;
-                painter.setPen(QPen(m_cfg.timelineChartGridColor.lighter(130), 1.0, Qt::DashLine));
-                painter.drawLine(xSep, plot.top(), xSep, plot.bottom());
-                painter.setPen(QPen(m_cfg.timelineChartTextColor));
-                painter.drawText(
-                    xSep - 48,
-                    xLabelY,
-                    96,
-                    18,
-                    Qt::AlignHCenter | Qt::AlignTop,
-                    QStringLiteral("11:30/13:00")
-                );
-            } else if (morningLastIndex >= 0) {
-                const int x1130 = xOfIndex(morningLastIndex);
-                painter.drawText(x1130 - 30, xLabelY, 60, 18, Qt::AlignHCenter | Qt::AlignTop, QStringLiteral("11:30"));
-            } else if (afternoonFirstIndex >= 0) {
-                const int x1300 = xOfIndex(afternoonFirstIndex);
-                painter.drawText(x1300 - 30, xLabelY, 60, 18, Qt::AlignHCenter | Qt::AlignTop, QStringLiteral("13:00"));
-            }
+            const int xOpen  = xOfAshareTime(QTime(9, 30));
+            const int xMid   = xOfAshareTime(QTime(11, 30));
+            const int xClose = xOfAshareTime(QTime(15, 0));
             painter.setPen(QPen(m_cfg.timelineChartTextColor));
+            painter.drawText(xOpen - 6,   xLabelY, 60, 18, Qt::AlignLeft    | Qt::AlignTop, QStringLiteral("9:30"));
+            painter.drawText(xMid - 48,   xLabelY, 96, 18, Qt::AlignHCenter | Qt::AlignTop, QStringLiteral("11:30/13:00"));
+            painter.drawText(xClose - 54, xLabelY, 60, 18, Qt::AlignRight   | Qt::AlignTop, QStringLiteral("15:00"));
         } else {
             const int midIndex = m_points.size() / 2;
             const QString leftTime = m_points.first().time.isValid()
@@ -858,7 +848,9 @@ protected:
         bool hasPricePath = false;
         bool hasAvgPath = false;
         for (int i = 0; i < m_points.size(); ++i) {
-            const int x = xOfIndex(i);
+            const int x = (isAshareStock && m_points.at(i).time.isValid())
+                ? xOfAshareTime(m_points.at(i).time.time())
+                : xOfIndex(i);
             const double pricePct = toPct(m_points.at(i).price, baseline);
             if (std::isfinite(pricePct)) {
                 const int yPrice = yOfPct(pricePct);
