@@ -11,6 +11,7 @@
 #include <QFontMetrics>
 #include <QGuiApplication>
 #include <QHeaderView>
+#include <QHash>
 #include <QHoverEvent>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -309,6 +310,7 @@ inline constexpr double kTimelinePopupWidthScale = 1.5;
 inline constexpr int kTimelinePopupMinWidth = 560;
 inline constexpr int kTimelinePopupFixedHeight = 360;
 inline constexpr int kTimelinePopupScreenMarginPx = 12;
+inline constexpr int kTimelineRequestCacheTtlMs = 30 * 1000;
 
 struct TimelinePoint {
     QDateTime time;
@@ -330,6 +332,12 @@ struct TimelineSession {
     QTime afternoonStart;
     QTime afternoonEnd;
     QString midLabel;
+};
+
+struct TimelineCacheEntry {
+    QVector<TimelinePoint> points;
+    double preClose = qQNaN();
+    QDateTime expiresAtUtc;
 };
 
 bool isAshareIndexCode(const QString& rawCode) {
@@ -612,6 +620,11 @@ QString toTimelineSecId(const QString& rawCode) {
             : QStringLiteral("0");
     }
     return market + QStringLiteral(".") + digits;
+}
+
+QString timelineRequestCacheKey(const QString& secId, int days, bool keepLastTradingDayOnly) {
+    return QStringLiteral("%1|%2|%3")
+        .arg(secId, QString::number(days), keepLastTradingDayOnly ? QStringLiteral("1") : QStringLiteral("0"));
 }
 
 bool isAshareTradingTimeNow() {
@@ -1347,17 +1360,77 @@ private:
         }
     }
 
-    void requestTimeline(int days, bool fallbackAllowed, bool keepLastTradingDayOnly, int token) {
-        if (m_reply) {
-            QNetworkReply* pendingReply = m_reply;
-            m_reply = nullptr;
-            pendingReply->abort();
-            pendingReply->deleteLater();
+    void cancelPendingReply() {
+        if (!m_reply) {
+            return;
         }
 
+        QNetworkReply* pendingReply = m_reply;
+        m_reply = nullptr;
+        pendingReply->abort();
+        pendingReply->deleteLater();
+    }
+
+    void applyTimelineResult(const QVector<TimelinePoint>& points, double preClose) {
+        updateHongKongHalfDayState(points);
+        if (!isCurrentMarketTradingTimeNow()) {
+            stopRefreshTimer();
+        }
+
+        const QString title = m_name.isEmpty()
+            ? m_code
+            : QStringLiteral("%1  %2").arg(m_name, m_code);
+        m_chart->setSeries(title, m_code, points, preClose);
+    }
+
+    bool tryUseCachedTimeline(const QString& cacheKey, int days, bool fallbackAllowed, int token) {
+        auto it = m_timelineCache.find(cacheKey);
+        if (it == m_timelineCache.end()) {
+            return false;
+        }
+
+        const QDateTime nowUtc = QDateTime::currentDateTimeUtc();
+        if (!it->expiresAtUtc.isValid() || it->expiresAtUtc <= nowUtc) {
+            m_timelineCache.erase(it);
+            return false;
+        }
+
+        const QVector<TimelinePoint> points = it->points;
+        const double preClose = it->preClose;
+        if (points.isEmpty() && days == 1 && fallbackAllowed) {
+            qDebug() << "[TimelineChart] cache hit" << cacheKey << "fallback to ndays=2";
+            requestTimeline(2, false, true, token);
+            return true;
+        }
+
+        qDebug() << "[TimelineChart] cache hit" << cacheKey;
+        applyTimelineResult(points, preClose);
+        return true;
+    }
+
+    void cacheTimelineResult(
+        const QString& cacheKey,
+        const QVector<TimelinePoint>& points,
+        double preClose
+    ) {
+        TimelineCacheEntry entry;
+        entry.points = points;
+        entry.preClose = preClose;
+        entry.expiresAtUtc = QDateTime::currentDateTimeUtc().addMSecs(kTimelineRequestCacheTtlMs);
+        m_timelineCache.insert(cacheKey, entry);
+    }
+
+    void requestTimeline(int days, bool fallbackAllowed, bool keepLastTradingDayOnly, int token) {
         const QString secId = toTimelineSecId(m_code);
         if (secId.isEmpty()) {
             m_chart->setStatusText(QStringLiteral("Unsupported code: %1").arg(m_code));
+            return;
+        }
+
+        cancelPendingReply();
+
+        const QString cacheKey = timelineRequestCacheKey(secId, days, keepLastTradingDayOnly);
+        if (tryUseCachedTimeline(cacheKey, days, fallbackAllowed, token)) {
             return;
         }
 
@@ -1386,7 +1459,7 @@ private:
 
         QNetworkReply* reply = m_nam.get(req);
         m_reply = reply;
-        connect(reply, &QNetworkReply::finished, this, [this, reply, token, days, fallbackAllowed, keepLastTradingDayOnly]() {
+        connect(reply, &QNetworkReply::finished, this, [this, reply, token, days, fallbackAllowed, keepLastTradingDayOnly, cacheKey]() {
             if (reply == m_reply) {
                 m_reply = nullptr;
             }
@@ -1414,20 +1487,14 @@ private:
                 return;
             }
 
+            cacheTimelineResult(cacheKey, points, preClose);
+
             if (points.isEmpty() && days == 1 && fallbackAllowed) {
                 requestTimeline(2, false, true, token);
                 return;
             }
 
-            updateHongKongHalfDayState(points);
-            if (!isCurrentMarketTradingTimeNow()) {
-                stopRefreshTimer();
-            }
-
-            const QString title = m_name.isEmpty()
-                ? m_code
-                : QStringLiteral("%1  %2").arg(m_name, m_code);
-            m_chart->setSeries(title, m_code, points, preClose);
+            applyTimelineResult(points, preClose);
         });
     }
 
@@ -1450,6 +1517,7 @@ private:
     QString m_code;
     QString m_name;
     QDate m_hongKongHalfDayDate;
+    QHash<QString, TimelineCacheEntry> m_timelineCache;
     int m_requestToken = 0;
 };
 
