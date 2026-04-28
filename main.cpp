@@ -58,7 +58,6 @@ int main(int argc, char* argv[]) {
     const AppConfig cfg = ConfigManager::loadConfig();
     app_logging::initFileLogger(cfg);
     qInfo() << "Application startup"
-            << "apiSource=" << cfg.apiSource
             << "pollMs=" << cfg.pollMs
             << "language=" << cfg.language
             << "logEnabled=" << cfg.logEnabled

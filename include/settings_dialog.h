@@ -86,13 +86,6 @@ private:
     QLabel* m_hotkeyIndicator = nullptr;
     QPushButton* m_hotkeyClearBtn = nullptr;
     QCheckBox* m_startupShowFloatingWindowCheck = nullptr;
-    QComboBox* m_sourceCombo = nullptr;
-    QLineEdit* m_tokenEdit = nullptr;
-    QPushButton* m_tokenCheckBtn = nullptr;
-    QWidget* m_tokenRowWidget = nullptr;
-    QWidget* m_tokenRowLabel = nullptr;
-    QNetworkAccessManager* m_tokenCheckNam = nullptr;
-    QNetworkReply* m_tokenCheckReply = nullptr;
     QLineEdit* m_userAgentEdit = nullptr;
     QComboBox* m_proxyTypeCombo = nullptr;
     QLineEdit* m_proxyHostEdit = nullptr;

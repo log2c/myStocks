@@ -80,7 +80,6 @@ private:
     QuoteModel* m_model = nullptr;
     FloatingWindow* m_window = nullptr;
     IQuoteProvider* m_provider = nullptr;
-    IQuoteProvider* m_sectorProvider = nullptr;
     EastMoneyHotRankProvider* m_hotRankProvider = nullptr;
     AshareMarketBreadthProvider* m_marketBreadthProvider = nullptr;
 

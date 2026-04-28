@@ -112,8 +112,6 @@ struct AppConfig {
     double opacity = 0.9;
     QString hotkey = "Ctrl+Alt+S";
     bool startupShowFloatingWindow = true;
-    QString apiSource = "eastmoney";
-    QString xtickToken;
     QString language = "auto";
 
     QString userAgent = defaultChrome100UserAgent();

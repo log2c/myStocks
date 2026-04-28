@@ -91,7 +91,6 @@ AppController::AppController(QObject* parent)
     m_resolvedLanguage = i18n::resolveLanguage(m_cfg.language);
 
     qInfo() << "AppController init"
-            << "apiSource=" << m_cfg.apiSource
             << "pollMs=" << m_cfg.pollMs
             << "language=" << m_resolvedLanguage
             << "logEnabled=" << m_cfg.logEnabled
@@ -639,7 +638,6 @@ void AppController::openSettings() {
     }
 
     qInfo() << "Settings accepted"
-            << "apiSource:" << m_cfg.apiSource << "->" << updatedCfg.apiSource
             << "pollMs:" << m_cfg.pollMs << "->" << updatedCfg.pollMs
             << "language:" << m_cfg.language << "->" << updatedCfg.language
             << "logEnabled:" << m_cfg.logEnabled << "->" << updatedCfg.logEnabled
@@ -786,7 +784,7 @@ void AppController::reloadStocksFromYaml() {
 }
 
 void AppController::refreshQuotes(bool force) {
-    if (!m_provider && !m_sectorProvider) {
+    if (!m_provider) {
         return;
     }
 
@@ -795,72 +793,27 @@ void AppController::refreshQuotes(bool force) {
     }
 
     const QVector<StockItem> merged = mergedWatchItems();
-
-    // EastMoney source now supports mixed batch quotes (index + sector + future + stock)
-    // via ulist endpoint, so avoid splitting into separate requests.
-    if (m_cfg.apiSource == QStringLiteral("eastmoney")) {
-        QVector<StockItem> allItems;
-        allItems.reserve(merged.size());
-        for (const StockItem& item : merged) {
-            const QString sectorCode = normalizeSectorCode(item.code);
-            if (!sectorCode.isEmpty()) {
-                allItems.push_back({sectorCode, item.name});
-                continue;
-            }
-
-            const QString hkIndexCode = normalizeHongKongIndexCode(item.code);
-            if (!hkIndexCode.isEmpty()) {
-                allItems.push_back({hkIndexCode, item.name});
-                continue;
-            }
-
-            allItems.push_back(item);
-        }
-
-        if (m_provider && !allItems.isEmpty()) {
-            m_provider->fetchQuotes(allItems);
-        }
-        return;
-    }
-
-    QVector<StockItem> marketItems;
-    QVector<StockItem> sectorItems;
-    marketItems.reserve(merged.size());
-    sectorItems.reserve(merged.size());
+    QVector<StockItem> allItems;
+    allItems.reserve(merged.size());
 
     for (const StockItem& item : merged) {
-        if (isPredefinedIndexCode(item.code)) {
-            sectorItems.push_back(item);
-            continue;
-        }
-
         const QString sectorCode = normalizeSectorCode(item.code);
         if (!sectorCode.isEmpty()) {
-            sectorItems.push_back({sectorCode, item.name});
-            continue;
-        }
-
-        const QString futureCode = normalizeFutureCode(item.code);
-        if (!futureCode.isEmpty()) {
-            sectorItems.push_back({futureCode, item.name});
+            allItems.push_back({sectorCode, item.name});
             continue;
         }
 
         const QString hkIndexCode = normalizeHongKongIndexCode(item.code);
         if (!hkIndexCode.isEmpty()) {
-            // Hang Seng family indexes should be fetched with EastMoney mixed batch.
-            sectorItems.push_back({hkIndexCode, item.name});
+            allItems.push_back({hkIndexCode, item.name});
             continue;
         }
 
-        marketItems.push_back(item);
+        allItems.push_back(item);
     }
 
-    if (m_provider && !marketItems.isEmpty()) {
-        m_provider->fetchQuotes(marketItems);
-    }
-    if (m_sectorProvider && !sectorItems.isEmpty()) {
-        m_sectorProvider->fetchQuotes(sectorItems);
+    if (!allItems.isEmpty()) {
+        m_provider->fetchQuotes(allItems);
     }
 }
 
@@ -1094,50 +1047,21 @@ void AppController::rebuildProvider() {
         m_provider->deleteLater();
         m_provider = nullptr;
     }
-    if (m_sectorProvider) {
-        disconnect(m_sectorProvider, nullptr, this, nullptr);
-        m_sectorProvider->deleteLater();
-        m_sectorProvider = nullptr;
-    }
     if (m_marketBreadthProvider) {
         disconnect(m_marketBreadthProvider, nullptr, this, nullptr);
         m_marketBreadthProvider->deleteLater();
         m_marketBreadthProvider = nullptr;
     }
 
-    if (m_cfg.apiSource == "xtick") {
-        m_provider = new XTickQuoteProvider(m_cfg.xtickToken, this);
-    } else if (m_cfg.apiSource == "sina") {
-        m_provider = new SinaQuoteProvider(this);
-    } else if (m_cfg.apiSource == "tencent") {
-        m_provider = new TencentQuoteProvider(this);
-    } else if (m_cfg.apiSource == "eastmoney") {
-        m_provider = new EastMoneyQuoteProvider(this);
-    } else {
-        m_provider = new MockQuoteProvider(this);
-    }
+    m_provider = new EastMoneyQuoteProvider(this);
 
-    qInfo() << "Rebuild provider done. source=" << m_cfg.apiSource;
+    qInfo() << "Rebuild provider done. source=eastmoney";
 
     m_provider->setLanguage(m_resolvedLanguage);
     m_provider->applyConfig(m_cfg);
 
-    // Index/sector/future quotes are fetched from EastMoney mixed batch when the
-    // primary provider is not EastMoney, so special watch items keep working.
-    // When primary source is EastMoney, m_provider already fetches everything in batch.
-    if (m_cfg.apiSource != "eastmoney") {
-        m_sectorProvider = new EastMoneyQuoteProvider(this);
-        m_sectorProvider->setLanguage(m_resolvedLanguage);
-        m_sectorProvider->applyConfig(m_cfg);
-    }
-
     m_apiNamesByCode.clear();
-    const QString sourceAtConnect = m_cfg.apiSource;
-    connect(m_provider, &IQuoteProvider::quotesReady, this, [this, sourceAtConnect](const QVector<QuoteItem>& quotes) {
-        if (sourceAtConnect == "mock") {
-            return;
-        }
-
+    connect(m_provider, &IQuoteProvider::quotesReady, this, [this](const QVector<QuoteItem>& quotes) {
         for (const QuoteItem& q : quotes) {
             const QString code = q.code.trimmed();
             const QString name = q.name.trimmed();
@@ -1155,26 +1079,6 @@ void AppController::rebuildProvider() {
     connect(m_provider, &IQuoteProvider::error, this, [this](const QString& msg) {
         onProviderError(msg);
     });
-
-    if (m_sectorProvider) {
-        connect(m_sectorProvider, &IQuoteProvider::quotesReady, this, [this](const QVector<QuoteItem>& quotes) {
-            for (const QuoteItem& q : quotes) {
-                const QString code = q.code.trimmed();
-                const QString name = q.name.trimmed();
-                if (code.isEmpty() || name.isEmpty()) {
-                    continue;
-                }
-                m_apiNamesByCode.insert(code, name);
-            }
-        });
-        connect(m_sectorProvider, &IQuoteProvider::quotesReady, m_model, &QuoteModel::updateQuotes);
-        connect(m_sectorProvider, &IQuoteProvider::quotesReady, this, [this](const QVector<QuoteItem>&) {
-            updateTrayTooltip();
-        });
-        connect(m_sectorProvider, &IQuoteProvider::error, this, [this](const QString& msg) {
-            onProviderError(msg);
-        });
-    }
 
     m_marketBreadthProvider = new AshareMarketBreadthProvider(this);
     m_marketBreadthProvider->applyConfig(m_cfg);
@@ -1310,10 +1214,6 @@ QHash<QString, QString> AppController::currentApiNamesByCode() const {
 
 bool AppController::shouldPollNow() {
     if (m_cfg.debugIgnoreTradingTime) {
-        return true;
-    }
-
-    if (m_cfg.apiSource == "mock") {
         return true;
     }
 

@@ -238,8 +238,6 @@ AppConfig ConfigManager::loadConfig() {
         QStringLiteral("startupShowFloatingWindow"),
         cfg.startupShowFloatingWindow
     ).toBool();
-    cfg.apiSource = readConfigValue(s, QStringLiteral("apiSource"), cfg.apiSource).toString();
-    cfg.xtickToken = readConfigValue(s, QStringLiteral("xtickToken"), cfg.xtickToken).toString();
     cfg.language = i18n::normalizeLanguage(
         readConfigValue(s, QStringLiteral("language"), cfg.language).toString()
     );
@@ -422,14 +420,6 @@ AppConfig ConfigManager::loadConfig() {
 
     cfg.pollMs = qMax(500, cfg.pollMs);
     cfg.opacity = qBound(0.2, cfg.opacity, 1.0);
-    if (cfg.apiSource != "mock"
-        && cfg.apiSource != "xtick"
-        && cfg.apiSource != "sina"
-        && cfg.apiSource != "tencent"
-        && cfg.apiSource != "eastmoney") {
-        cfg.apiSource = "eastmoney";
-    }
-
     cfg.userAgent = cfg.userAgent.trimmed();
     if (cfg.userAgent.isEmpty()) {
         cfg.userAgent = defaultChrome100UserAgent();
@@ -470,7 +460,6 @@ AppConfig ConfigManager::loadConfig() {
 
         qInfo() << "ConfigManager::loadConfig"
             << "settingsFile=" << s.fileName()
-            << "apiSource=" << cfg.apiSource
             << "pollMs=" << cfg.pollMs
             << "language=" << cfg.language
             << "logEnabled=" << cfg.logEnabled
@@ -488,7 +477,6 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
 
         qInfo() << "ConfigManager::saveConfig begin"
             << "settingsFile=" << s.fileName()
-            << "apiSource=" << cfg.apiSource
             << "pollMs=" << cfg.pollMs
             << "language=" << cfg.language
             << "logEnabled=" << cfg.logEnabled
@@ -502,8 +490,6 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         QStringLiteral("startupShowFloatingWindow"),
         cfg.startupShowFloatingWindow
     );
-    writeConfigValue(s, QStringLiteral("apiSource"), cfg.apiSource);
-    writeConfigValue(s, QStringLiteral("xtickToken"), cfg.xtickToken);
     writeConfigValue(s, QStringLiteral("language"), i18n::normalizeLanguage(cfg.language));
     writeConfigValue(
         s,
