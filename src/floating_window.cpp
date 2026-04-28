@@ -3287,7 +3287,7 @@ void FloatingWindow::applyStyle() {
         "background-color: rgba(%1,%2,%3,%4);"
         "}"
         "QHeaderView::section{"
-        "background: transparent;"
+        "background-color: rgba(%1,%2,%3,%4);"
         "border: none;"
         "%16"
         "color: rgb(%9,%10,%11);"
@@ -3475,7 +3475,7 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
     const QColor normalText = m_cfg.textColor;
     const QColor normalGrid = m_cfg.gridColor;
     const QColor normalBorder(0, 0, 0, 0);
-    const QColor normalHeaderBg(0, 0, 0, 0);
+    const QColor normalHeaderBg = normalBg;
     const QColor normalTableBg = normalBg;
     const QColor normalTableBorder(0, 0, 0, 0);
 
