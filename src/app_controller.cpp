@@ -1162,7 +1162,7 @@ bool AppController::shouldPollNow() {
     }
 
     const bool needProbe = !m_probeCheckedAt.isValid()
-        || m_probeCheckedAt.secsTo(bjNow) >= 300;
+        || m_probeCheckedAt.secsTo(bjNow) >= app_constants::kNetworkCacheTtlSecs;
 
     if (needProbe) {
         m_probeTradingDay = probeTradingDay(today, hasHongKongTradingScheduleItems());
@@ -1195,7 +1195,7 @@ bool AppController::shouldPollHotRanksNow() {
     }
 
     const bool needProbe = !m_hotProbeCheckedAt.isValid()
-        || m_hotProbeCheckedAt.secsTo(bjNow) >= 300;
+        || m_hotProbeCheckedAt.secsTo(bjNow) >= app_constants::kNetworkCacheTtlSecs;
     if (needProbe) {
         m_hotProbeTradingDay = probeTradingDay(today, false);
         m_hotProbeCheckedAt = bjNow;

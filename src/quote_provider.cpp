@@ -1,5 +1,6 @@
 #include "quote_provider.h"
 
+#include "app_constants.h"
 #include "network_logger.h"
 #include "network_utils.h"
 
@@ -18,9 +19,6 @@
 #include <limits>
 
 namespace {
-
-inline constexpr qint64 kMarketBreadthCacheTtlMs = 60 * 1000;
-inline constexpr qint64 kHotRankCacheTtlMs = 60 * 1000;
 
 struct SharedHotRankCacheEntry {
     QVector<HotRankItem> items;
@@ -982,7 +980,7 @@ void EastMoneyHotRankProvider::handleHotListResponse(
 
     cachedItems = items;
     cacheRequestKey = requestKey;
-    cacheExpiresAtMs = QDateTime::currentMSecsSinceEpoch() + kHotRankCacheTtlMs;
+    cacheExpiresAtMs = QDateTime::currentMSecsSinceEpoch() + app_constants::kNetworkCacheTtlMs;
     cacheValid = true;
 
     SharedHotRankCacheEntry& sharedCache = sharedHotRankCache(concept);
@@ -1559,7 +1557,7 @@ void AshareMarketBreadthProvider::finalizeFetch(int token) {
 
     if (m_pendingSnapshot.breadthValid && m_pendingSnapshot.turnoverValid) {
         m_cachedSnapshot = m_pendingSnapshot;
-        m_cacheExpiresAtMs = QDateTime::currentMSecsSinceEpoch() + kMarketBreadthCacheTtlMs;
+        m_cacheExpiresAtMs = QDateTime::currentMSecsSinceEpoch() + app_constants::kNetworkCacheTtlMs;
         m_cacheValid = true;
     }
 

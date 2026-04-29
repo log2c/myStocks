@@ -1,5 +1,6 @@
 #include "floating_window.h"
 
+#include "app_constants.h"
 #include "i18n.h"
 #include "quote_provider.h"
 #include "watchlist_utils.h"
@@ -382,7 +383,6 @@ inline constexpr double kTimelinePopupWidthScale = 1.5;
 inline constexpr int kTimelinePopupMinWidth = 560;
 inline constexpr int kTimelinePopupFixedHeight = 360;
 inline constexpr int kTimelinePopupScreenMarginPx = 12;
-inline constexpr int kTimelineRequestCacheTtlMs = 30 * 1000;
 
 struct TimelinePoint {
     QDateTime time;
@@ -1616,7 +1616,7 @@ private:
         TimelineCacheEntry entry;
         entry.points = points;
         entry.preClose = preClose;
-        entry.expiresAtUtc = QDateTime::currentDateTimeUtc().addMSecs(kTimelineRequestCacheTtlMs);
+        entry.expiresAtUtc = QDateTime::currentDateTimeUtc().addMSecs(app_constants::kNetworkCacheTtlMs);
         m_timelineCache.insert(cacheKey, entry);
     }
 
