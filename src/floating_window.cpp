@@ -988,24 +988,37 @@ protected:
         const TimelineMarket market = timelineMarketOfCode(m_code);
         const TimelineSession session = timelineSessionForMarket(market);
         const bool hasSessionAxis = hasValidTimelineSession(session);
+        const bool isAshareStock = isAshareStockCode(m_code);
+        const double ashareLimitPct = isAshareStock
+            ? fixedRangeLimitPctForAshareStock(m_code)
+            : qQNaN();
         double yMinPct = 0.0;
         double yMaxPct = 0.0;
-        if (m_cfg.timelineChartFixedRangeEnabled && isAshareStockCode(m_code)) {
-            const double limitPct = fixedRangeLimitPctForAshareStock(m_code);
-            if (std::isfinite(limitPct) && limitPct > 0.0) {
-                yMinPct = -limitPct;
-                yMaxPct = limitPct;
-            }
+        if (m_cfg.timelineChartFixedRangeEnabled && std::isfinite(ashareLimitPct) && ashareLimitPct > 0.0) {
+            yMinPct = -ashareLimitPct;
+            yMaxPct = ashareLimitPct;
         }
         if (!(yMinPct < yMaxPct)) {
             if (qFuzzyCompare(minPct, maxPct)) {
                 minPct -= 0.5;
                 maxPct += 0.5;
             }
-            const double absMaxPct = qMax(std::abs(minPct), std::abs(maxPct));
+            double absMaxPct = qMax(std::abs(minPct), std::abs(maxPct));
+            if (std::isfinite(ashareLimitPct) && ashareLimitPct > 0.0) {
+                // Keep A-share timeline bounded by board limit when auto range is used.
+                absMaxPct = qMin(absMaxPct, ashareLimitPct);
+            }
             const double halfSpanPct = qMax(0.5, absMaxPct * 1.08);
             yMinPct = -halfSpanPct;
             yMaxPct = halfSpanPct;
+            if (std::isfinite(ashareLimitPct) && ashareLimitPct > 0.0) {
+                yMinPct = qMax(yMinPct, -ashareLimitPct);
+                yMaxPct = qMin(yMaxPct, ashareLimitPct);
+                if (!(yMinPct < yMaxPct)) {
+                    yMinPct = -ashareLimitPct;
+                    yMaxPct = ashareLimitPct;
+                }
+            }
         }
         const double ySpanPct = qMax(0.000001, yMaxPct - yMinPct);
 
