@@ -157,7 +157,7 @@ struct AppConfig {
     int floatingWindowFontSize = 0;
     bool floatingWindowFontBold = false;
 
-    bool showHeader = true;
+    bool showHeader = false;
     bool showGrid = false;
     QColor gridColor = QColor(255, 255, 255, 80);
     QColor bgColor = QColor(18, 18, 18, 190);
@@ -167,12 +167,12 @@ struct AppConfig {
     QColor flatColor = QColor(245, 245, 245);
 
     QMap<int, bool> visibleColumns {
-        {ColCode, true},
+        {ColCode, false},
         {ColName, true},
         {ColPrice, true},
         {ColPct, true},
-        {ColChange, true},
-        {ColIndicator, true}
+        {ColChange, false},
+        {ColIndicator, false}
     };
 
     QVector<int> columnOrder {
@@ -223,7 +223,7 @@ struct AppConfig {
     QString hotConceptSortOrder = "desc";
     bool mousePassthroughEnabled = false;
     QString mousePassthroughActivationKey = "ctrl";
-    bool floatingWindowDoubleClickToHide = false;
+    bool floatingWindowDoubleClickToHide = true;
     double floatingWindowPaddingPx = static_cast<double>(kFloatingWindowPaddingPx);
 
     QMap<int, int> columnWidths;

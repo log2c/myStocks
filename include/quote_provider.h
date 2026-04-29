@@ -57,8 +57,18 @@ public:
     explicit EastMoneyHotRankProvider(QObject* parent = nullptr);
 
     void applyConfig(const AppConfig& cfg);
-    void fetchHotSectors(int limit, const QString& sortField, const QString& sortOrder);
-    void fetchHotConcepts(int limit, const QString& sortField, const QString& sortOrder);
+    void fetchHotSectors(
+        int limit,
+        const QString& sortField,
+        const QString& sortOrder,
+        bool forceRefresh = false
+    );
+    void fetchHotConcepts(
+        int limit,
+        const QString& sortField,
+        const QString& sortOrder,
+        bool forceRefresh = false
+    );
 
 signals:
     void hotSectorsReady(const QVector<HotRankItem>& items);
@@ -70,15 +80,33 @@ private:
         bool concept,
         int limit,
         const QString& sortField,
-        const QString& sortOrder
+        const QString& sortOrder,
+        bool forceRefresh
     );
-    void handleHotListResponse(bool concept, const QByteArray& body, const QString& errorText);
+    void handleHotListResponse(
+        bool concept,
+        const QByteArray& body,
+        const QString& errorText,
+        const QString& requestKey
+    );
 
 private:
     QString m_userAgent = defaultChrome100UserAgent();
     QNetworkProxy m_proxy = QNetworkProxy(QNetworkProxy::NoProxy);
     QNetworkAccessManager m_nam;
     QString m_lastError;
+    QNetworkReply* m_hotSectorReply = nullptr;
+    QNetworkReply* m_hotConceptReply = nullptr;
+    QVector<HotRankItem> m_cachedHotSectors;
+    QVector<HotRankItem> m_cachedHotConcepts;
+    QString m_hotSectorCacheRequestKey;
+    QString m_hotConceptCacheRequestKey;
+    QString m_hotSectorInFlightRequestKey;
+    QString m_hotConceptInFlightRequestKey;
+    qint64 m_hotSectorCacheExpiresAtMs = 0;
+    qint64 m_hotConceptCacheExpiresAtMs = 0;
+    bool m_hotSectorCacheValid = false;
+    bool m_hotConceptCacheValid = false;
 };
 
 class AshareMarketBreadthProvider : public QObject {
@@ -87,7 +115,7 @@ public:
     explicit AshareMarketBreadthProvider(QObject* parent = nullptr);
 
     void applyConfig(const AppConfig& cfg);
-    void fetch();
+    void fetch(bool forceRefresh = false);
 
 signals:
     void dataReady(const MarketBreadthSnapshot& snapshot);

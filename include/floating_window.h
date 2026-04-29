@@ -21,6 +21,9 @@ public:
     void applyConfig(const AppConfig& cfg);
     void toggleMarketBreadthDetailPopupFromTray();
 
+signals:
+    void forceRefreshRequested();
+
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;

@@ -20,6 +20,20 @@
 namespace {
 
 inline constexpr qint64 kMarketBreadthCacheTtlMs = 60 * 1000;
+inline constexpr qint64 kHotRankCacheTtlMs = 60 * 1000;
+
+struct SharedHotRankCacheEntry {
+    QVector<HotRankItem> items;
+    QString requestKey;
+    qint64 expiresAtMs = 0;
+    bool valid = false;
+};
+
+SharedHotRankCacheEntry& sharedHotRankCache(bool concept) {
+    static SharedHotRankCacheEntry sectorCache;
+    static SharedHotRankCacheEntry conceptCache;
+    return concept ? conceptCache : sectorCache;
+}
 
 namespace headers {
 
@@ -721,34 +735,119 @@ EastMoneyHotRankProvider::EastMoneyHotRankProvider(QObject* parent)
 void EastMoneyHotRankProvider::applyConfig(const AppConfig& cfg) {
     m_userAgent = network_utils::effectiveUserAgent(cfg);
     m_proxy = network_utils::proxyFromConfig(cfg);
+
+    m_hotSectorCacheValid = false;
+    m_hotConceptCacheValid = false;
+    m_hotSectorCacheExpiresAtMs = 0;
+    m_hotConceptCacheExpiresAtMs = 0;
+    m_hotSectorCacheRequestKey.clear();
+    m_hotConceptCacheRequestKey.clear();
+
+    if (m_hotSectorReply) {
+        QNetworkReply* pendingReply = m_hotSectorReply;
+        m_hotSectorReply = nullptr;
+        pendingReply->abort();
+        pendingReply->deleteLater();
+    }
+    if (m_hotConceptReply) {
+        QNetworkReply* pendingReply = m_hotConceptReply;
+        m_hotConceptReply = nullptr;
+        pendingReply->abort();
+        pendingReply->deleteLater();
+    }
+    m_hotSectorInFlightRequestKey.clear();
+    m_hotConceptInFlightRequestKey.clear();
 }
 
 void EastMoneyHotRankProvider::fetchHotSectors(
     int limit,
     const QString& sortField,
-    const QString& sortOrder
+    const QString& sortOrder,
+    bool forceRefresh
 ) {
-    fetchHotList(false, limit, sortField, sortOrder);
+    fetchHotList(false, limit, sortField, sortOrder, forceRefresh);
 }
 
 void EastMoneyHotRankProvider::fetchHotConcepts(
     int limit,
     const QString& sortField,
-    const QString& sortOrder
+    const QString& sortOrder,
+    bool forceRefresh
 ) {
-    fetchHotList(true, limit, sortField, sortOrder);
+    fetchHotList(true, limit, sortField, sortOrder, forceRefresh);
 }
 
 void EastMoneyHotRankProvider::fetchHotList(
     bool concept,
     int limit,
     const QString& sortField,
-    const QString& sortOrder
+    const QString& sortOrder,
+    bool forceRefresh
 ) {
     m_nam.setProxy(m_proxy);
 
     const QString normalizedSortField = normalizeHotRankSortField(sortField);
     const QString normalizedSortOrder = normalizeHotRankSortOrder(sortOrder);
+    const QString requestKey = QStringLiteral("%1|%2|%3")
+        .arg(qMax(1, limit))
+        .arg(normalizedSortField, normalizedSortOrder);
+
+    QVector<HotRankItem>& cachedItems = concept ? m_cachedHotConcepts : m_cachedHotSectors;
+    QString& cacheRequestKey = concept ? m_hotConceptCacheRequestKey : m_hotSectorCacheRequestKey;
+    qint64& cacheExpiresAtMs = concept ? m_hotConceptCacheExpiresAtMs : m_hotSectorCacheExpiresAtMs;
+    bool& cacheValid = concept ? m_hotConceptCacheValid : m_hotSectorCacheValid;
+    QNetworkReply*& inFlightReply = concept ? m_hotConceptReply : m_hotSectorReply;
+    QString& inFlightRequestKey = concept
+        ? m_hotConceptInFlightRequestKey
+        : m_hotSectorInFlightRequestKey;
+
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (!forceRefresh && cacheValid && cacheRequestKey == requestKey && nowMs < cacheExpiresAtMs) {
+        qInfo() << "[HotRank] cache hit type=" << (concept ? "concept" : "sector")
+                << "ttl_ms=" << (cacheExpiresAtMs - nowMs);
+        if (concept) {
+            emit hotConceptsReady(cachedItems);
+        } else {
+            emit hotSectorsReady(cachedItems);
+        }
+        return;
+    }
+
+    SharedHotRankCacheEntry& sharedCache = sharedHotRankCache(concept);
+    if (!forceRefresh
+        && sharedCache.valid
+        && sharedCache.requestKey == requestKey
+        && nowMs < sharedCache.expiresAtMs) {
+        cachedItems = sharedCache.items;
+        cacheRequestKey = sharedCache.requestKey;
+        cacheExpiresAtMs = sharedCache.expiresAtMs;
+        cacheValid = true;
+
+        qInfo() << "[HotRank] shared cache hit type=" << (concept ? "concept" : "sector")
+                << "ttl_ms=" << (sharedCache.expiresAtMs - nowMs);
+        if (concept) {
+            emit hotConceptsReady(cachedItems);
+        } else {
+            emit hotSectorsReady(cachedItems);
+        }
+        return;
+    }
+
+    if (inFlightReply && !forceRefresh) {
+        qInfo() << "[HotRank] request already in flight type=" << (concept ? "concept" : "sector")
+                << "skip";
+        return;
+    }
+
+    if (forceRefresh && inFlightReply) {
+        inFlightReply->setProperty("myStocksIgnoreAbort", true);
+        inFlightReply->abort();
+        inFlightReply = nullptr;
+        inFlightRequestKey.clear();
+    }
+
+    inFlightRequestKey = requestKey;
+
     const QString fid = normalizedSortField == QLatin1String("pct")
         ? QStringLiteral("f3")
         : QStringLiteral("f62");
@@ -786,8 +885,26 @@ void EastMoneyHotRankProvider::fetchHotList(
         m_proxy
     );
 
-    QNetworkReply* reply = m_nam.get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, concept, trace]() {
+    inFlightReply = m_nam.get(req);
+    QNetworkReply* reply = inFlightReply;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, concept, trace, requestKey]() {
+        if (concept) {
+            if (reply == m_hotConceptReply) {
+                m_hotConceptReply = nullptr;
+            }
+            m_hotConceptInFlightRequestKey.clear();
+        } else {
+            if (reply == m_hotSectorReply) {
+                m_hotSectorReply = nullptr;
+            }
+            m_hotSectorInFlightRequestKey.clear();
+        }
+
+        if (reply->property("myStocksIgnoreAbort").toBool()) {
+            reply->deleteLater();
+            return;
+        }
+
         const QString err = (reply->error() == QNetworkReply::NoError)
             ? QString()
             : reply->errorString();
@@ -796,14 +913,15 @@ void EastMoneyHotRankProvider::fetchHotList(
         network_logger::logRequestFinish(trace, reply, body.size(), body);
 
         reply->deleteLater();
-        handleHotListResponse(concept, body, err);
+        handleHotListResponse(concept, body, err, requestKey);
     });
 }
 
 void EastMoneyHotRankProvider::handleHotListResponse(
     bool concept,
     const QByteArray& body,
-    const QString& errorText
+    const QString& errorText,
+    const QString& requestKey
 ) {
     QString errorMessage;
     QVector<HotRankItem> items;
@@ -857,6 +975,22 @@ void EastMoneyHotRankProvider::handleHotListResponse(
     }
 
     m_lastError.clear();
+    QVector<HotRankItem>& cachedItems = concept ? m_cachedHotConcepts : m_cachedHotSectors;
+    QString& cacheRequestKey = concept ? m_hotConceptCacheRequestKey : m_hotSectorCacheRequestKey;
+    qint64& cacheExpiresAtMs = concept ? m_hotConceptCacheExpiresAtMs : m_hotSectorCacheExpiresAtMs;
+    bool& cacheValid = concept ? m_hotConceptCacheValid : m_hotSectorCacheValid;
+
+    cachedItems = items;
+    cacheRequestKey = requestKey;
+    cacheExpiresAtMs = QDateTime::currentMSecsSinceEpoch() + kHotRankCacheTtlMs;
+    cacheValid = true;
+
+    SharedHotRankCacheEntry& sharedCache = sharedHotRankCache(concept);
+    sharedCache.items = items;
+    sharedCache.requestKey = requestKey;
+    sharedCache.expiresAtMs = cacheExpiresAtMs;
+    sharedCache.valid = true;
+
     if (concept) {
         emit hotConceptsReady(items);
     } else {
@@ -1202,11 +1336,16 @@ void applyTonghuashunCommonHeaders(QNetworkRequest* req, const QString& userAgen
 
 } // namespace
 
-void AshareMarketBreadthProvider::fetch() {
+void AshareMarketBreadthProvider::fetch(bool forceRefresh) {
     m_nam.setProxy(m_proxy);
 
+    if (forceRefresh) {
+        m_cacheValid = false;
+        m_cacheExpiresAtMs = 0;
+    }
+
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-    if (m_cacheValid && nowMs < m_cacheExpiresAtMs) {
+    if (!forceRefresh && m_cacheValid && nowMs < m_cacheExpiresAtMs) {
         const qint64 ttlMs = m_cacheExpiresAtMs - nowMs;
         qInfo() << "[MarketBreadth] cache hit endpoint=overview"
                 << "ttl_ms=" << ttlMs;
@@ -1219,8 +1358,26 @@ void AshareMarketBreadthProvider::fetch() {
     }
 
     if (m_overviewReply || m_distributionReply || m_turnoverReply) {
-        qInfo() << "[MarketBreadth] request already in flight, skip restart";
-        return;
+        if (forceRefresh) {
+            if (m_overviewReply) {
+                m_overviewReply->setProperty("myStocksIgnoreAbort", true);
+                m_overviewReply->abort();
+                m_overviewReply = nullptr;
+            }
+            if (m_distributionReply) {
+                m_distributionReply->setProperty("myStocksIgnoreAbort", true);
+                m_distributionReply->abort();
+                m_distributionReply = nullptr;
+            }
+            if (m_turnoverReply) {
+                m_turnoverReply->setProperty("myStocksIgnoreAbort", true);
+                m_turnoverReply->abort();
+                m_turnoverReply = nullptr;
+            }
+        } else {
+            qInfo() << "[MarketBreadth] request already in flight, skip restart";
+            return;
+        }
     }
 
     ++m_requestToken;
@@ -1230,25 +1387,6 @@ void AshareMarketBreadthProvider::fetch() {
     m_distributionDone = false;
     m_turnoverDone = false;
     m_pendingErrors.clear();
-
-    if (m_overviewReply) {
-        QNetworkReply* pendingReply = m_overviewReply;
-        m_overviewReply = nullptr;
-        pendingReply->abort();
-        pendingReply->deleteLater();
-    }
-    if (m_distributionReply) {
-        QNetworkReply* pendingReply = m_distributionReply;
-        m_distributionReply = nullptr;
-        pendingReply->abort();
-        pendingReply->deleteLater();
-    }
-    if (m_turnoverReply) {
-        QNetworkReply* pendingReply = m_turnoverReply;
-        m_turnoverReply = nullptr;
-        pendingReply->abort();
-        pendingReply->deleteLater();
-    }
 
     QNetworkRequest overviewReq(QUrl(QStringLiteral(
         "https://dq.10jqka.com.cn/fuyao/market_analysis_api/chart/v1/get_chart_data?chart_key=limit_up_minute"
@@ -1266,6 +1404,11 @@ void AshareMarketBreadthProvider::fetch() {
     connect(overviewReply, &QNetworkReply::finished, this, [this, overviewReply, token, overviewTrace]() {
         if (overviewReply == m_overviewReply) {
             m_overviewReply = nullptr;
+        }
+
+        if (overviewReply->property("myStocksIgnoreAbort").toBool()) {
+            overviewReply->deleteLater();
+            return;
         }
 
         const QString networkError = (overviewReply->error() == QNetworkReply::NoError)
@@ -1316,6 +1459,11 @@ void AshareMarketBreadthProvider::fetch() {
                 m_distributionReply = nullptr;
             }
 
+            if (distributionReply->property("myStocksIgnoreAbort").toBool()) {
+                distributionReply->deleteLater();
+                return;
+            }
+
             const QString networkError = (distributionReply->error() == QNetworkReply::NoError)
                 ? QString()
                 : distributionReply->errorString();
@@ -1359,6 +1507,11 @@ void AshareMarketBreadthProvider::fetch() {
     connect(turnoverReply, &QNetworkReply::finished, this, [this, turnoverReply, token, turnoverTrace]() {
         if (turnoverReply == m_turnoverReply) {
             m_turnoverReply = nullptr;
+        }
+
+        if (turnoverReply->property("myStocksIgnoreAbort").toBool()) {
+            turnoverReply->deleteLater();
+            return;
         }
 
         const QString networkError = (turnoverReply->error() == QNetworkReply::NoError)

@@ -49,6 +49,8 @@ public:
     QColor marketBreadthFlatColor() const;
     QColor marketBreadthDownColor() const;
     MarketBreadthSnapshot marketBreadthSnapshot() const;
+    QVector<HotRankItem> hotSectors() const;
+    QVector<HotRankItem> hotConcepts() const;
     int firstVisibleLogicalColumn() const;
     int firstContentLogicalColumn() const;
 

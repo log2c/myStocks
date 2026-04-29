@@ -132,6 +132,11 @@ AppController::AppController(QObject* parent)
     m_model->setStocks(merged);
 
     m_window = new FloatingWindow(m_model);
+    connect(m_window, &FloatingWindow::forceRefreshRequested, this, [this]() {
+        refreshQuotes(true);
+        refreshHotRanks(true);
+        refreshMarketBreadth(true);
+    });
     m_window->setGeometry(m_cfg.windowRect);
     m_window->applyConfig(m_cfg);
     if (m_cfg.startupShowFloatingWindow) {
@@ -177,9 +182,7 @@ AppController::AppController(QObject* parent)
     m_hotRankTimer = new QTimer(this);
     m_hotRankTimer->setInterval(qMax(10000, m_cfg.hotRankPollSecs * 1000));
     connect(m_hotRankTimer, &QTimer::timeout, this, [this]() { refreshHotRanks(); });
-    if (m_cfg.hotRankEnabled) {
-        m_hotRankTimer->start();
-    }
+    m_hotRankTimer->stop();
 
     m_marketBreadthTimer = new QTimer(this);
     m_marketBreadthTimer->setInterval(qMax(10000, m_cfg.marketBreadthRefreshSecs * 1000));
@@ -635,6 +638,11 @@ void AppController::openSettings() {
 
     // Recreate the floating window so column visibility/order takes effect cleanly.
     m_window = new FloatingWindow(m_model);
+    connect(m_window, &FloatingWindow::forceRefreshRequested, this, [this]() {
+        refreshQuotes(true);
+        refreshHotRanks(true);
+        refreshMarketBreadth(true);
+    });
     m_window->move(windowPos);
     m_window->applyConfig(m_cfg);
     if (wasVisible) {
@@ -767,40 +775,10 @@ void AppController::refreshQuotes(bool force) {
 }
 
 void AppController::refreshHotRanks(bool force) {
-    if (!m_hotRankProvider || !m_cfg.hotRankEnabled) {
-        if (m_model) {
-            m_model->setHotSectors({});
-            m_model->setHotConcepts({});
-        }
-        return;
-    }
-
-    if (!force && !shouldPollHotRanksNow()) {
-        return;
-    }
-
-    if (!m_cfg.hotSectorVisible) {
-        if (m_model) {
-            m_model->setHotSectors({});
-        }
-    } else {
-        m_hotRankProvider->fetchHotSectors(
-            m_cfg.hotSectorCount,
-            m_cfg.hotSectorSortField,
-            m_cfg.hotSectorSortOrder
-        );
-    }
-
-    if (!m_cfg.hotConceptVisible) {
-        if (m_model) {
-            m_model->setHotConcepts({});
-        }
-    } else {
-        m_hotRankProvider->fetchHotConcepts(
-            m_cfg.hotConceptCount,
-            m_cfg.hotConceptSortField,
-            m_cfg.hotConceptSortOrder
-        );
+    Q_UNUSED(force);
+    if (m_model) {
+        m_model->setHotSectors({});
+        m_model->setHotConcepts({});
     }
 }
 
@@ -818,7 +796,7 @@ void AppController::refreshMarketBreadth(bool force) {
         }
     }
 
-    m_marketBreadthProvider->fetch();
+    m_marketBreadthProvider->fetch(force);
 }
 
 void AppController::onProviderError(const QString& message) {
@@ -1096,62 +1074,12 @@ void AppController::rebuildHotRankProvider() {
 
     if (m_hotRankTimer) {
         m_hotRankTimer->setInterval(qMax(10000, m_cfg.hotRankPollSecs * 1000));
+        m_hotRankTimer->stop();
     }
-
-    if (!m_cfg.hotRankEnabled) {
-        if (m_hotRankTimer) {
-            m_hotRankTimer->stop();
-        }
-        if (m_model) {
-            m_model->setHotSectors({});
-            m_model->setHotConcepts({});
-        }
-        return;
-    }
-
-    m_hotRankProvider = new EastMoneyHotRankProvider(this);
-    m_hotRankProvider->applyConfig(m_cfg);
-
-    connect(
-        m_hotRankProvider,
-        &EastMoneyHotRankProvider::hotSectorsReady,
-        this,
-        [this](const QVector<HotRankItem>& items) {
-            if (m_model) {
-                m_model->setHotSectors(items);
-            }
-        }
-    );
-    connect(
-        m_hotRankProvider,
-        &EastMoneyHotRankProvider::hotConceptsReady,
-        this,
-        [this](const QVector<HotRankItem>& items) {
-            if (m_model) {
-                m_model->setHotConcepts(items);
-            }
-        }
-    );
-    connect(
-        m_hotRankProvider,
-        &EastMoneyHotRankProvider::error,
-        this,
-        [this](const QString& msg) {
-            onProviderError(msg);
-        }
-    );
 
     if (m_model) {
-        if (!m_cfg.hotSectorVisible) {
-            m_model->setHotSectors({});
-        }
-        if (!m_cfg.hotConceptVisible) {
-            m_model->setHotConcepts({});
-        }
-    }
-
-    if (m_hotRankTimer) {
-        m_hotRankTimer->start();
+        m_model->setHotSectors({});
+        m_model->setHotConcepts({});
     }
 }
 

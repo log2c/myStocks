@@ -545,41 +545,9 @@ AppConfig SettingsDialog::config() const {
     out.timelineChartDownColor = m_timelineChartDownBtn
         ? buttonColor(m_timelineChartDownBtn)
         : out.timelineChartDownColor;
-    out.hotRankEnabled = m_hotRankEnabledCheck && m_hotRankEnabledCheck->isChecked();
-    out.hotRankPollSecs = m_hotRankPollSecsSpin
-        ? qBound(10, m_hotRankPollSecsSpin->value(), 3600)
-        : out.hotRankPollSecs;
-    out.hotRankFlipSecs = m_hotRankFlipSecsSpin
-        ? qBound(0.5, m_hotRankFlipSecsSpin->value(), 60.0)
-        : out.hotRankFlipSecs;
-    out.hotSectorVisible = m_hotSectorVisibleCheck && m_hotSectorVisibleCheck->isChecked();
-    out.hotSectorCount = m_hotSectorCountSpin
-        ? qMax(1, m_hotSectorCountSpin->value())
-        : out.hotSectorCount;
-    out.hotSectorSortField = normalizeHotRankSortField(
-        m_hotSectorSortFieldCombo
-            ? m_hotSectorSortFieldCombo->currentData().toString()
-            : out.hotSectorSortField
-    );
-    out.hotSectorSortOrder = normalizeHotRankSortOrder(
-        m_hotSectorSortOrderCombo
-            ? m_hotSectorSortOrderCombo->currentData().toString()
-            : out.hotSectorSortOrder
-    );
-    out.hotConceptVisible = m_hotConceptVisibleCheck && m_hotConceptVisibleCheck->isChecked();
-    out.hotConceptCount = m_hotConceptCountSpin
-        ? qMax(1, m_hotConceptCountSpin->value())
-        : out.hotConceptCount;
-    out.hotConceptSortField = normalizeHotRankSortField(
-        m_hotConceptSortFieldCombo
-            ? m_hotConceptSortFieldCombo->currentData().toString()
-            : out.hotConceptSortField
-    );
-    out.hotConceptSortOrder = normalizeHotRankSortOrder(
-        m_hotConceptSortOrderCombo
-            ? m_hotConceptSortOrderCombo->currentData().toString()
-            : out.hotConceptSortOrder
-    );
+    out.hotRankEnabled = false;
+    out.hotSectorVisible = false;
+    out.hotConceptVisible = false;
     out.mousePassthroughEnabled = m_mousePassthroughCheck
         && m_mousePassthroughCheck->isChecked();
     out.mousePassthroughActivationKey = normalizeMousePassthroughActivationKey(
@@ -950,12 +918,6 @@ QWidget* SettingsDialog::buildDisplayTab() {
     timelineForm->setContentsMargins(6, 6, 6, 6);
     timelineForm->setVerticalSpacing(8);
 
-    QGroupBox* hotRankGroup = new QGroupBox(trText("settings.display.groupHotRank"), w);
-    QFormLayout* hotRankForm = new QFormLayout(hotRankGroup);
-    applyCompactFormLayout(hotRankForm);
-    hotRankForm->setContentsMargins(6, 6, 6, 6);
-    hotRankForm->setVerticalSpacing(8);
-
     QGroupBox* columnsGroup = new QGroupBox(trText("settings.display.groupColumns"), w);
     QFormLayout* columnsForm = new QFormLayout(columnsGroup);
     applyCompactFormLayout(columnsForm);
@@ -989,208 +951,6 @@ QWidget* SettingsDialog::buildDisplayTab() {
     });
     addCompactFormRow(windowForm, m_showGridCheck);
     windowForm->addRow(trText("settings.display.gridColor"), m_gridColorBtn);
-
-    m_hotRankEnabledCheck = new QCheckBox(trText("settings.display.hotRankEnabled"), w);
-    m_hotRankEnabledCheck->setChecked(m_cfg.hotRankEnabled);
-    addCompactFormRow(hotRankForm, m_hotRankEnabledCheck);
-
-    m_hotRankPollSecsSpin = new QSpinBox(w);
-    m_hotRankPollSecsSpin->setRange(10, 3600);
-    m_hotRankPollSecsSpin->setSingleStep(1);
-    m_hotRankPollSecsSpin->setSuffix(trText("settings.display.hotRankPollSuffix"));
-    m_hotRankPollSecsSpin->setValue(qBound(10, m_cfg.hotRankPollSecs, 3600));
-    applyNumericSpinBoxWidth(m_hotRankPollSecsSpin);
-    hotRankForm->addRow(trText("settings.display.hotRankPoll"), m_hotRankPollSecsSpin);
-
-    m_hotRankFlipSecsSpin = new QDoubleSpinBox(w);
-    m_hotRankFlipSecsSpin->setRange(0.5, 60.0);
-    m_hotRankFlipSecsSpin->setSingleStep(0.1);
-    m_hotRankFlipSecsSpin->setDecimals(1);
-    m_hotRankFlipSecsSpin->setSuffix(trText("settings.display.hotRankFlipSuffix"));
-    m_hotRankFlipSecsSpin->setValue(qBound(0.5, m_cfg.hotRankFlipSecs, 60.0));
-    applyNumericSpinBoxWidth(m_hotRankFlipSecsSpin);
-    hotRankForm->addRow(trText("settings.display.hotRankFlip"), m_hotRankFlipSecsSpin);
-
-    m_hotSectorVisibleCheck = new QCheckBox(trText("settings.display.hotSectorVisible"), w);
-    m_hotSectorVisibleCheck->setChecked(m_cfg.hotSectorVisible);
-    addCompactFormRow(hotRankForm, m_hotSectorVisibleCheck);
-
-    m_hotSectorCountSpin = new QSpinBox(w);
-    m_hotSectorCountSpin->setRange(1, 100);
-    m_hotSectorCountSpin->setSingleStep(1);
-    m_hotSectorCountSpin->setValue(qMax(1, m_cfg.hotSectorCount));
-    applyNumericSpinBoxWidth(m_hotSectorCountSpin);
-    hotRankForm->addRow(trText("settings.display.hotSectorCount"), m_hotSectorCountSpin);
-
-    m_hotSectorSortFieldCombo = new QComboBox(w);
-    m_hotSectorSortFieldCombo->addItem(trText("settings.display.hotRankSortPct"), "pct");
-    m_hotSectorSortFieldCombo->addItem(
-        trText("settings.display.hotRankSortMainNetInflow"),
-        "mainnetinflow"
-    );
-    int hotSectorSortFieldIndex = m_hotSectorSortFieldCombo->findData(
-        normalizeHotRankSortField(m_cfg.hotSectorSortField)
-    );
-    if (hotSectorSortFieldIndex < 0) {
-        hotSectorSortFieldIndex = m_hotSectorSortFieldCombo->findData(QStringLiteral("mainnetinflow"));
-    }
-    if (hotSectorSortFieldIndex >= 0) {
-        m_hotSectorSortFieldCombo->setCurrentIndex(hotSectorSortFieldIndex);
-    }
-    hotRankForm->addRow(trText("settings.display.hotSectorSortField"), m_hotSectorSortFieldCombo);
-
-    m_hotSectorSortOrderCombo = new QComboBox(w);
-    m_hotSectorSortOrderCombo->addItem(trText("settings.display.hotRankSortAsc"), "asc");
-    m_hotSectorSortOrderCombo->addItem(trText("settings.display.hotRankSortDesc"), "desc");
-    int hotSectorSortOrderIndex = m_hotSectorSortOrderCombo->findData(
-        normalizeHotRankSortOrder(m_cfg.hotSectorSortOrder)
-    );
-    if (hotSectorSortOrderIndex < 0) {
-        hotSectorSortOrderIndex = m_hotSectorSortOrderCombo->findData(QStringLiteral("desc"));
-    }
-    if (hotSectorSortOrderIndex >= 0) {
-        m_hotSectorSortOrderCombo->setCurrentIndex(hotSectorSortOrderIndex);
-    }
-    hotRankForm->addRow(trText("settings.display.hotSectorSortOrder"), m_hotSectorSortOrderCombo);
-
-    m_hotConceptVisibleCheck = new QCheckBox(trText("settings.display.hotConceptVisible"), w);
-    m_hotConceptVisibleCheck->setChecked(m_cfg.hotConceptVisible);
-    addCompactFormRow(hotRankForm, m_hotConceptVisibleCheck);
-
-    m_hotConceptCountSpin = new QSpinBox(w);
-    m_hotConceptCountSpin->setRange(1, 100);
-    m_hotConceptCountSpin->setSingleStep(1);
-    m_hotConceptCountSpin->setValue(qMax(1, m_cfg.hotConceptCount));
-    applyNumericSpinBoxWidth(m_hotConceptCountSpin);
-    hotRankForm->addRow(trText("settings.display.hotConceptCount"), m_hotConceptCountSpin);
-
-    m_hotConceptSortFieldCombo = new QComboBox(w);
-    m_hotConceptSortFieldCombo->addItem(trText("settings.display.hotRankSortPct"), "pct");
-    m_hotConceptSortFieldCombo->addItem(
-        trText("settings.display.hotRankSortMainNetInflow"),
-        "mainnetinflow"
-    );
-    int hotConceptSortFieldIndex = m_hotConceptSortFieldCombo->findData(
-        normalizeHotRankSortField(m_cfg.hotConceptSortField)
-    );
-    if (hotConceptSortFieldIndex < 0) {
-        hotConceptSortFieldIndex = m_hotConceptSortFieldCombo->findData(QStringLiteral("mainnetinflow"));
-    }
-    if (hotConceptSortFieldIndex >= 0) {
-        m_hotConceptSortFieldCombo->setCurrentIndex(hotConceptSortFieldIndex);
-    }
-    hotRankForm->addRow(
-        trText("settings.display.hotConceptSortField"),
-        m_hotConceptSortFieldCombo
-    );
-
-    m_hotConceptSortOrderCombo = new QComboBox(w);
-    m_hotConceptSortOrderCombo->addItem(trText("settings.display.hotRankSortAsc"), "asc");
-    m_hotConceptSortOrderCombo->addItem(trText("settings.display.hotRankSortDesc"), "desc");
-    int hotConceptSortOrderIndex = m_hotConceptSortOrderCombo->findData(
-        normalizeHotRankSortOrder(m_cfg.hotConceptSortOrder)
-    );
-    if (hotConceptSortOrderIndex < 0) {
-        hotConceptSortOrderIndex = m_hotConceptSortOrderCombo->findData(QStringLiteral("desc"));
-    }
-    if (hotConceptSortOrderIndex >= 0) {
-        m_hotConceptSortOrderCombo->setCurrentIndex(hotConceptSortOrderIndex);
-    }
-    hotRankForm->addRow(
-        trText("settings.display.hotConceptSortOrder"),
-        m_hotConceptSortOrderCombo
-    );
-
-    QWidget* hotRankPollLabel = hotRankForm->labelForField(m_hotRankPollSecsSpin);
-    QWidget* hotRankFlipLabel = hotRankForm->labelForField(m_hotRankFlipSecsSpin);
-    QWidget* hotSectorCountLabel = hotRankForm->labelForField(m_hotSectorCountSpin);
-    QWidget* hotSectorSortFieldLabel = hotRankForm->labelForField(m_hotSectorSortFieldCombo);
-    QWidget* hotSectorSortOrderLabel = hotRankForm->labelForField(m_hotSectorSortOrderCombo);
-    QWidget* hotConceptCountLabel = hotRankForm->labelForField(m_hotConceptCountSpin);
-    QWidget* hotConceptSortFieldLabel = hotRankForm->labelForField(m_hotConceptSortFieldCombo);
-    QWidget* hotConceptSortOrderLabel = hotRankForm->labelForField(m_hotConceptSortOrderCombo);
-
-    const auto updateHotRankOptionsState = [this,
-                                            hotRankPollLabel,
-                                            hotRankFlipLabel,
-                                            hotSectorCountLabel,
-                                            hotSectorSortFieldLabel,
-                                            hotSectorSortOrderLabel,
-                                            hotConceptCountLabel,
-                                            hotConceptSortFieldLabel,
-                                            hotConceptSortOrderLabel]() {
-        const bool enabled = m_hotRankEnabledCheck && m_hotRankEnabledCheck->isChecked();
-        const bool sectorEnabled = enabled && m_hotSectorVisibleCheck && m_hotSectorVisibleCheck->isChecked();
-        const bool conceptEnabled = enabled && m_hotConceptVisibleCheck && m_hotConceptVisibleCheck->isChecked();
-
-        if (m_hotRankPollSecsSpin) {
-            m_hotRankPollSecsSpin->setEnabled(enabled);
-        }
-        if (hotRankPollLabel) {
-            hotRankPollLabel->setEnabled(enabled);
-        }
-        if (m_hotRankFlipSecsSpin) {
-            m_hotRankFlipSecsSpin->setEnabled(enabled);
-        }
-        if (hotRankFlipLabel) {
-            hotRankFlipLabel->setEnabled(enabled);
-        }
-
-        if (m_hotSectorVisibleCheck) {
-            m_hotSectorVisibleCheck->setEnabled(enabled);
-        }
-        if (m_hotSectorCountSpin) {
-            m_hotSectorCountSpin->setEnabled(sectorEnabled);
-        }
-        if (m_hotSectorSortFieldCombo) {
-            m_hotSectorSortFieldCombo->setEnabled(sectorEnabled);
-        }
-        if (m_hotSectorSortOrderCombo) {
-            m_hotSectorSortOrderCombo->setEnabled(sectorEnabled);
-        }
-        if (hotSectorCountLabel) {
-            hotSectorCountLabel->setEnabled(sectorEnabled);
-        }
-        if (hotSectorSortFieldLabel) {
-            hotSectorSortFieldLabel->setEnabled(sectorEnabled);
-        }
-        if (hotSectorSortOrderLabel) {
-            hotSectorSortOrderLabel->setEnabled(sectorEnabled);
-        }
-
-        if (m_hotConceptVisibleCheck) {
-            m_hotConceptVisibleCheck->setEnabled(enabled);
-        }
-        if (m_hotConceptCountSpin) {
-            m_hotConceptCountSpin->setEnabled(conceptEnabled);
-        }
-        if (m_hotConceptSortFieldCombo) {
-            m_hotConceptSortFieldCombo->setEnabled(conceptEnabled);
-        }
-        if (m_hotConceptSortOrderCombo) {
-            m_hotConceptSortOrderCombo->setEnabled(conceptEnabled);
-        }
-        if (hotConceptCountLabel) {
-            hotConceptCountLabel->setEnabled(conceptEnabled);
-        }
-        if (hotConceptSortFieldLabel) {
-            hotConceptSortFieldLabel->setEnabled(conceptEnabled);
-        }
-        if (hotConceptSortOrderLabel) {
-            hotConceptSortOrderLabel->setEnabled(conceptEnabled);
-        }
-    };
-
-    connect(m_hotRankEnabledCheck, &QCheckBox::toggled, this, [updateHotRankOptionsState](bool) {
-        updateHotRankOptionsState();
-    });
-    connect(m_hotSectorVisibleCheck, &QCheckBox::toggled, this, [updateHotRankOptionsState](bool) {
-        updateHotRankOptionsState();
-    });
-    connect(m_hotConceptVisibleCheck, &QCheckBox::toggled, this, [updateHotRankOptionsState](bool) {
-        updateHotRankOptionsState();
-    });
-    updateHotRankOptionsState();
 
     m_windowPaddingSpin = new QDoubleSpinBox(w);
     m_windowPaddingSpin->setRange(0.0, 120.0);
@@ -1659,7 +1419,6 @@ QWidget* SettingsDialog::buildDisplayTab() {
 
     root->addWidget(windowGroup);
     root->addWidget(timelineGroup);
-    root->addWidget(hotRankGroup);
     root->addWidget(interactionGroup);
     root->addWidget(columnsGroup, 1);
 

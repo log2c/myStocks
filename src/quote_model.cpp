@@ -577,6 +577,14 @@ MarketBreadthSnapshot QuoteModel::marketBreadthSnapshot() const {
     return m_marketBreadth;
 }
 
+QVector<HotRankItem> QuoteModel::hotSectors() const {
+    return m_hotSectors;
+}
+
+QVector<HotRankItem> QuoteModel::hotConcepts() const {
+    return m_hotConcepts;
+}
+
 int QuoteModel::firstVisibleLogicalColumn() const {
     const QVector<int> columns = visibleLogicalColumns(m_cfg);
     return columns.isEmpty() ? 0 : columns.first();
@@ -623,11 +631,11 @@ int QuoteModel::marketBreadthRowIndex() const {
 }
 
 bool QuoteModel::hasHotSectorRow() const {
-    return m_cfg.hotRankEnabled && m_cfg.hotSectorVisible;
+    return false;
 }
 
 bool QuoteModel::hasHotConceptRow() const {
-    return m_cfg.hotRankEnabled && m_cfg.hotConceptVisible;
+    return false;
 }
 
 int QuoteModel::hotSectorRowIndex() const {
