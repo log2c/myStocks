@@ -1633,7 +1633,7 @@ public:
         m_snapshot = snapshot;
 
         const int popupWidth = qMax(190, qMin(255, qRound(static_cast<double>(qMax(baseWidth, 220)) * 0.39)));
-        const int popupHeight = 196;
+        const int popupHeight = 208;
         resize(popupWidth, popupHeight);
 
         QRect targetRect(anchorRect.topRight() + QPoint(12, 0), size());
@@ -1700,11 +1700,11 @@ protected:
         const int colWidth = (content.width() - columnGap * 2) / 3;
         const int headerY = content.top();
         const int countY = headerY + 18;
-        const int sectionTitleY = countY + 24;
+        const int sectionTitleY = countY + 28;
         const int sectionValueY = sectionTitleY + 16;
-        const int limitStatsY = sectionValueY + 20;
-        const int chartTitleY = limitStatsY + 16;
-        const int chartTopY = chartTitleY + 16;
+        const int limitStatsY = sectionValueY + 24;
+        const int chartTitleY = limitStatsY + 20;
+        const int chartTopY = chartTitleY + 18;
         const int chartBottomY = content.bottom() - 14;
 
         const QString upLabel = i18n::t("popup.marketBreadth.up", m_language);
@@ -1842,10 +1842,18 @@ protected:
 
                 const int barCount = m_snapshot.distribution.size();
                 const int barGap = (barCount > 18) ? 1 : 2;
+                const int middleGap = (barCount > 4) ? 6 : 0;
+                const int splitIndex = (barCount % 2 == 0)
+                    ? (barCount / 2 - 1)
+                    : (barCount / 2);
                 int x = chartRect.left();
                 for (int i = 0; i < barCount; ++i) {
                     const int remainingBars = barCount - i;
-                    const int remainingWidth = chartRect.right() - x + 1 - barGap * (remainingBars - 1);
+                    int remainingGap = barGap * qMax(0, remainingBars - 1);
+                    if (middleGap > 0 && i <= splitIndex) {
+                        remainingGap += middleGap;
+                    }
+                    const int remainingWidth = chartRect.right() - x + 1 - remainingGap;
                     const int barWidth = qMax(1, remainingWidth / remainingBars);
 
                     const int value = qMax(0, m_snapshot.distribution.at(i).value);
@@ -1869,7 +1877,13 @@ protected:
                     painter.setBrush(barColor);
                     painter.drawRoundedRect(barRect, 1.5, 1.5);
 
-                    x += barWidth + barGap;
+                    if (i < barCount - 1) {
+                        int gapAfter = barGap;
+                        if (middleGap > 0 && i == splitIndex) {
+                            gapAfter += middleGap;
+                        }
+                        x += barWidth + gapAfter;
+                    }
                 }
 
                 QFont axisFont = painter.font();
