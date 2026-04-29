@@ -57,7 +57,7 @@ private:
     QWidget* buildIndexSectorTab();
     QWidget* buildAboutTab();
 
-    void updateHotkeyIndicator(const QKeySequence& seq);
+    void updateHotkeyIndicator(QLabel* indicator, const QKeySequence& seq);
 
     void parseSearchResult(const QByteArray& data);
     void doStockSearch(bool forceSearch = false);
@@ -74,6 +74,9 @@ private:
     QKeySequenceEdit* m_hotkeyEdit = nullptr;
     QLabel* m_hotkeyIndicator = nullptr;
     QPushButton* m_hotkeyClearBtn = nullptr;
+    QKeySequenceEdit* m_marketBreadthHotkeyEdit = nullptr;
+    QLabel* m_marketBreadthHotkeyIndicator = nullptr;
+    QPushButton* m_marketBreadthHotkeyClearBtn = nullptr;
     QCheckBox* m_startupShowFloatingWindowCheck = nullptr;
     QLineEdit* m_userAgentEdit = nullptr;
     QComboBox* m_proxyTypeCombo = nullptr;

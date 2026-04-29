@@ -181,6 +181,76 @@ QString formatChineseMarketAmount(double value) {
     return QStringLiteral("%1亿").arg(QString::number(yiValue, 'f', precision));
 }
 
+double estimateAshareFullDayTurnover(const MarketBreadthSnapshot& snapshot) {
+    if (!std::isfinite(snapshot.turnover) || snapshot.turnover <= 0.0) {
+        return qQNaN();
+    }
+
+    if (snapshot.overviewTimeline.isEmpty()) {
+        return snapshot.turnover;
+    }
+
+    const qint64 timestampMs = snapshot.overviewTimeline.last().timestampMs;
+    if (timestampMs <= 0) {
+        return snapshot.turnover;
+    }
+
+    const QTimeZone bjZone("Asia/Shanghai");
+    QDateTime sampleTs = QDateTime::fromMSecsSinceEpoch(timestampMs, bjZone);
+    if (!sampleTs.isValid()) {
+        sampleTs = QDateTime::fromMSecsSinceEpoch(timestampMs);
+    }
+    if (!sampleTs.isValid()) {
+        return snapshot.turnover;
+    }
+
+    const QTime now = sampleTs.time();
+    const QTime amOpen(9, 30);
+    const QTime amClose(11, 30);
+    const QTime pmOpen(13, 0);
+    const QTime pmClose(15, 0);
+    constexpr int kFullMinutes = 240;
+
+    int elapsedMinutes = 0;
+    if (now <= amOpen) {
+        elapsedMinutes = 0;
+    } else if (now <= amClose) {
+        elapsedMinutes = amOpen.secsTo(now) / 60;
+    } else if (now <= pmOpen) {
+        elapsedMinutes = 120;
+    } else if (now <= pmClose) {
+        elapsedMinutes = 120 + (pmOpen.secsTo(now) / 60);
+    } else {
+        elapsedMinutes = kFullMinutes;
+    }
+
+    const double progress = qBound(0.06, static_cast<double>(elapsedMinutes) / kFullMinutes, 1.0);
+    const double estimate = snapshot.turnover / progress;
+    return qMax(snapshot.turnover, estimate);
+}
+
+QString marketBreadthLastUpdatedText(const MarketBreadthSnapshot& snapshot, const QString& language) {
+    if (snapshot.overviewTimeline.isEmpty()) {
+        return i18n::t("quote.noData", language);
+    }
+
+    const qint64 timestampMs = snapshot.overviewTimeline.last().timestampMs;
+    if (timestampMs <= 0) {
+        return i18n::t("quote.noData", language);
+    }
+
+    const QTimeZone bjZone("Asia/Shanghai");
+    QDateTime sampleTs = QDateTime::fromMSecsSinceEpoch(timestampMs, bjZone);
+    if (!sampleTs.isValid()) {
+        sampleTs = QDateTime::fromMSecsSinceEpoch(timestampMs);
+    }
+    if (!sampleTs.isValid()) {
+        return i18n::t("quote.noData", language);
+    }
+
+    return sampleTs.toString(QStringLiteral("HH:mm"));
+}
+
 QString marketBreadthTurnoverChangeText(double value, const QString& language) {
     if (!std::isfinite(value)) {
         return i18n::t("quote.noData", language);
@@ -482,6 +552,45 @@ bool hasValidTimelineSession(const TimelineSession& session) {
         && session.afternoonEnd.isValid()
         && session.morningStart < session.morningEnd
         && session.afternoonStart < session.afternoonEnd;
+}
+
+const QStringList& hardcodedAshareIntradayXAxis() {
+    static const QStringList labels = []() {
+        QStringList out;
+        out.reserve(241);
+
+        // Morning session: 09:30-11:30 (inclusive)
+        QTime t(9, 30);
+        const QTime morningEnd(11, 30);
+        while (t <= morningEnd) {
+            out.push_back(t.toString(QStringLiteral("HH:mm")));
+            t = t.addSecs(60);
+        }
+
+        // Afternoon session: 13:01-15:00 (inclusive)
+        t = QTime(13, 1);
+        const QTime afternoonEnd(15, 0);
+        while (t <= afternoonEnd) {
+            out.push_back(t.toString(QStringLiteral("HH:mm")));
+            t = t.addSecs(60);
+        }
+
+        return out;
+    }();
+    return labels;
+}
+
+const QHash<QString, int>& hardcodedAshareIntradayXAxisIndex() {
+    static const QHash<QString, int> index = []() {
+        QHash<QString, int> map;
+        const QStringList& labels = hardcodedAshareIntradayXAxis();
+        map.reserve(labels.size());
+        for (int i = 0; i < labels.size(); ++i) {
+            map.insert(labels.at(i), i);
+        }
+        return map;
+    }();
+    return index;
 }
 
 double fixedRangeLimitPctForAshareStock(const QString& rawCode) {
@@ -1628,7 +1737,8 @@ public:
         setAttribute(Qt::WA_ShowWithoutActivating, true);
         setAttribute(Qt::WA_TransparentForMouseEvents, true);
         setAttribute(Qt::WA_TranslucentBackground, true);
-        resize(320, 128);
+        setMouseTracking(true);
+        resize(740, 550);
     }
 
     void applyConfig(const AppConfig& cfg) {
@@ -1643,10 +1753,16 @@ public:
     }
 
     void showForSnapshot(const MarketBreadthSnapshot& snapshot, const QRect& anchorRect, int baseWidth) {
-        m_snapshot = snapshot;
+        Q_UNUSED(baseWidth);
 
-        const int popupWidth = qMax(190, qMin(255, qRound(static_cast<double>(qMax(baseWidth, 220)) * 0.39)));
-        const int popupHeight = 208;
+        m_snapshot = snapshot;
+        m_pinnedFromTray = false;
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        m_closeButtonHovered = false;
+        m_closeButtonPressed = false;
+
+        const int popupWidth = 740;
+        const int popupHeight = 550;
         resize(popupWidth, popupHeight);
 
         QRect targetRect(anchorRect.topRight() + QPoint(12, 0), size());
@@ -1687,13 +1803,828 @@ public:
         update();
     }
 
+    void showCenteredForSnapshot(const MarketBreadthSnapshot& snapshot, const QRect& referenceRect) {
+        m_snapshot = snapshot;
+        m_pinnedFromTray = true;
+        setAttribute(Qt::WA_TransparentForMouseEvents, false);
+        m_closeButtonHovered = false;
+        m_closeButtonPressed = false;
+
+        const QSize popupSize(740, 550);
+        resize(popupSize);
+
+        QRect screenRect;
+        const QList<QScreen*> screens = QGuiApplication::screens();
+        for (QScreen* screen : screens) {
+            if (!screen) {
+                continue;
+            }
+            const QRect available = screen->availableGeometry();
+            if (referenceRect.isValid() && available.contains(referenceRect.center())) {
+                screenRect = available;
+                break;
+            }
+        }
+
+        if (!screenRect.isValid()) {
+            if (QScreen* screen = QGuiApplication::screenAt(QCursor::pos())) {
+                screenRect = screen->availableGeometry();
+            }
+        }
+        if (!screenRect.isValid()) {
+            if (QScreen* screen = QGuiApplication::primaryScreen()) {
+                screenRect = screen->availableGeometry();
+            }
+        }
+
+        QRect targetRect(QPoint(0, 0), popupSize);
+        if (screenRect.isValid()) {
+            targetRect.moveCenter(screenRect.center());
+            if (targetRect.left() < screenRect.left() + kTimelinePopupScreenMarginPx) {
+                targetRect.moveLeft(screenRect.left() + kTimelinePopupScreenMarginPx);
+            }
+            if (targetRect.top() < screenRect.top() + kTimelinePopupScreenMarginPx) {
+                targetRect.moveTop(screenRect.top() + kTimelinePopupScreenMarginPx);
+            }
+            if (targetRect.right() > screenRect.right() - kTimelinePopupScreenMarginPx) {
+                targetRect.moveRight(screenRect.right() - kTimelinePopupScreenMarginPx);
+            }
+            if (targetRect.bottom() > screenRect.bottom() - kTimelinePopupScreenMarginPx) {
+                targetRect.moveBottom(screenRect.bottom() - kTimelinePopupScreenMarginPx);
+            }
+        }
+
+        setGeometry(targetRect);
+        if (!isVisible()) {
+            show();
+        }
+        raise();
+        update();
+    }
+
+    void refreshSnapshot(const MarketBreadthSnapshot& snapshot) {
+        m_snapshot = snapshot;
+        update();
+    }
+
+    bool isPinnedFromTray() const {
+        return m_pinnedFromTray;
+    }
+
     void hidePopup() {
+        m_pinnedFromTray = false;
+        m_closeButtonHovered = false;
+        m_closeButtonPressed = false;
         hide();
     }
 
 protected:
+    void mouseMoveEvent(QMouseEvent* event) override {
+        if (!event || testAttribute(Qt::WA_TransparentForMouseEvents)) {
+            QWidget::mouseMoveEvent(event);
+            return;
+        }
+
+        const bool hovered = m_closeButtonRect.contains(event->pos());
+        if (hovered != m_closeButtonHovered) {
+            m_closeButtonHovered = hovered;
+            update(m_closeButtonRect.adjusted(-2, -2, 2, 2));
+        }
+        QWidget::mouseMoveEvent(event);
+    }
+
+    void leaveEvent(QEvent* event) override {
+        if (!testAttribute(Qt::WA_TransparentForMouseEvents)
+            && (m_closeButtonHovered || m_closeButtonPressed)) {
+            m_closeButtonHovered = false;
+            m_closeButtonPressed = false;
+            update(m_closeButtonRect.adjusted(-2, -2, 2, 2));
+        }
+        QWidget::leaveEvent(event);
+    }
+
+    void mousePressEvent(QMouseEvent* event) override {
+        if (!event || testAttribute(Qt::WA_TransparentForMouseEvents)) {
+            QWidget::mousePressEvent(event);
+            return;
+        }
+
+        if (event->button() == Qt::LeftButton && m_closeButtonRect.contains(event->pos())) {
+            m_closeButtonPressed = true;
+            m_closeButtonHovered = true;
+            update(m_closeButtonRect.adjusted(-2, -2, 2, 2));
+            event->accept();
+            return;
+        }
+
+        QWidget::mousePressEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent* event) override {
+        if (!event || testAttribute(Qt::WA_TransparentForMouseEvents)) {
+            QWidget::mouseReleaseEvent(event);
+            return;
+        }
+
+        if (event->button() == Qt::LeftButton) {
+            const bool shouldClose = m_closeButtonPressed && m_closeButtonRect.contains(event->pos());
+            m_closeButtonPressed = false;
+            m_closeButtonHovered = m_closeButtonRect.contains(event->pos());
+            update(m_closeButtonRect.adjusted(-2, -2, 2, 2));
+            if (shouldClose) {
+                hidePopup();
+                event->accept();
+                return;
+            }
+        }
+
+        QWidget::mouseReleaseEvent(event);
+    }
+
+    void mouseDoubleClickEvent(QMouseEvent* event) override {
+        if (!event || testAttribute(Qt::WA_TransparentForMouseEvents)) {
+            QWidget::mouseDoubleClickEvent(event);
+            return;
+        }
+
+        if (event->button() == Qt::LeftButton) {
+            hidePopup();
+            event->accept();
+            return;
+        }
+
+        QWidget::mouseDoubleClickEvent(event);
+    }
+
     void paintEvent(QPaintEvent* event) override {
         Q_UNUSED(event);
+
+        {
+            QPainter popupPainter(this);
+            popupPainter.setRenderHint(QPainter::Antialiasing, true);
+            popupPainter.setPen(Qt::NoPen);
+
+            QColor panelBackground = m_cfg.transparentBackgroundEnabled
+                ? QColor(18, 18, 18, 236)
+                : m_cfg.bgColor;
+            panelBackground.setAlpha(qMax(panelBackground.alpha(), 232));
+            const QColor textColor = m_cfg.textColor;
+            const QColor borderColor(textColor.red(), textColor.green(), textColor.blue(), 58);
+            QColor cardColor = panelBackground.lighter(112);
+            cardColor.setAlpha(qMin(255, panelBackground.alpha() + 8));
+
+            popupPainter.setBrush(panelBackground);
+            popupPainter.drawRoundedRect(rect().adjusted(1, 1, -1, -1), 12, 12);
+
+            const QRect content = rect().adjusted(18, 16, -18, -16);
+
+            QFont titleFont = popupPainter.font();
+            titleFont.setBold(true);
+            titleFont.setPointSizeF(qMax(12.0, titleFont.pointSizeF() + 1.8));
+
+            QFont subtitleFont = popupPainter.font();
+            subtitleFont.setBold(true);
+            subtitleFont.setPointSizeF(qMax(9.0, subtitleFont.pointSizeF() - 0.2));
+
+            QFont bodyFont = popupPainter.font();
+            bodyFont.setBold(false);
+            bodyFont.setPointSizeF(qMax(8.8, bodyFont.pointSizeF() - 0.3));
+
+            QFont valueFont = popupPainter.font();
+            valueFont.setBold(true);
+            valueFont.setPointSizeF(qMax(11.0, valueFont.pointSizeF() + 1.2));
+
+            const QString noDataText = i18n::t("quote.noData", m_language);
+            const QString upLabel = i18n::t("popup.marketBreadth.up", m_language);
+            const QString flatLabel = i18n::t("popup.marketBreadth.flat", m_language);
+            const QString downLabel = i18n::t("popup.marketBreadth.down", m_language);
+            const QString limitUpLabel = i18n::t("popup.marketBreadth.limitUp", m_language);
+            const QString limitDownLabel = i18n::t("popup.marketBreadth.limitDown", m_language);
+            const QString turnoverLabel = i18n::t("popup.marketBreadth.turnover", m_language);
+            const QString updatedText = i18n::t("popup.marketBreadth.lastUpdatedFmt", m_language)
+                .arg(marketBreadthLastUpdatedText(m_snapshot, m_language));
+
+            const QRect headerRect(content.left(), content.top(), content.width(), 28);
+
+#if defined(Q_OS_MACOS) || defined(Q_OS_MAC)
+            const int closeButtonDiameter = 12;
+            m_closeButtonRect = QRect(
+                headerRect.left() + 8,
+                headerRect.center().y() - closeButtonDiameter / 2,
+                closeButtonDiameter,
+                closeButtonDiameter
+            );
+#else
+            const QSize closeButtonSize(26, 18);
+            m_closeButtonRect = QRect(
+                headerRect.right() - closeButtonSize.width() - 4,
+                headerRect.center().y() - closeButtonSize.height() / 2,
+                closeButtonSize.width(),
+                closeButtonSize.height()
+            );
+#endif
+
+            const QRect titleRect = headerRect.adjusted(40, 0, -40, 0);
+            QRect updatedRect = headerRect;
+            updatedRect.setRight(m_closeButtonRect.left() - 6);
+
+            popupPainter.setFont(titleFont);
+            popupPainter.setPen(textColor);
+            popupPainter.drawText(
+                titleRect,
+                Qt::AlignHCenter | Qt::AlignVCenter,
+                i18n::t("popup.marketBreadth.dialogTitle", m_language)
+            );
+
+            popupPainter.setFont(bodyFont);
+            popupPainter.setPen(QColor(textColor.red(), textColor.green(), textColor.blue(), 190));
+            popupPainter.drawText(updatedRect, Qt::AlignRight | Qt::AlignVCenter, updatedText);
+
+            if (!testAttribute(Qt::WA_TransparentForMouseEvents)) {
+#if defined(Q_OS_MACOS) || defined(Q_OS_MAC)
+                QColor closeButtonColor(QStringLiteral("#ff5f57"));
+                if (m_closeButtonHovered) {
+                    closeButtonColor = closeButtonColor.lighter(108);
+                }
+                if (m_closeButtonPressed) {
+                    closeButtonColor = closeButtonColor.darker(112);
+                }
+
+                popupPainter.setPen(QPen(QColor(0, 0, 0, 80), 1.0));
+                popupPainter.setBrush(closeButtonColor);
+                popupPainter.drawEllipse(m_closeButtonRect.adjusted(0, 0, -1, -1));
+
+                if (m_closeButtonHovered || m_closeButtonPressed) {
+                    popupPainter.setPen(QPen(QColor(80, 32, 24, 220), 1.2));
+                    const int x1 = m_closeButtonRect.left() + 4;
+                    const int x2 = m_closeButtonRect.right() - 4;
+                    const int y1 = m_closeButtonRect.top() + 4;
+                    const int y2 = m_closeButtonRect.bottom() - 4;
+                    popupPainter.drawLine(QPoint(x1, y1), QPoint(x2, y2));
+                    popupPainter.drawLine(QPoint(x1, y2), QPoint(x2, y1));
+                }
+#else
+                QColor closeButtonBg(textColor.red(), textColor.green(), textColor.blue(), 30);
+                QColor closeButtonBorder(textColor.red(), textColor.green(), textColor.blue(), 88);
+                QColor closeIconColor(textColor.red(), textColor.green(), textColor.blue(), 210);
+                if (m_closeButtonHovered) {
+                    closeButtonBg = QColor(232, 17, 35, 220);
+                    closeButtonBorder = QColor(255, 255, 255, 80);
+                    closeIconColor = QColor(255, 255, 255, 240);
+                }
+                if (m_closeButtonPressed) {
+                    closeButtonBg = QColor(201, 12, 31, 230);
+                    closeButtonBorder = QColor(255, 255, 255, 96);
+                    closeIconColor = QColor(255, 255, 255, 250);
+                }
+
+                popupPainter.setPen(QPen(closeButtonBorder, 1.0));
+                popupPainter.setBrush(closeButtonBg);
+                popupPainter.drawRoundedRect(m_closeButtonRect.adjusted(0, 0, -1, -1), 3, 3);
+
+                popupPainter.setPen(QPen(closeIconColor, 1.35));
+                const int x1 = m_closeButtonRect.left() + 8;
+                const int x2 = m_closeButtonRect.right() - 8;
+                const int y1 = m_closeButtonRect.top() + 5;
+                const int y2 = m_closeButtonRect.bottom() - 5;
+                popupPainter.drawLine(QPoint(x1, y1), QPoint(x2, y2));
+                popupPainter.drawLine(QPoint(x1, y2), QPoint(x2, y1));
+#endif
+            }
+
+            const QRect bodyRect = content.adjusted(0, 36, 0, 0);
+            const int splitGap = 18;
+            const int leftWidth = qMax(120, (bodyRect.width() - splitGap) / 2);
+            const QRect leftRect(bodyRect.left(), bodyRect.top(), leftWidth, bodyRect.height());
+            const QRect rightRect(
+                leftRect.right() + 1 + splitGap,
+                bodyRect.top(),
+                qMax(120, bodyRect.width() - leftWidth - splitGap),
+                bodyRect.height()
+            );
+
+            popupPainter.setPen(QPen(borderColor, 1.0));
+            const int dividerX = leftRect.right() + 1 + splitGap / 2;
+            popupPainter.drawLine(dividerX, bodyRect.top(), dividerX, bodyRect.bottom());
+
+            auto drawCard = [&](const QRect& cardRect, const QString& cardTitle, Qt::Alignment titleAlignment) {
+                popupPainter.setPen(QPen(borderColor, 1.0));
+                popupPainter.setBrush(cardColor);
+                popupPainter.drawRoundedRect(cardRect, 10, 10);
+
+                popupPainter.setFont(subtitleFont);
+                popupPainter.setPen(textColor);
+                popupPainter.drawText(
+                    cardRect.adjusted(12, 8, -12, -8),
+                    titleAlignment,
+                    cardTitle
+                );
+            };
+
+            const int leftGap = 12;
+            const int maxSummaryCardHeight = qMax(140, leftRect.height() - leftGap - 84);
+            const int summaryCardHeight = qBound(
+                140,
+                qRound(static_cast<double>(leftRect.height()) * 0.45),
+                maxSummaryCardHeight
+            );
+            const QRect summaryCard(leftRect.left(), leftRect.top(), leftRect.width(), summaryCardHeight);
+            const QRect noteCard(
+                leftRect.left(),
+                summaryCard.bottom() + 1 + leftGap,
+                leftRect.width(),
+                qMax(84, leftRect.bottom() - (summaryCard.bottom() + leftGap))
+            );
+
+            drawCard(
+                summaryCard,
+                QString(),
+                Qt::AlignHCenter | Qt::AlignTop
+            );
+            drawCard(noteCard, i18n::t("popup.marketBreadth.comingSoon", m_language), Qt::AlignLeft | Qt::AlignTop);
+
+            const QRect summaryInner = summaryCard.adjusted(12, 12, -12, -12);
+            const int summarySectionGap = 8;
+            const int topSectionHeight = qMax(56, (summaryInner.height() - summarySectionGap) / 2);
+            const QRect trendSectionRect(
+                summaryInner.left(),
+                summaryInner.top(),
+                summaryInner.width(),
+                topSectionHeight
+            );
+            const QRect turnoverSectionRect(
+                summaryInner.left(),
+                trendSectionRect.bottom() + 1 + summarySectionGap,
+                summaryInner.width(),
+                qMax(56, summaryInner.bottom() - (trendSectionRect.bottom() + summarySectionGap))
+            );
+
+            popupPainter.setPen(QColor(textColor.red(), textColor.green(), textColor.blue(), 80));
+            popupPainter.drawLine(
+                summaryInner.left(),
+                trendSectionRect.bottom() + summarySectionGap / 2,
+                summaryInner.right(),
+                trendSectionRect.bottom() + summarySectionGap / 2
+            );
+
+            QFont sectionTitleFont = subtitleFont;
+            sectionTitleFont.setPointSizeF(qMax(8.2, sectionTitleFont.pointSizeF() - 0.6));
+            popupPainter.setFont(sectionTitleFont);
+            popupPainter.setPen(QColor(textColor.red(), textColor.green(), textColor.blue(), 210));
+            popupPainter.drawText(
+                QRect(trendSectionRect.left(), trendSectionRect.top(), trendSectionRect.width(), 12),
+                Qt::AlignHCenter | Qt::AlignVCenter,
+                i18n::t("quote.marketBreadth", m_language)
+            );
+            popupPainter.drawText(
+                QRect(turnoverSectionRect.left(), turnoverSectionRect.top(), turnoverSectionRect.width(), 12),
+                Qt::AlignHCenter | Qt::AlignVCenter,
+                turnoverLabel
+            );
+
+            const QRect trendInner = trendSectionRect.adjusted(0, 14, 0, 0);
+            const QStringList trendLabels {
+                upLabel,
+                flatLabel,
+                downLabel,
+                limitUpLabel,
+                limitDownLabel,
+            };
+            const QVector<int> trendValues {
+                qMax(0, m_snapshot.upCount),
+                qMax(0, m_snapshot.flatCount),
+                qMax(0, m_snapshot.downCount),
+                qMax(0, m_snapshot.limitUpCount),
+                qMax(0, m_snapshot.limitDownCount),
+            };
+            const QVector<QColor> trendColors {
+                m_cfg.upColor,
+                m_cfg.flatColor,
+                m_cfg.downColor,
+                QColor(QStringLiteral("#bb07ae")),
+                QColor(QStringLiteral("#fc7d02")),
+            };
+
+            const int trendCount = trendLabels.size();
+            const int trendGap = 6;
+            const int trendCellWidth = qMax(
+                24,
+                (trendInner.width() - trendGap * qMax(0, trendCount - 1)) / qMax(1, trendCount)
+            );
+            const int trendLabelHeight = 14;
+            const int trendValueHeight = 20;
+            const int trendRowGap = 2;
+            const int trendBlockHeight = trendLabelHeight + trendRowGap + trendValueHeight;
+            const int trendBlockTop = trendInner.top() + qMax(0, (trendInner.height() - trendBlockHeight) / 2);
+            popupPainter.setFont(subtitleFont);
+            for (int i = 0; i < trendCount; ++i) {
+                const int x = trendInner.left() + i * (trendCellWidth + trendGap);
+                const QRect labelRect(x, trendBlockTop, trendCellWidth, trendLabelHeight);
+                popupPainter.setPen(trendColors.value(i, textColor));
+                popupPainter.drawText(labelRect, Qt::AlignCenter, trendLabels.at(i));
+            }
+            popupPainter.setFont(valueFont);
+            for (int i = 0; i < trendCount; ++i) {
+                const int x = trendInner.left() + i * (trendCellWidth + trendGap);
+                const QRect valueRect(
+                    x,
+                    trendBlockTop + trendLabelHeight + trendRowGap,
+                    trendCellWidth,
+                    trendValueHeight
+                );
+                popupPainter.setPen(trendColors.value(i, textColor));
+                popupPainter.drawText(valueRect, Qt::AlignCenter, QString::number(trendValues.value(i)));
+            }
+
+            const QRect turnoverInner = turnoverSectionRect.adjusted(0, 14, 0, 0);
+            const double estimatedFullDay = estimateAshareFullDayTurnover(m_snapshot);
+            const QColor compareColor = marketBreadthTurnoverChangeColor(m_snapshot.turnoverChange, m_cfg);
+            const QStringList turnoverLabels {
+                i18n::t("popup.marketBreadth.turnoverToday", m_language),
+                i18n::t("popup.marketBreadth.turnoverPre", m_language),
+                i18n::t("popup.marketBreadth.turnoverDelta", m_language),
+                i18n::t("popup.marketBreadth.turnoverForecast", m_language),
+            };
+            const QStringList turnoverValues {
+                m_snapshot.turnoverValid ? formatChineseMarketAmount(m_snapshot.turnover) : noDataText,
+                m_snapshot.turnoverValid ? formatChineseMarketAmount(m_snapshot.turnoverPre) : noDataText,
+                m_snapshot.turnoverValid ? formatChineseMarketAmount(m_snapshot.turnoverChange) : noDataText,
+                (m_snapshot.turnoverValid && std::isfinite(estimatedFullDay))
+                    ? formatChineseMarketAmount(estimatedFullDay)
+                    : noDataText,
+            };
+
+            const int turnoverCount = turnoverLabels.size();
+            const int turnoverGap = 6;
+            const int turnoverCellWidth = qMax(
+                42,
+                (turnoverInner.width() - turnoverGap * qMax(0, turnoverCount - 1)) / qMax(1, turnoverCount)
+            );
+            const int turnoverLabelHeight = 22;
+            const int turnoverValueHeight = 22;
+            const int turnoverRowGap = 2;
+            const int turnoverBlockHeight = turnoverLabelHeight + turnoverRowGap + turnoverValueHeight;
+            const int turnoverBlockTop = turnoverInner.top() + qMax(0, (turnoverInner.height() - turnoverBlockHeight) / 2);
+
+            popupPainter.setFont(bodyFont);
+            for (int i = 0; i < turnoverCount; ++i) {
+                const int x = turnoverInner.left() + i * (turnoverCellWidth + turnoverGap);
+                const QRect labelRect(x, turnoverBlockTop, turnoverCellWidth, turnoverLabelHeight);
+                popupPainter.setPen(QColor(textColor.red(), textColor.green(), textColor.blue(), 205));
+                popupPainter.drawText(labelRect, Qt::AlignCenter | Qt::TextWordWrap, turnoverLabels.at(i));
+            }
+
+            popupPainter.setFont(subtitleFont);
+            for (int i = 0; i < turnoverCount; ++i) {
+                const int x = turnoverInner.left() + i * (turnoverCellWidth + turnoverGap);
+                const QRect valueRect(
+                    x,
+                    turnoverBlockTop + turnoverLabelHeight + turnoverRowGap,
+                    turnoverCellWidth,
+                    turnoverValueHeight
+                );
+                popupPainter.setPen(i == 2 ? compareColor : textColor);
+                popupPainter.drawText(valueRect, Qt::AlignCenter | Qt::TextWordWrap, turnoverValues.at(i));
+            }
+
+            const QRect noteInner = noteCard.adjusted(12, 40, -12, -12);
+            popupPainter.setFont(subtitleFont);
+            popupPainter.setPen(textColor);
+            popupPainter.drawText(
+                noteInner.adjusted(0, 0, 0, -20),
+                Qt::AlignLeft | Qt::TextWordWrap,
+                i18n::t("popup.marketBreadth.comingSoon", m_language)
+            );
+            popupPainter.setFont(bodyFont);
+            popupPainter.setPen(QColor(textColor.red(), textColor.green(), textColor.blue(), 170));
+            popupPainter.drawText(
+                noteInner.adjusted(0, 24, 0, 0),
+                Qt::AlignLeft | Qt::AlignTop,
+                i18n::t("popup.marketBreadth.blankArea", m_language)
+            );
+
+            const int rightGap = 12;
+            const int maxDistributionCardHeight = qMax(160, rightRect.height() - rightGap - 120);
+            const int distributionCardHeight = qBound(
+                160,
+                qRound(static_cast<double>(rightRect.height()) * 0.45),
+                maxDistributionCardHeight
+            );
+            const QRect distributionCard(rightRect.left(), rightRect.top(), rightRect.width(), distributionCardHeight);
+            const QRect timelineCard(
+                rightRect.left(),
+                distributionCard.bottom() + 1 + rightGap,
+                rightRect.width(),
+                qMax(120, rightRect.bottom() - (distributionCard.bottom() + rightGap))
+            );
+
+            drawCard(distributionCard, QString(), Qt::AlignLeft | Qt::AlignTop);
+            drawCard(timelineCard, QString(), Qt::AlignLeft | Qt::AlignTop);
+
+            const QColor axisColor(textColor.red(), textColor.green(), textColor.blue(), 165);
+
+            const QRect distributionInner = distributionCard.adjusted(12, 36, -12, -12);
+            const QRect distributionPlotRect = distributionInner.adjusted(34, 8, -8, -24);
+            if (m_snapshot.distributionValid
+                && !m_snapshot.distribution.isEmpty()
+                && distributionPlotRect.width() > 24
+                && distributionPlotRect.height() > 24) {
+                int maxValue = 0;
+                for (const MarketBreadthDistributionItem& item : m_snapshot.distribution) {
+                    maxValue = qMax(maxValue, item.value);
+                }
+
+                if (maxValue > 0) {
+                    constexpr int distributionYTickStep = 1000;
+                    const int distributionYAxisMax = qMax(
+                        distributionYTickStep,
+                        ((maxValue + distributionYTickStep - 1) / distributionYTickStep) * distributionYTickStep
+                    );
+
+                    const auto distributionYAt = [&](int value) {
+                        const double ratio = static_cast<double>(qMax(0, value))
+                            / static_cast<double>(distributionYAxisMax);
+                        return distributionPlotRect.bottom() - qRound(ratio * distributionPlotRect.height());
+                    };
+
+                    popupPainter.setPen(QPen(axisColor, 1.0));
+                    popupPainter.drawLine(distributionPlotRect.bottomLeft(), distributionPlotRect.bottomRight());
+                    popupPainter.drawLine(distributionPlotRect.bottomLeft(), distributionPlotRect.topLeft());
+
+                    popupPainter.setFont(bodyFont);
+                    popupPainter.setPen(axisColor);
+                    for (int tickValue = 0; tickValue <= distributionYAxisMax; tickValue += distributionYTickStep) {
+                        popupPainter.drawText(
+                            QRect(distributionInner.left(), distributionYAt(tickValue) - 6, 30, 12),
+                            Qt::AlignRight | Qt::AlignVCenter,
+                            QString::number(tickValue)
+                        );
+                    }
+
+                    const int barCount = m_snapshot.distribution.size();
+                    const int gap = barCount > 18 ? 1 : 2;
+                    const int totalGap = gap * qMax(0, barCount - 1);
+                    const int availableWidth = qMax(1, distributionPlotRect.width() - totalGap);
+                    const int baseBarWidth = qMax(1, availableWidth / qMax(1, barCount));
+                    QVector<int> barCenters;
+                    barCenters.reserve(barCount);
+                    int x = distributionPlotRect.left();
+                    for (int i = 0; i < barCount; ++i) {
+                        const int value = qMax(0, m_snapshot.distribution.at(i).value);
+                        const int barHeight = qMax(
+                            1,
+                            qRound(
+                                static_cast<double>(value)
+                                / static_cast<double>(distributionYAxisMax)
+                                * distributionPlotRect.height()
+                            )
+                        );
+                        const int isLast = (i == barCount - 1) ? 1 : 0;
+                        const int barWidth = isLast
+                            ? qMax(1, distributionPlotRect.right() - x + 1)
+                            : baseBarWidth;
+                        const QRect barRect(x, distributionPlotRect.bottom() - barHeight + 1, barWidth, barHeight);
+
+                        QColor barColor;
+                        if (i < barCount / 2) {
+                            barColor = m_cfg.upColor;
+                        } else if (barCount % 2 == 1 && i == barCount / 2) {
+                            barColor = m_cfg.flatColor;
+                        } else {
+                            barColor = m_cfg.downColor;
+                        }
+                        barColor.setAlpha(205);
+                        popupPainter.setPen(Qt::NoPen);
+                        popupPainter.setBrush(barColor);
+                        popupPainter.drawRoundedRect(barRect, 1.5, 1.5);
+                        barCenters.push_back(barRect.center().x());
+
+                        x += barWidth + gap;
+                    }
+
+                    popupPainter.setPen(axisColor);
+                    popupPainter.setFont(bodyFont);
+                    const int labelY = distributionPlotRect.bottom() + 1;
+
+                    const int visibleLabelCount = qMin(6, barCount);
+                    int lastIndex = -1;
+                    for (int i = 0; i < visibleLabelCount; ++i) {
+                        const int bucketIndex = (visibleLabelCount == 1)
+                            ? 0
+                            : qRound(
+                                static_cast<double>(i) * static_cast<double>(barCount - 1)
+                                / static_cast<double>(visibleLabelCount - 1)
+                            );
+                        if (bucketIndex == lastIndex) {
+                            continue;
+                        }
+                        lastIndex = bucketIndex;
+
+                        const int centerX = barCenters.value(bucketIndex, distributionPlotRect.left());
+                        popupPainter.drawText(
+                            QRect(centerX - 24, labelY, 48, 12),
+                            Qt::AlignHCenter | Qt::AlignVCenter,
+                            m_snapshot.distribution.at(bucketIndex).bucket
+                        );
+                    }
+                } else {
+                    popupPainter.setPen(textColor);
+                    popupPainter.setFont(bodyFont);
+                    popupPainter.drawText(distributionPlotRect, Qt::AlignCenter, noDataText);
+                }
+            } else {
+                popupPainter.setPen(textColor);
+                popupPainter.setFont(bodyFont);
+                popupPainter.drawText(distributionInner, Qt::AlignCenter, noDataText);
+            }
+
+            const QRect timelineInner = timelineCard.adjusted(12, 36, -12, -12);
+            const QRect timelineLegendRect(timelineInner.left(), timelineInner.top(), timelineInner.width(), 14);
+            const QRect timelinePlotRect = timelineInner.adjusted(34, 20, -8, -30);
+
+            if (m_snapshot.overviewTimeline.size() >= 2
+                && timelinePlotRect.width() > 24
+                && timelinePlotRect.height() > 24) {
+                int maxCount = 0;
+                for (const MarketBreadthTimelinePoint& point : m_snapshot.overviewTimeline) {
+                    maxCount = qMax(maxCount, qMax(point.riseCount, point.fallCount));
+                }
+
+                if (maxCount > 0) {
+                    const QStringList& xAxisLabels = hardcodedAshareIntradayXAxis();
+                    const QHash<QString, int>& xAxisIndex = hardcodedAshareIntradayXAxisIndex();
+                    const int axisCount = xAxisLabels.size();
+                    const QTimeZone bjZone("Asia/Shanghai");
+                    constexpr int yTickStep = 1000;
+                    const int yAxisMax = qMax(yTickStep, ((maxCount + yTickStep - 1) / yTickStep) * yTickStep);
+
+                    const auto xAt = [&](int axisIndexValue) {
+                        if (axisCount <= 1) {
+                            return timelinePlotRect.left();
+                        }
+                        const double t = static_cast<double>(axisIndexValue)
+                            / static_cast<double>(axisCount - 1);
+                        return timelinePlotRect.left() + qRound(t * timelinePlotRect.width());
+                    };
+                    const auto yAt = [&](int value) {
+                        const double ratio = static_cast<double>(qMax(0, value)) / static_cast<double>(yAxisMax);
+                        return timelinePlotRect.bottom() - qRound(ratio * timelinePlotRect.height());
+                    };
+
+                    auto buildSeriesPoints = [&](int seriesKind) {
+                        QVector<QPoint> points;
+                        points.reserve(m_snapshot.overviewTimeline.size());
+                        for (const MarketBreadthTimelinePoint& timelinePoint : m_snapshot.overviewTimeline) {
+                            int value = -1;
+                            if (seriesKind == 0) {
+                                value = timelinePoint.riseCount;
+                            } else {
+                                value = timelinePoint.fallCount;
+                            }
+                            if (value < 0) {
+                                continue;
+                            }
+
+                            QDateTime ts = QDateTime::fromMSecsSinceEpoch(timelinePoint.timestampMs, bjZone);
+                            if (!ts.isValid()) {
+                                ts = QDateTime::fromMSecsSinceEpoch(timelinePoint.timestampMs);
+                            }
+                            const QString hhmm = ts.toString(QStringLiteral("HH:mm"));
+                            const int axisIdx = xAxisIndex.value(hhmm, -1);
+                            if (axisIdx < 0) {
+                                continue;
+                            }
+
+                            points.push_back(QPoint(xAt(axisIdx), yAt(value)));
+                        }
+                        return points;
+                    };
+
+                    const QVector<QPoint> risePoints = buildSeriesPoints(0);
+                    const QVector<QPoint> fallPoints = buildSeriesPoints(1);
+
+                    popupPainter.setPen(QPen(axisColor, 1.0));
+                    popupPainter.drawLine(timelinePlotRect.bottomLeft(), timelinePlotRect.bottomRight());
+                    popupPainter.drawLine(timelinePlotRect.bottomLeft(), timelinePlotRect.topLeft());
+
+                    popupPainter.setFont(bodyFont);
+                    popupPainter.setPen(axisColor);
+                    for (int tickValue = 0; tickValue <= yAxisMax; tickValue += yTickStep) {
+                        popupPainter.drawText(
+                            QRect(timelineInner.left(), yAt(tickValue) - 6, 30, 12),
+                            Qt::AlignRight | Qt::AlignVCenter,
+                            QString::number(tickValue)
+                        );
+                    }
+
+                    const int xLabelY = timelinePlotRect.bottom() + 2;
+                    const int xLabelWidth = 42;
+                    const int xLabelHeight = 14;
+                    const int minLabelLeft = timelinePlotRect.left() - 2;
+                    const int fixedLastLabelLeft = timelinePlotRect.right() - xLabelWidth + 2;
+                    const int maxNonLastLabelLeft = qMax(minLabelLeft, fixedLastLabelLeft - xLabelWidth - 4);
+                    int lastLabelRight = minLabelLeft - 8;
+
+                    struct HourTick {
+                        QString text;
+                        int axisIndex = -1;
+                    };
+                    QVector<HourTick> hourTicks;
+                    hourTicks.reserve(5);
+                    const QStringList hourTexts {
+                        QStringLiteral("10:00"),
+                        QStringLiteral("11:00"),
+                        QStringLiteral("13:00"),
+                        QStringLiteral("14:00"),
+                        QStringLiteral("15:00"),
+                    };
+                    for (const QString& hourText : hourTexts) {
+                        HourTick tick;
+                        tick.text = hourText;
+                        tick.axisIndex = xAxisIndex.value(hourText, -1);
+                        if (tick.axisIndex < 0 && hourText == QStringLiteral("13:00")) {
+                            tick.axisIndex = xAxisIndex.value(QStringLiteral("13:01"), -1);
+                        }
+                        if (tick.axisIndex >= 0) {
+                            hourTicks.push_back(tick);
+                        }
+                    }
+
+                    for (const HourTick& tick : hourTicks) {
+                        if (tick.text == QStringLiteral("15:00")) {
+                            continue;
+                        }
+
+                        int labelLeft = xAt(tick.axisIndex) - xLabelWidth / 2;
+                        labelLeft = qBound(minLabelLeft, labelLeft, maxNonLastLabelLeft);
+                        const int labelRight = labelLeft + xLabelWidth;
+                        if (labelLeft <= lastLabelRight + 2) {
+                            continue;
+                        }
+                        lastLabelRight = labelRight;
+
+                        popupPainter.drawText(
+                            QRect(labelLeft, xLabelY, xLabelWidth, xLabelHeight),
+                            Qt::AlignHCenter | Qt::AlignVCenter,
+                            tick.text
+                        );
+                    }
+
+                    popupPainter.drawText(
+                        QRect(fixedLastLabelLeft, xLabelY, xLabelWidth, xLabelHeight),
+                        Qt::AlignHCenter | Qt::AlignVCenter,
+                        QStringLiteral("15:00")
+                    );
+
+                    struct SeriesItem {
+                        QString label;
+                        QColor color;
+                        QVector<QPoint> points;
+                    };
+                    const QVector<SeriesItem> series {
+                        {upLabel, m_cfg.upColor, risePoints},
+                        {downLabel, m_cfg.downColor, fallPoints},
+                    };
+
+                    const int legendItemWidth = 62;
+                    const int legendTotalWidth = legendItemWidth * series.size();
+                    int legendX = timelineLegendRect.center().x() - legendTotalWidth / 2;
+                    popupPainter.setFont(bodyFont);
+                    for (const SeriesItem& item : series) {
+                        popupPainter.setPen(QPen(item.color, 1.5));
+                        popupPainter.drawLine(legendX, timelineLegendRect.center().y(), legendX + 12, timelineLegendRect.center().y());
+                        popupPainter.setPen(textColor);
+                        popupPainter.drawText(
+                            QRect(legendX + 14, timelineLegendRect.top(), 52, timelineLegendRect.height()),
+                            Qt::AlignLeft | Qt::AlignVCenter,
+                            item.label
+                        );
+                        legendX += 62;
+                    }
+
+                    popupPainter.setRenderHint(QPainter::Antialiasing, true);
+                    for (const SeriesItem& item : series) {
+                        if (item.points.size() < 2) {
+                            continue;
+                        }
+                        popupPainter.setPen(QPen(item.color, 1.3));
+                        for (int i = 1; i < item.points.size(); ++i) {
+                            popupPainter.drawLine(item.points.at(i - 1), item.points.at(i));
+                        }
+                    }
+                } else {
+                    popupPainter.setPen(textColor);
+                    popupPainter.setFont(bodyFont);
+                    popupPainter.drawText(timelineInner, Qt::AlignCenter, noDataText);
+                }
+            } else {
+                popupPainter.setPen(textColor);
+                popupPainter.setFont(bodyFont);
+                popupPainter.drawText(timelineInner, Qt::AlignCenter, noDataText);
+            }
+
+            return;
+        }
 
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing, true);
@@ -1716,9 +2647,12 @@ protected:
         const int sectionTitleY = countY + 28;
         const int sectionValueY = sectionTitleY + 16;
         const int limitStatsY = sectionValueY + 24;
-        const int chartTitleY = limitStatsY + 20;
-        const int chartTopY = chartTitleY + 18;
-        const int chartBottomY = content.bottom() - 14;
+        const int distributionTitleY = limitStatsY + 18;
+        const int distributionTopY = distributionTitleY + 16;
+        const int distributionBottomY = distributionTopY + 48;
+        const int trendMarginY = 8;
+        const int trendTopY = distributionBottomY + trendMarginY;
+        const int trendBottomY = content.bottom() - 10;
 
         const QString upLabel = i18n::t("popup.marketBreadth.up", m_language);
         const QString flatLabel = i18n::t("popup.marketBreadth.flat", m_language);
@@ -1831,17 +2765,19 @@ protected:
         painter.setFont(headerFont);
         painter.setPen(textColor);
         painter.drawText(
-            QRect(content.left(), chartTitleY, content.width(), 14),
+            QRect(content.left(), distributionTitleY, content.width(), 14),
             Qt::AlignLeft | Qt::AlignVCenter,
             distributionLabel
         );
 
-        const QRect chartRect(
+        const QRect distributionChartRect(
             content.left(),
-            chartTopY,
+            distributionTopY,
             content.width(),
-            qMax(24, chartBottomY - chartTopY + 1)
+            qMax(24, distributionBottomY - distributionTopY + 1)
         );
+
+        bool distributionRendered = false;
 
         if (m_snapshot.distributionValid && !m_snapshot.distribution.isEmpty()) {
             int maxValue = 0;
@@ -1851,7 +2787,7 @@ protected:
 
             if (maxValue > 0) {
                 painter.setPen(QColor(textColor.red(), textColor.green(), textColor.blue(), 90));
-                painter.drawLine(chartRect.bottomLeft(), chartRect.bottomRight());
+                painter.drawLine(distributionChartRect.bottomLeft(), distributionChartRect.bottomRight());
 
                 const int barCount = m_snapshot.distribution.size();
                 const int barGap = (barCount > 18) ? 1 : 2;
@@ -1859,22 +2795,22 @@ protected:
                 const int splitIndex = (barCount % 2 == 0)
                     ? (barCount / 2 - 1)
                     : (barCount / 2);
-                int x = chartRect.left();
+                int x = distributionChartRect.left();
                 for (int i = 0; i < barCount; ++i) {
                     const int remainingBars = barCount - i;
                     int remainingGap = barGap * qMax(0, remainingBars - 1);
                     if (middleGap > 0 && i <= splitIndex) {
                         remainingGap += middleGap;
                     }
-                    const int remainingWidth = chartRect.right() - x + 1 - remainingGap;
+                    const int remainingWidth = distributionChartRect.right() - x + 1 - remainingGap;
                     const int barWidth = qMax(1, remainingWidth / remainingBars);
 
                     const int value = qMax(0, m_snapshot.distribution.at(i).value);
                     const int barHeight = qMax(
                         1,
-                        qRound(static_cast<double>(value) / static_cast<double>(maxValue) * chartRect.height())
+                        qRound(static_cast<double>(value) / static_cast<double>(maxValue) * distributionChartRect.height())
                     );
-                    const QRect barRect(x, chartRect.bottom() - barHeight + 1, barWidth, barHeight);
+                    const QRect barRect(x, distributionChartRect.bottom() - barHeight + 1, barWidth, barHeight);
 
                     QColor barColor;
                     if (i < barCount / 2) {
@@ -1909,23 +2845,237 @@ protected:
                 const QString leftLabel = m_snapshot.distribution.first().bucket;
                 const QString middleLabel = m_snapshot.distribution.at(middleIndex).bucket;
                 const QString rightLabel = m_snapshot.distribution.last().bucket;
-                const int labelY = chartRect.bottom() + 2;
+                const int labelY = distributionChartRect.bottom() + 2;
 
                 painter.drawText(
-                    QRect(chartRect.left(), labelY, chartRect.width() / 3, 12),
+                    QRect(distributionChartRect.left(), labelY, distributionChartRect.width() / 3, 12),
                     Qt::AlignLeft | Qt::AlignVCenter,
                     leftLabel
                 );
                 painter.drawText(
-                    QRect(chartRect.left() + chartRect.width() / 3, labelY, chartRect.width() / 3, 12),
+                    QRect(
+                        distributionChartRect.left() + distributionChartRect.width() / 3,
+                        labelY,
+                        distributionChartRect.width() / 3,
+                        12
+                    ),
                     Qt::AlignHCenter | Qt::AlignVCenter,
                     middleLabel
                 );
                 painter.drawText(
-                    QRect(chartRect.left() + chartRect.width() * 2 / 3, labelY, chartRect.width() / 3, 12),
+                    QRect(
+                        distributionChartRect.left() + distributionChartRect.width() * 2 / 3,
+                        labelY,
+                        distributionChartRect.width() / 3,
+                        12
+                    ),
                     Qt::AlignRight | Qt::AlignVCenter,
                     rightLabel
                 );
+                distributionRendered = true;
+            }
+        }
+
+        if (!distributionRendered) {
+            painter.setFont(valueFont);
+            painter.setPen(textColor);
+            painter.drawText(
+                distributionChartRect,
+                Qt::AlignCenter,
+                i18n::t("quote.noData", m_language)
+            );
+        }
+
+        const QRect trendChartRect(
+            content.left(),
+            trendTopY,
+            content.width(),
+            qMax(32, trendBottomY - trendTopY + 1)
+        );
+
+        if (m_snapshot.overviewTimeline.size() >= 2) {
+            int maxCount = 0;
+            for (const MarketBreadthTimelinePoint& point : m_snapshot.overviewTimeline) {
+                maxCount = qMax(maxCount, qMax(point.riseCount, point.fallCount));
+                maxCount = qMax(maxCount, qMax(point.limitUpCount, point.limitDownCount));
+            }
+
+            if (maxCount > 0) {
+                const QRect plotRect = trendChartRect.adjusted(30, 4, -6, -16);
+                if (plotRect.width() < 16 || plotRect.height() < 16) {
+                    painter.setFont(valueFont);
+                    painter.setPen(textColor);
+                    painter.drawText(
+                        trendChartRect,
+                        Qt::AlignCenter,
+                        i18n::t("quote.noData", m_language)
+                    );
+                    return;
+                }
+
+                const QStringList& xAxisLabels = hardcodedAshareIntradayXAxis();
+                const QHash<QString, int>& xAxisIndex = hardcodedAshareIntradayXAxisIndex();
+                const int axisCount = xAxisLabels.size();
+                const QTimeZone bjZone("Asia/Shanghai");
+
+                const auto xAt = [&](int axisIndexValue) {
+                    if (axisCount <= 1) {
+                        return plotRect.left();
+                    }
+                    const double t = static_cast<double>(axisIndexValue)
+                        / static_cast<double>(axisCount - 1);
+                    return plotRect.left() + qRound(t * plotRect.width());
+                };
+                const auto yAt = [&](int value) {
+                    const double ratio = static_cast<double>(qMax(0, value)) / static_cast<double>(maxCount);
+                    return plotRect.bottom() - qRound(ratio * plotRect.height());
+                };
+
+                struct TrendPoint {
+                    int axisIdx = -1;
+                    QPoint pixel;
+                };
+
+                auto buildSeriesPoints = [&](const std::function<int(const MarketBreadthTimelinePoint&)>& valueGetter) {
+                    QVector<TrendPoint> points;
+                    points.reserve(m_snapshot.overviewTimeline.size());
+
+                    for (const MarketBreadthTimelinePoint& timelinePoint : m_snapshot.overviewTimeline) {
+                        const int value = valueGetter(timelinePoint);
+                        if (value < 0) {
+                            continue;
+                        }
+
+                        QDateTime ts = QDateTime::fromMSecsSinceEpoch(timelinePoint.timestampMs, bjZone);
+                        if (!ts.isValid()) {
+                            ts = QDateTime::fromMSecsSinceEpoch(timelinePoint.timestampMs);
+                        }
+                        const QString hhmm = ts.toString(QStringLiteral("HH:mm"));
+                        const int axisIdx = xAxisIndex.value(hhmm, -1);
+                        if (axisIdx < 0) {
+                            continue;
+                        }
+
+                        TrendPoint p;
+                        p.axisIdx = axisIdx;
+                        p.pixel = QPoint(xAt(axisIdx), yAt(value));
+                        points.push_back(p);
+                    }
+                    return points;
+                };
+
+                const QVector<TrendPoint> risePoints = buildSeriesPoints([](const MarketBreadthTimelinePoint& p) {
+                    return p.riseCount;
+                });
+                const QVector<TrendPoint> fallPoints = buildSeriesPoints([](const MarketBreadthTimelinePoint& p) {
+                    return p.fallCount;
+                });
+                const QVector<TrendPoint> limitUpPoints = buildSeriesPoints([](const MarketBreadthTimelinePoint& p) {
+                    return p.limitUpCount;
+                });
+                const QVector<TrendPoint> limitDownPoints = buildSeriesPoints([](const MarketBreadthTimelinePoint& p) {
+                    return p.limitDownCount;
+                });
+
+                QVector<QVector<TrendPoint>> allSeries {
+                    risePoints,
+                    fallPoints,
+                    limitUpPoints,
+                    limitDownPoints,
+                };
+
+                const QColor axisColor(textColor.red(), textColor.green(), textColor.blue(), 160);
+                painter.setPen(QPen(axisColor, 1.0));
+                painter.drawLine(plotRect.bottomLeft(), plotRect.bottomRight());
+                painter.drawLine(plotRect.bottomLeft(), plotRect.topLeft());
+
+                QFont axisFont = painter.font();
+                axisFont.setBold(false);
+                axisFont.setPointSizeF(qMax(8.0, axisFont.pointSizeF() - 1.0));
+                painter.setFont(axisFont);
+                painter.setPen(axisColor);
+                painter.drawText(
+                    QRect(trendChartRect.left(), plotRect.top() - 6, 26, 12),
+                    Qt::AlignRight | Qt::AlignVCenter,
+                    QString::number(maxCount)
+                );
+                painter.drawText(
+                    QRect(trendChartRect.left(), plotRect.bottom() - 6, 26, 12),
+                    Qt::AlignRight | Qt::AlignVCenter,
+                    QStringLiteral("0")
+                );
+
+                const int midIdx = axisCount / 2;
+                const QString xLeft = xAxisLabels.isEmpty() ? QStringLiteral("09:30") : xAxisLabels.first();
+                const QString xMid = xAxisLabels.isEmpty() ? QStringLiteral("11:30") : xAxisLabels.at(midIdx);
+                const QString xRight = xAxisLabels.isEmpty() ? QStringLiteral("15:00") : xAxisLabels.last();
+                const int xLabelY = plotRect.bottom() + 2;
+                painter.drawText(QRect(plotRect.left() - 2, xLabelY, 56, 12), Qt::AlignLeft, xLeft);
+                painter.drawText(QRect(xAt(midIdx) - 28, xLabelY, 56, 12), Qt::AlignHCenter, xMid);
+                painter.drawText(QRect(plotRect.right() - 54, xLabelY, 56, 12), Qt::AlignRight, xRight);
+
+                struct SeriesInfo {
+                    QString name;
+                    QColor color;
+                    int idx;
+                };
+                const QVector<SeriesInfo> infos {
+                    {QStringLiteral("上涨"), m_cfg.upColor, 0},
+                    {QStringLiteral("下跌"), m_cfg.downColor, 1},
+                    {QStringLiteral("涨停"), QColor(QStringLiteral("#bb07ae")), 2},
+                    {QStringLiteral("跌停"), QColor(QStringLiteral("#fc7d02")), 3},
+                };
+
+                int legendX = plotRect.left();
+                const int legendY = plotRect.top() - 14;
+                painter.setFont(axisFont);
+                for (const SeriesInfo& info : infos) {
+                    painter.setPen(QPen(info.color, 1.5));
+                    painter.drawLine(legendX, legendY + 6, legendX + 12, legendY + 6);
+                    painter.setPen(textColor);
+                    painter.drawText(QRect(legendX + 14, legendY, 30, 12), Qt::AlignLeft | Qt::AlignVCenter, info.name);
+                    legendX += 44;
+                }
+
+                auto segmentOverlapsOthers = [&](int seriesIdx, int segIdx) {
+                    const QVector<TrendPoint>& points = allSeries.at(seriesIdx);
+                    if (segIdx <= 0 || segIdx >= points.size()) {
+                        return false;
+                    }
+                    const QPoint a1 = points.at(segIdx - 1).pixel;
+                    const QPoint a2 = points.at(segIdx).pixel;
+                    for (int otherIdx = 0; otherIdx < allSeries.size(); ++otherIdx) {
+                        if (otherIdx == seriesIdx) {
+                            continue;
+                        }
+                        const QVector<TrendPoint>& other = allSeries.at(otherIdx);
+                        for (int j = 1; j < other.size(); ++j) {
+                            const QPoint b1 = other.at(j - 1).pixel;
+                            const QPoint b2 = other.at(j).pixel;
+                            const bool sameDir = (a1 == b1 && a2 == b2);
+                            const bool reverseDir = (a1 == b2 && a2 == b1);
+                            if (sameDir || reverseDir) {
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                };
+
+                painter.setRenderHint(QPainter::Antialiasing, true);
+                for (const SeriesInfo& info : infos) {
+                    const QVector<TrendPoint>& points = allSeries.at(info.idx);
+                    if (points.size() < 2) {
+                        continue;
+                    }
+                    painter.setPen(QPen(info.color, 1.2));
+                    for (int i = 1; i < points.size(); ++i) {
+                        if (segmentOverlapsOthers(info.idx, i)) {
+                            continue;
+                        }
+                        painter.drawLine(points.at(i - 1).pixel, points.at(i).pixel);
+                    }
+                }
                 return;
             }
         }
@@ -1933,7 +3083,7 @@ protected:
         painter.setFont(valueFont);
         painter.setPen(textColor);
         painter.drawText(
-            chartRect,
+            trendChartRect,
             Qt::AlignCenter,
             i18n::t("quote.noData", m_language)
         );
@@ -1944,6 +3094,10 @@ private:
     AppConfig m_cfg;
     QString m_language = QStringLiteral("en_US");
     MarketBreadthSnapshot m_snapshot;
+    bool m_pinnedFromTray = false;
+    QRect m_closeButtonRect;
+    bool m_closeButtonHovered = false;
+    bool m_closeButtonPressed = false;
 };
 
 namespace {
@@ -2930,8 +4084,37 @@ void FloatingWindow::hideTimelinePopup() {
     }
 }
 
+void FloatingWindow::toggleMarketBreadthDetailPopupFromTray() {
+    if (!m_marketBreadthDetailPopup || !m_model) {
+        return;
+    }
+
+    if (m_marketBreadthDetailPopup->isVisible() && m_marketBreadthDetailPopup->isPinnedFromTray()) {
+        m_marketBreadthDetailPopup->hidePopup();
+        return;
+    }
+
+    if (m_marketBreadthDetailShowTimer) {
+        m_marketBreadthDetailShowTimer->stop();
+    }
+    if (m_marketBreadthDetailHideTimer) {
+        m_marketBreadthDetailHideTimer->stop();
+    }
+
+    m_marketBreadthDetailHoverPending = false;
+    m_marketBreadthDetailPopup->setLanguage(m_model->language());
+    m_marketBreadthDetailPopup->showCenteredForSnapshot(
+        m_model->marketBreadthSnapshot(),
+        frameGeometry()
+    );
+}
+
 void FloatingWindow::updateMarketBreadthDetailPopupForHover(const QPoint& viewportPos) {
     if (!m_table || !m_model) {
+        return;
+    }
+
+    if (m_marketBreadthDetailPopup && m_marketBreadthDetailPopup->isPinnedFromTray()) {
         return;
     }
 
@@ -2971,6 +4154,9 @@ void FloatingWindow::showMarketBreadthDetailPopup() {
     if (!m_marketBreadthDetailPopup || !m_model) {
         return;
     }
+    if (m_marketBreadthDetailPopup->isPinnedFromTray()) {
+        return;
+    }
     if (!m_marketBreadthDetailHoverPending || !canShowMarketBreadthDetailPopup()) {
         hideMarketBreadthDetailPopup(true);
         return;
@@ -2988,6 +4174,15 @@ void FloatingWindow::refreshMarketBreadthDetailPopup() {
     if (!m_marketBreadthDetailPopup || !m_marketBreadthDetailPopup->isVisible()) {
         return;
     }
+
+    if (m_marketBreadthDetailPopup->isPinnedFromTray()) {
+        m_marketBreadthDetailPopup->setLanguage(m_model ? m_model->language() : QStringLiteral("en_US"));
+        m_marketBreadthDetailPopup->refreshSnapshot(
+            m_model ? m_model->marketBreadthSnapshot() : MarketBreadthSnapshot{}
+        );
+        return;
+    }
+
     if (!m_marketBreadthDetailHoverPending || !canShowMarketBreadthDetailPopup()) {
         hideMarketBreadthDetailPopup(true);
         return;
@@ -2996,6 +4191,10 @@ void FloatingWindow::refreshMarketBreadthDetailPopup() {
 }
 
 void FloatingWindow::hideMarketBreadthDetailPopup(bool immediate) {
+    if (m_marketBreadthDetailPopup && m_marketBreadthDetailPopup->isPinnedFromTray()) {
+        return;
+    }
+
     m_marketBreadthDetailHoverPending = false;
     if (m_marketBreadthDetailShowTimer) {
         m_marketBreadthDetailShowTimer->stop();
@@ -3258,6 +4457,7 @@ void FloatingWindow::applyConfig(const AppConfig& cfg) {
         m_marketBreadthDetailPopup->applyConfig(m_cfg);
         m_marketBreadthDetailPopup->setLanguage(m_model ? m_model->language() : QStringLiteral("en_US"));
         if (!m_cfg.marketBreadthEnabled) {
+            m_marketBreadthDetailPopup->hidePopup();
             hideMarketBreadthDetailPopup(true);
         } else {
             refreshMarketBreadthDetailPopup();

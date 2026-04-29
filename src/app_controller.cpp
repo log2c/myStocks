@@ -516,6 +516,15 @@ void AppController::toggleWindow() {
     }
 }
 
+void AppController::toggleMarketBreadthDetailWindow() {
+    if (!m_window) {
+        return;
+    }
+
+    refreshMarketBreadth(true);
+    m_window->toggleMarketBreadthDetailPopupFromTray();
+}
+
 void AppController::resetFloatingWindowPosition() {
     if (!m_window) {
         return;
@@ -880,6 +889,10 @@ void AppController::setupTray() {
     };
     updateToggleActionText();
 
+    menu->addAction(i18n::t("tray.marketBreadth", m_resolvedLanguage), this, [this]() {
+        toggleMarketBreadthDetailWindow();
+    });
+
     menu->addSeparator();
     QMenu* settingsMenu = menu->addMenu(i18n::t("tray.settingsGroup", m_resolvedLanguage));
     settingsMenu->addAction(i18n::t("tray.settings", m_resolvedLanguage), this, [this]() {
@@ -949,34 +962,66 @@ void AppController::setupHotkey() {
         m_hotkey->deleteLater();
         m_hotkey = nullptr;
     }
-
-    if (m_cfg.hotkey.trimmed().isEmpty()) {
-        return;
+    if (m_marketBreadthHotkey) {
+        m_marketBreadthHotkey->setRegistered(false);
+        m_marketBreadthHotkey->deleteLater();
+        m_marketBreadthHotkey = nullptr;
     }
 
-    const QKeySequence hotkeySequence =
-        QKeySequence::fromString(m_cfg.hotkey, QKeySequence::PortableText);
+    if (!m_cfg.hotkey.trimmed().isEmpty()) {
+        const QKeySequence hotkeySequence =
+            QKeySequence::fromString(m_cfg.hotkey, QKeySequence::PortableText);
 
 #if defined(Q_OS_MACOS)
-    if (addMacHotkeyMapping(hotkeySequence)) {
-        qInfo() << "Applied explicit macOS hotkey mapping for"
-                << hotkeySequence.toString(QKeySequence::PortableText);
-    }
+        if (addMacHotkeyMapping(hotkeySequence)) {
+            qInfo() << "Applied explicit macOS hotkey mapping for"
+                    << hotkeySequence.toString(QKeySequence::PortableText);
+        }
 #endif
 
-    m_hotkey = new QHotkey(
-        hotkeySequence,
-        true, this
-    );
-    connect(m_hotkey, &QHotkey::activated, this, [this]() { toggleWindow(); });
-
-    if (!m_hotkey->isRegistered() && m_tray) {
-        m_tray->showMessage(
-            i18n::t("app.name", m_resolvedLanguage),
-            i18n::t("hotkey.register.failed", m_resolvedLanguage),
-            QSystemTrayIcon::Warning,
-            3000
+        m_hotkey = new QHotkey(
+            hotkeySequence,
+            true, this
         );
+        connect(m_hotkey, &QHotkey::activated, this, [this]() { toggleWindow(); });
+
+        if (!m_hotkey->isRegistered() && m_tray) {
+            m_tray->showMessage(
+                i18n::t("app.name", m_resolvedLanguage),
+                i18n::t("hotkey.register.failed", m_resolvedLanguage),
+                QSystemTrayIcon::Warning,
+                3000
+            );
+        }
+    }
+
+    if (!m_cfg.marketBreadthHotkey.trimmed().isEmpty()) {
+        const QKeySequence marketBreadthHotkeySequence =
+            QKeySequence::fromString(m_cfg.marketBreadthHotkey, QKeySequence::PortableText);
+
+#if defined(Q_OS_MACOS)
+        if (addMacHotkeyMapping(marketBreadthHotkeySequence)) {
+            qInfo() << "Applied explicit macOS hotkey mapping for"
+                    << marketBreadthHotkeySequence.toString(QKeySequence::PortableText);
+        }
+#endif
+
+        m_marketBreadthHotkey = new QHotkey(
+            marketBreadthHotkeySequence,
+            true, this
+        );
+        connect(m_marketBreadthHotkey, &QHotkey::activated, this, [this]() {
+            toggleMarketBreadthDetailWindow();
+        });
+
+        if (!m_marketBreadthHotkey->isRegistered() && m_tray) {
+            m_tray->showMessage(
+                i18n::t("app.name", m_resolvedLanguage),
+                i18n::t("hotkey.marketBreadth.register.failed", m_resolvedLanguage),
+                QSystemTrayIcon::Warning,
+                3000
+            );
+        }
     }
 }
 #endif

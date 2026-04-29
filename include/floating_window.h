@@ -19,6 +19,7 @@ public:
     explicit FloatingWindow(QuoteModel* model, QWidget* parent = nullptr);
 
     void applyConfig(const AppConfig& cfg);
+    void toggleMarketBreadthDetailPopupFromTray();
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;

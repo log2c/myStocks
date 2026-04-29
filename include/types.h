@@ -44,6 +44,14 @@ struct MarketBreadthDistributionItem {
     int value = 0;
 };
 
+struct MarketBreadthTimelinePoint {
+    qint64 timestampMs = 0;
+    int riseCount = -1;
+    int fallCount = -1;
+    int limitUpCount = -1;
+    int limitDownCount = -1;
+};
+
 struct MarketBreadthSnapshot {
     int upCount = 0;
     int flatCount = 0;
@@ -54,6 +62,7 @@ struct MarketBreadthSnapshot {
     bool breadthValid = false;
     QVector<MarketBreadthDistributionItem> distribution;
     bool distributionValid = false;
+    QVector<MarketBreadthTimelinePoint> overviewTimeline;
     double turnover = qQNaN();
     double turnoverPre = qQNaN();
     double turnoverChange = qQNaN();
@@ -121,6 +130,7 @@ struct AppConfig {
     int pollMs = 3000;
     double opacity = 0.9;
     QString hotkey = "Ctrl+Alt+S";
+    QString marketBreadthHotkey = "Ctrl+Alt+M";
     bool startupShowFloatingWindow = true;
     QString language = "auto";
 

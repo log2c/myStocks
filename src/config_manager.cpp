@@ -270,6 +270,11 @@ AppConfig ConfigManager::loadConfig() {
     cfg.pollMs = readConfigValue(s, QStringLiteral("pollMs"), cfg.pollMs).toInt();
     cfg.opacity = readConfigValue(s, QStringLiteral("opacity"), cfg.opacity).toDouble();
     cfg.hotkey = readConfigValue(s, QStringLiteral("hotkey"), cfg.hotkey).toString();
+    cfg.marketBreadthHotkey = readConfigValue(
+        s,
+        QStringLiteral("marketBreadthHotkey"),
+        cfg.marketBreadthHotkey
+    ).toString();
     cfg.startupShowFloatingWindow = readConfigValue(
         s,
         QStringLiteral("startupShowFloatingWindow"),
@@ -522,6 +527,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     writeConfigValue(s, QStringLiteral("pollMs"), cfg.pollMs);
     writeConfigValue(s, QStringLiteral("opacity"), cfg.opacity);
     writeConfigValue(s, QStringLiteral("hotkey"), cfg.hotkey);
+    writeConfigValue(s, QStringLiteral("marketBreadthHotkey"), cfg.marketBreadthHotkey);
     writeConfigValue(
         s,
         QStringLiteral("startupShowFloatingWindow"),

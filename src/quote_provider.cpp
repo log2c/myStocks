@@ -15,10 +15,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace {
 
-inline constexpr qint64 kMarketBreadthCacheTtlMs = 30 * 1000;
+inline constexpr qint64 kMarketBreadthCacheTtlMs = 60 * 1000;
 
 namespace headers {
 
@@ -106,6 +107,38 @@ int intFromJsonValue(const QJsonValue& value, bool* ok = nullptr) {
         if (parsed && std::isfinite(number)) {
             setOk(true);
             return qRound(number);
+        }
+    }
+
+    setOk(false);
+    return 0;
+}
+
+qint64 int64FromJsonValue(const QJsonValue& value, bool* ok = nullptr) {
+    auto setOk = [ok](bool valueOk) {
+        if (ok) {
+            *ok = valueOk;
+        }
+    };
+
+    if (value.isDouble()) {
+        const double number = value.toDouble(qQNaN());
+        if (std::isfinite(number)
+            && number >= static_cast<double>(std::numeric_limits<qint64>::min())
+            && number <= static_cast<double>(std::numeric_limits<qint64>::max())) {
+            setOk(true);
+            return static_cast<qint64>(number);
+        }
+        setOk(false);
+        return 0;
+    }
+
+    if (value.isString()) {
+        bool parsed = false;
+        const qint64 number = value.toString().trimmed().toLongLong(&parsed);
+        if (parsed) {
+            setOk(true);
+            return number;
         }
     }
 
@@ -877,6 +910,7 @@ QString parseMarketOverviewPayload(const QByteArray& body, MarketBreadthSnapshot
 
     const QJsonObject charts = data.value(QStringLiteral("charts")).toObject();
     const QJsonArray header = charts.value(QStringLiteral("header")).toArray();
+    const QJsonArray pointList = charts.value(QStringLiteral("point_list")).toArray();
 
     int rise = -1;
     int fall = -1;
@@ -908,7 +942,6 @@ QString parseMarketOverviewPayload(const QByteArray& body, MarketBreadthSnapshot
     }
 
     if (rise < 0 || fall < 0) {
-        const QJsonArray pointList = charts.value(QStringLiteral("point_list")).toArray();
         if (!pointList.isEmpty()) {
             const QJsonArray lastPoint = pointList.last().toArray();
             if (lastPoint.size() >= 3) {
@@ -950,6 +983,45 @@ QString parseMarketOverviewPayload(const QByteArray& body, MarketBreadthSnapshot
     }
     snapshot->overviewValid = true;
     snapshot->breadthValid = true;
+
+    QVector<MarketBreadthTimelinePoint> timeline;
+    timeline.reserve(pointList.size());
+    for (const QJsonValue& pointValue : pointList) {
+        if (!pointValue.isArray()) {
+            continue;
+        }
+        const QJsonArray row = pointValue.toArray();
+        if (row.size() < 5) {
+            continue;
+        }
+
+        bool tsOk = false;
+        bool riseOk = false;
+        bool fallOk = false;
+        bool limitUpOk = false;
+        bool limitDownOk = false;
+
+        const qint64 timestampMs = int64FromJsonValue(row.at(0), &tsOk);
+        const int riseCount = intFromJsonValue(row.at(1), &riseOk);
+        const int fallCount = intFromJsonValue(row.at(2), &fallOk);
+        const int limitUpCount = intFromJsonValue(row.at(3), &limitUpOk);
+        const int limitDownCount = intFromJsonValue(row.at(4), &limitDownOk);
+        if (!(tsOk && riseOk && fallOk && limitUpOk && limitDownOk)) {
+            continue;
+        }
+
+        MarketBreadthTimelinePoint point;
+        point.timestampMs = timestampMs;
+        point.riseCount = qMax(0, riseCount);
+        point.fallCount = qMax(0, fallCount);
+        point.limitUpCount = qMax(0, limitUpCount);
+        point.limitDownCount = qMax(0, limitDownCount);
+        timeline.push_back(point);
+    }
+
+    if (!timeline.isEmpty()) {
+        snapshot->overviewTimeline = timeline;
+    }
     return {};
 }
 
@@ -1143,6 +1215,11 @@ void AshareMarketBreadthProvider::fetch() {
         qInfo() << "[MarketBreadth] cache hit endpoint=turnover"
                 << "ttl_ms=" << ttlMs;
         emit dataReady(m_cachedSnapshot);
+        return;
+    }
+
+    if (m_overviewReply || m_distributionReply || m_turnoverReply) {
+        qInfo() << "[MarketBreadth] request already in flight, skip restart";
         return;
     }
 

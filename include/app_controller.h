@@ -29,6 +29,7 @@ public:
 private:
     QString findDataYaml() const;
     void toggleWindow();
+    void toggleMarketBreadthDetailWindow();
     void resetFloatingWindowPosition();
     void openSettings();
     void reloadStocksFromYaml();
@@ -95,5 +96,6 @@ private:
 
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     QHotkey* m_hotkey = nullptr;
+    QHotkey* m_marketBreadthHotkey = nullptr;
 #endif
 };

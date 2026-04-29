@@ -448,6 +448,9 @@ AppConfig SettingsDialog::config() const {
 
     out.pollMs = m_pollSpin->value();
     out.hotkey = normalizedHotkeySequence(m_hotkeyEdit->keySequence()).toString(QKeySequence::PortableText);
+    out.marketBreadthHotkey = normalizedHotkeySequence(
+        m_marketBreadthHotkeyEdit->keySequence()
+    ).toString(QKeySequence::PortableText);
     out.startupShowFloatingWindow = m_startupShowFloatingWindowCheck->isChecked();
     out.userAgent = m_userAgentEdit->text().trimmed();
     out.proxyType = m_proxyTypeCombo->currentData().toString();
@@ -653,21 +656,21 @@ QString SettingsDialog::trText(const QString& key) const {
     return i18n::t(key, m_uiLanguage);
 }
 
-void SettingsDialog::updateHotkeyIndicator(const QKeySequence& seq) {
-    if (!m_hotkeyIndicator) {
+void SettingsDialog::updateHotkeyIndicator(QLabel* indicator, const QKeySequence& seq) {
+    if (!indicator) {
         return;
     }
 
     if (seq.isEmpty()) {
-        m_hotkeyIndicator->clear();
-        m_hotkeyIndicator->setToolTip(QString());
+        indicator->clear();
+        indicator->setToolTip(QString());
         return;
     }
 
     // Valid format: has at least one modifier key + a real key → green ✓
-    m_hotkeyIndicator->setText(QStringLiteral("\u2713"));
-    m_hotkeyIndicator->setStyleSheet(QStringLiteral("color: green; font-weight: bold; font-size: 14px;"));
-    m_hotkeyIndicator->setToolTip(trText("hotkey.available"));
+    indicator->setText(QStringLiteral("\u2713"));
+    indicator->setStyleSheet(QStringLiteral("color: green; font-weight: bold; font-size: 14px;"));
+    indicator->setToolTip(trText("hotkey.available"));
 }
 
 void SettingsDialog::paintColorButton(QPushButton* btn, const QColor& c) {
@@ -734,49 +737,74 @@ QWidget* SettingsDialog::buildGeneralTab() {
     m_pollSpin->setValue(qMax(3000, m_cfg.pollMs));
     applyNumericSpinBoxWidth(m_pollSpin);
 
-    m_hotkeyEdit = new QKeySequenceEdit(QKeySequence(m_cfg.hotkey), w);
-    m_hotkeyEdit->setToolTip(trText("settings.general.hotkeyHint"));
-    connect(m_hotkeyEdit, &QKeySequenceEdit::keySequenceChanged, this, [this](const QKeySequence& sequence) {
-        if (m_normalizingHotkeySequence || !m_hotkeyEdit) {
-            return;
+    auto buildHotkeyEditorWidget = [this, w](
+        const QString& configuredHotkey,
+        QKeySequenceEdit*& edit,
+        QLabel*& indicator,
+        QPushButton*& clearBtn
+    ) {
+        edit = new QKeySequenceEdit(QKeySequence(configuredHotkey), w);
+        edit->setToolTip(trText("settings.general.hotkeyHint"));
+
+        indicator = new QLabel(w);
+        indicator->setMinimumWidth(22);
+        indicator->setAlignment(Qt::AlignCenter);
+
+        connect(edit, &QKeySequenceEdit::keySequenceChanged, this,
+            [this, edit, indicator](const QKeySequence& sequence) {
+                if (m_normalizingHotkeySequence || !edit) {
+                    return;
+                }
+
+                const QKeySequence normalized = normalizedHotkeySequence(sequence);
+                if (normalized != sequence) {
+                    m_normalizingHotkeySequence = true;
+                    edit->setKeySequence(normalized);
+                    m_normalizingHotkeySequence = false;
+                }
+
+                updateHotkeyIndicator(indicator, normalized);
+            }
+        );
+
+        const QKeySequence initialNormalized = normalizedHotkeySequence(edit->keySequence());
+        if (initialNormalized != edit->keySequence()) {
+            edit->setKeySequence(initialNormalized);
         }
+        updateHotkeyIndicator(indicator, normalizedHotkeySequence(edit->keySequence()));
 
-        const QKeySequence normalized = normalizedHotkeySequence(sequence);
-        if (normalized != sequence) {
-            m_normalizingHotkeySequence = true;
-            m_hotkeyEdit->setKeySequence(normalized);
-            m_normalizingHotkeySequence = false;
-        }
+        clearBtn = new QPushButton(QStringLiteral("✕"), w);
+        clearBtn->setFixedWidth(28);
+        clearBtn->setToolTip(trText("settings.general.hotkeyClear"));
+        connect(clearBtn, &QPushButton::clicked, this, [edit]() {
+            if (edit) {
+                edit->setKeySequence(QKeySequence());
+            }
+        });
 
-        updateHotkeyIndicator(normalized);
-    });
+        QWidget* widget = new QWidget(w);
+        QHBoxLayout* layout = new QHBoxLayout(widget);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(5);
+        layout->addWidget(edit, 1);
+        layout->addWidget(indicator);
+        layout->addWidget(clearBtn);
+        return widget;
+    };
 
-    {
-        const QKeySequence initialNormalized = normalizedHotkeySequence(m_hotkeyEdit->keySequence());
-        if (initialNormalized != m_hotkeyEdit->keySequence()) {
-            m_hotkeyEdit->setKeySequence(initialNormalized);
-        }
-    }
+    QWidget* hotkeyWidget = buildHotkeyEditorWidget(
+        m_cfg.hotkey,
+        m_hotkeyEdit,
+        m_hotkeyIndicator,
+        m_hotkeyClearBtn
+    );
 
-    m_hotkeyIndicator = new QLabel(w);
-    m_hotkeyIndicator->setMinimumWidth(22);
-    m_hotkeyIndicator->setAlignment(Qt::AlignCenter);
-    updateHotkeyIndicator(normalizedHotkeySequence(m_hotkeyEdit->keySequence()));
-
-    m_hotkeyClearBtn = new QPushButton(QStringLiteral("✕"), w);
-    m_hotkeyClearBtn->setFixedWidth(28);
-    m_hotkeyClearBtn->setToolTip(trText("settings.general.hotkeyClear"));
-    connect(m_hotkeyClearBtn, &QPushButton::clicked, this, [this]() {
-        m_hotkeyEdit->setKeySequence(QKeySequence());
-    });
-
-    QWidget* hotkeyWidget = new QWidget(w);
-    QHBoxLayout* hotkeyLayout = new QHBoxLayout(hotkeyWidget);
-    hotkeyLayout->setContentsMargins(0, 0, 0, 0);
-    hotkeyLayout->setSpacing(5);
-    hotkeyLayout->addWidget(m_hotkeyEdit, 1);
-    hotkeyLayout->addWidget(m_hotkeyIndicator);
-    hotkeyLayout->addWidget(m_hotkeyClearBtn);
+    QWidget* marketBreadthHotkeyWidget = buildHotkeyEditorWidget(
+        m_cfg.marketBreadthHotkey,
+        m_marketBreadthHotkeyEdit,
+        m_marketBreadthHotkeyIndicator,
+        m_marketBreadthHotkeyClearBtn
+    );
 
     m_startupShowFloatingWindowCheck = new QCheckBox(
         trText("settings.general.startupShowFloatingWindow"),
@@ -795,6 +823,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
 
     form->addRow(trText("settings.general.poll"), m_pollSpin);
     form->addRow(trText("settings.general.hotkey"), hotkeyWidget);
+    form->addRow(trText("settings.general.marketBreadthHotkey"), marketBreadthHotkeyWidget);
     addCompactFormRow(form, m_startupShowFloatingWindowCheck);
     form->addRow(trText("settings.general.language"), m_languageCombo);
     root->addWidget(baseSection);
