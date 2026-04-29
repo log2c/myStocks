@@ -2252,7 +2252,7 @@ protected:
             updatedRect.setRight(m_closeButtonRect.left() - 6);
 #endif
 
-            const int refreshButtonSize = 16;
+            const int refreshButtonSize = 20;
             const int refreshGap = 6;
             const QFontMetrics updatedMetrics(bodyFont);
             const int updatedTextWidth = qMax(0, updatedMetrics.horizontalAdvance(updatedText));
@@ -2320,17 +2320,17 @@ protected:
                     const QColor refreshBg(textColor.red(), textColor.green(), textColor.blue(), bgAlpha);
                     popupPainter.setPen(QPen(QColor(textColor.red(), textColor.green(), textColor.blue(), 96), 1.0));
                     popupPainter.setBrush(refreshBg);
-                    popupPainter.drawRoundedRect(m_refreshButtonRect.adjusted(0, 0, -1, -1), 4, 4);
+                    popupPainter.drawRoundedRect(m_refreshButtonRect.adjusted(0, 0, -1, -1), 5, 5);
                 }
 
                 popupPainter.setBrush(Qt::NoBrush);
-                QPen refreshPen(refreshIconColor, 1.25);
+                QPen refreshPen(refreshIconColor, 1.35);
                 refreshPen.setCapStyle(Qt::RoundCap);
                 refreshPen.setJoinStyle(Qt::RoundJoin);
                 popupPainter.setPen(refreshPen);
 
                 const QPoint center = m_refreshButtonRect.center();
-                const int radius = qMax(3, (qMin(m_refreshButtonRect.width(), m_refreshButtonRect.height()) / 2) - 4);
+                const int radius = qMax(4, (qMin(m_refreshButtonRect.width(), m_refreshButtonRect.height()) / 2) - 5);
                 const QRect arcRect(center.x() - radius, center.y() - radius, radius * 2, radius * 2);
                 const int rotateDegrees = refreshAnimating
                     ? qRound(refreshAnimProgress * 320.0)
@@ -2338,8 +2338,9 @@ protected:
                 popupPainter.drawArc(arcRect, (38 + rotateDegrees) * 16, 286 * 16);
 
                 const QPoint arrowTip(center.x() + radius - 1, center.y() - radius / 2 - 1);
-                popupPainter.drawLine(arrowTip, arrowTip + QPoint(-3, -1));
-                popupPainter.drawLine(arrowTip, arrowTip + QPoint(-1, 3));
+                const int arrowArm = qMax(3, radius / 2 + 1);
+                popupPainter.drawLine(arrowTip, arrowTip + QPoint(-arrowArm, -1));
+                popupPainter.drawLine(arrowTip, arrowTip + QPoint(-1, arrowArm));
             }
 
             if (!testAttribute(Qt::WA_TransparentForMouseEvents)) {
@@ -2405,10 +2406,6 @@ protected:
                 bodyRect.height()
             );
 
-            popupPainter.setPen(QPen(borderColor, 1.0));
-            const int dividerX = leftRect.right() + 1 + splitGap / 2;
-            popupPainter.drawLine(dividerX, bodyRect.top(), dividerX, bodyRect.bottom());
-
             auto drawCard = [&](const QRect& cardRect, const QString& cardTitle, Qt::Alignment titleAlignment) {
                 popupPainter.setPen(QPen(borderColor, 1.0));
                 popupPainter.setBrush(cardColor);
@@ -2461,7 +2458,15 @@ protected:
                 qMax(56, summaryInner.bottom() - (trendSectionRect.bottom() + summarySectionGap))
             );
 
-            popupPainter.setPen(QColor(textColor.red(), textColor.green(), textColor.blue(), 80));
+            QPen sectionDividerPen(
+                QColor(textColor.red(), textColor.green(), textColor.blue(), 72),
+                0.75,
+                Qt::DashLine
+            );
+            sectionDividerPen.setDashPattern({7.0, 5.0});
+            sectionDividerPen.setCapStyle(Qt::RoundCap);
+            sectionDividerPen.setCosmetic(true);
+            popupPainter.setPen(sectionDividerPen);
             popupPainter.drawLine(
                 summaryInner.left(),
                 trendSectionRect.bottom() + summarySectionGap / 2,
@@ -2641,8 +2646,15 @@ protected:
                 popupPainter.drawRoundedRect(rect, 8, 8);
 
                 popupPainter.setFont(tabFont);
-                const int alpha = hasData ? (active ? 230 : (hovered ? 195 : 175)) : 120;
-                popupPainter.setPen(QColor(textColor.red(), textColor.green(), textColor.blue(), alpha));
+                const QColor labelColor = active
+                    ? QColor(255, 255, 255, hasData ? 245 : 175)
+                    : QColor(
+                        textColor.red(),
+                        textColor.green(),
+                        textColor.blue(),
+                        hasData ? (hovered ? 195 : 175) : 120
+                    );
+                popupPainter.setPen(labelColor);
                 popupPainter.drawText(rect, Qt::AlignCenter, label);
             };
 
@@ -2949,8 +2961,14 @@ protected:
                     const int totalGap = gap * qMax(0, barCount - 1);
                     const int availableWidth = qMax(1, distributionPlotRect.width() - totalGap);
                     const int baseBarWidth = qMax(1, availableWidth / qMax(1, barCount));
+                    const int valueLabelTopPadding = 12;
+                    const int barPlotHeight = qMax(1, distributionPlotRect.height() - valueLabelTopPadding);
                     QVector<int> barCenters;
+                    QVector<QRect> barRects;
+                    QVector<int> barValues;
                     barCenters.reserve(barCount);
+                    barRects.reserve(barCount);
+                    barValues.reserve(barCount);
                     int x = distributionPlotRect.left();
                     for (int i = 0; i < barCount; ++i) {
                         const int value = qMax(0, m_snapshot.distribution.at(i).value);
@@ -2959,7 +2977,7 @@ protected:
                             qRound(
                                 static_cast<double>(value)
                                 / static_cast<double>(distributionYAxisMax)
-                                * distributionPlotRect.height()
+                                * barPlotHeight
                             )
                         );
                         const int isLast = (i == barCount - 1) ? 1 : 0;
@@ -2981,6 +2999,8 @@ protected:
                         popupPainter.setBrush(barColor);
                         popupPainter.drawRoundedRect(barRect, 1.5, 1.5);
                         barCenters.push_back(barRect.center().x());
+                        barRects.push_back(barRect);
+                        barValues.push_back(value);
 
                         x += barWidth + gap;
                     }
@@ -2990,6 +3010,8 @@ protected:
                     const int labelY = distributionPlotRect.bottom() + 1;
 
                     const int visibleLabelCount = qMin(6, barCount);
+                    QVector<int> visibleBucketIndices;
+                    visibleBucketIndices.reserve(visibleLabelCount);
                     int lastIndex = -1;
                     for (int i = 0; i < visibleLabelCount; ++i) {
                         const int bucketIndex = (visibleLabelCount == 1)
@@ -3002,6 +3024,7 @@ protected:
                             continue;
                         }
                         lastIndex = bucketIndex;
+                        visibleBucketIndices.push_back(bucketIndex);
 
                         const int centerX = barCenters.value(bucketIndex, distributionPlotRect.left());
                         popupPainter.drawText(
@@ -3009,6 +3032,42 @@ protected:
                             Qt::AlignHCenter | Qt::AlignVCenter,
                             m_snapshot.distribution.at(bucketIndex).bucket
                         );
+                    }
+
+                    QFont valueLabelFont = bodyFont;
+                    qreal valueLabelPointSize = qMax(6.0, valueLabelFont.pointSizeF() - 1.6);
+                    if (barCount > 18 || baseBarWidth < 10) {
+                        valueLabelPointSize = qMax(5.5, valueLabelPointSize - 0.6);
+                    }
+                    valueLabelFont.setPointSizeF(valueLabelPointSize);
+                    popupPainter.setFont(valueLabelFont);
+
+                    const QFontMetrics valueMetrics(valueLabelFont);
+                    const int valueLabelHeight = qMax(10, valueMetrics.height());
+                    for (int index = 0; index < barCount; ++index) {
+                        const QRect barRect = barRects.at(index);
+                        const int value = barValues.at(index);
+                        const QString valueText = QString::number(value);
+                        const int textWidth = qMax(barRect.width() + 4, valueMetrics.horizontalAdvance(valueText) + 2);
+                        QRect valueRect(
+                            barRect.center().x() - textWidth / 2,
+                            barRect.top() - valueLabelHeight - 1,
+                            textWidth,
+                            valueLabelHeight
+                        );
+
+                        if (valueRect.top() < distributionPlotRect.top()) {
+                            valueRect.moveTop(distributionPlotRect.top());
+                        }
+                        if (valueRect.left() < distributionPlotRect.left() - 2) {
+                            valueRect.moveLeft(distributionPlotRect.left() - 2);
+                        }
+                        if (valueRect.right() > distributionPlotRect.right() + 2) {
+                            valueRect.moveRight(distributionPlotRect.right() + 2);
+                        }
+
+                        popupPainter.setPen(QColor(textColor.red(), textColor.green(), textColor.blue(), 205));
+                        popupPainter.drawText(valueRect, Qt::AlignHCenter | Qt::AlignVCenter, valueText);
                     }
                 } else {
                     popupPainter.setPen(textColor);
