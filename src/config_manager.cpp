@@ -432,7 +432,10 @@ AppConfig ConfigManager::loadConfig() {
     cfg.windowRect = s.value("ui/windowRect", cfg.windowRect).toRect();
 
     for (int i = 0; i < ColCount; ++i) {
-        cfg.visibleColumns[i] = s.value(QString("ui/columns/%1").arg(i), true).toBool();
+        cfg.visibleColumns[i] = s.value(
+            QString("ui/columns/%1").arg(i),
+            cfg.visibleColumns.value(i, true)
+        ).toBool();
 
         const QVariant w = s.value(QString("ui/columnWidth/%1").arg(i));
         if (w.isValid()) {

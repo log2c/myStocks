@@ -10,9 +10,7 @@
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QColorDialog>
-#include <QDesktopServices>
 #include <QDialogButtonBox>
-#include <QDir>
 #include <QDropEvent>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -418,7 +416,7 @@ SettingsDialog::SettingsDialog(
     tabs->addTab(makeScrollableTab(buildGeneralTab(), tabs), trText("settings.tab.general"));
     tabs->addTab(makeScrollableTab(buildNetworkTab(), tabs), trText("settings.tab.network"));
     tabs->addTab(makeScrollableTab(buildDisplayTab(), tabs), trText("settings.tab.display"));
-    tabs->addTab(makeScrollableTab(buildStocksTab(), tabs), trText("settings.tab.stocks"));
+    tabs->addTab(makeScrollableTab(buildStocksTab(), tabs), trText("settings.tab.data"));
     tabs->addTab(buildIndexSectorTab(), trText("settings.tab.indexSector"));
     tabs->addTab(makeScrollableTab(buildOtherTab(), tabs), trText("settings.tab.other"));
     tabs->addTab(makeScrollableTab(buildAboutTab(), tabs), trText("settings.tab.about"));
@@ -458,7 +456,7 @@ AppConfig SettingsDialog::config() const {
     out.proxyPort = m_proxyPortSpin->value();
     out.proxyUser = m_proxyUserEdit->text().trimmed();
     out.debugIgnoreTradingTime = m_debugIgnoreTradingTimeCheck->isChecked();
-    out.logEnabled = m_logEnabledCheck->isChecked();
+    out.logEnabled = m_logEnabledCheck ? m_logEnabledCheck->isChecked() : out.logEnabled;
     out.logLevel = app_logging::normalizeLogLevel(m_logLevelCombo->currentData().toString());
     out.transparentBackgroundEnabled = m_transparentBackgroundCheck->isChecked();
     out.transparentBackgroundOpacity = m_transparentOpacitySlider->value();
@@ -1436,9 +1434,6 @@ QWidget* SettingsDialog::buildOtherTab() {
     );
     m_debugIgnoreTradingTimeCheck->setChecked(m_cfg.debugIgnoreTradingTime);
 
-    m_logEnabledCheck = new QCheckBox(trText("settings.other.logEnabled"), w);
-    m_logEnabledCheck->setChecked(m_cfg.logEnabled);
-
     m_logLevelCombo = new QComboBox(w);
     m_logLevelCombo->addItem(trText("settings.other.logLevel.debug"), "debug");
     m_logLevelCombo->addItem(trText("settings.other.logLevel.info"), "info");
@@ -1453,23 +1448,8 @@ QWidget* SettingsDialog::buildOtherTab() {
         m_logLevelCombo->setCurrentIndex(logLevelIndex);
     }
 
-    m_openLogDirButton = new QPushButton(trText("settings.other.openLogFolder"), w);
-    connect(m_openLogDirButton, &QPushButton::clicked, this, []() {
-        const QString logDir = app_logging::logDirectoryPath();
-        QDir().mkpath(logDir);
-        QDesktopServices::openUrl(QUrl::fromLocalFile(logDir));
-    });
-
-    connect(m_logEnabledCheck, &QCheckBox::toggled, this, [this](bool enabled) {
-        m_logLevelCombo->setEnabled(enabled);
-    });
-
-    m_logLevelCombo->setEnabled(m_logEnabledCheck->isChecked());
-
     addCompactFormRow(form, m_debugIgnoreTradingTimeCheck);
-    addCompactFormRow(form, m_logEnabledCheck);
     form->addRow(trText("settings.other.logLevel"), m_logLevelCombo);
-    addCompactFormRow(form, m_openLogDirButton);
 
     return w;
 }

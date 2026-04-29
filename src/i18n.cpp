@@ -153,6 +153,7 @@ const TranslationMap& translations() {
                 {"reload.config.success", "Reloaded %1 stocks from data.yaml."},
                 {"reload.config.failed", "Failed to reload data.yaml or no valid stocks found."},
                 {"settings.tab.stocks", "Stocks"},
+                {"settings.tab.data", "Data"},
                 {"settings.tab.futures", "Futures"},
                 {"settings.stocks.market1", "A-Share"},
                 {"settings.stocks.market2", "HK Stock"},
@@ -365,6 +366,7 @@ const TranslationMap& translations() {
                 {"reload.config.success", "已从 data.yaml 重新加载 %1 条股票。"},
                 {"reload.config.failed", "重新加载 data.yaml 失败或没有有效股票。"},
                 {"settings.tab.stocks", "股票"},
+                {"settings.tab.data", "数据"},
                 {"settings.tab.futures", "期货"},
                 {"settings.stocks.market1", "A股"},
                 {"settings.stocks.market2", "港股"},
@@ -444,10 +446,26 @@ QString resolvedLanguageCode(const QString& language) {
         return normalized;
     }
 
-    const QString system = QLocale::system().name();
-    if (system.startsWith("zh", Qt::CaseInsensitive)) {
-        return "zh_CN";
+    const QLocale systemLocale = QLocale::system();
+
+    const QStringList uiLanguages = systemLocale.uiLanguages();
+    for (const QString& uiLanguage : uiLanguages) {
+        const QString resolved = i18n::normalizeLanguage(uiLanguage);
+        if (resolved != "auto") {
+            return resolved;
+        }
     }
+
+    const QString localeName = i18n::normalizeLanguage(systemLocale.name());
+    if (localeName != "auto") {
+        return localeName;
+    }
+
+    const QString bcp47Name = i18n::normalizeLanguage(systemLocale.bcp47Name());
+    if (bcp47Name != "auto") {
+        return bcp47Name;
+    }
+
     return "en_US";
 }
 

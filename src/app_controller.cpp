@@ -80,6 +80,15 @@ bool openDirectoryPath(const QString& dirPath) {
     return QDesktopServices::openUrl(QUrl::fromLocalFile(cleaned));
 }
 
+QVector<StockItem> defaultCommonIndexes() {
+    return {
+        {QStringLiteral("1.000001"), QStringLiteral("上证指数")},
+        {QStringLiteral("0.399006"), QStringLiteral("创业板指")},
+        {QStringLiteral("1.000688"), QStringLiteral("科创50")},
+        {QStringLiteral("124.HSTECH"), QStringLiteral("恒生科技指数")},
+    };
+}
+
 } // namespace
 
 AppController::AppController(QObject* parent)
@@ -470,6 +479,7 @@ QVector<StockItem> AppController::mergedWatchItems() const {
 void AppController::loadExtraWatchItems() {
     std::unique_ptr<QSettings> settings = ConfigManager::createAppSettings();
     QSettings& s = *settings;
+    const bool hasStoredIndexes = s.contains(app_constants::kWatchIndexesKey);
 
     const QVector<StockItem> decodedIndexes = decodeWatchItems(
         s.value(app_constants::kWatchIndexesKey).toStringList()
@@ -491,6 +501,10 @@ void AppController::loadExtraWatchItems() {
         indexSeen.insert(key);
 
         m_indexes.push_back({normalizedCode, index.name.trimmed()});
+    }
+
+    if (!hasStoredIndexes && m_indexes.isEmpty()) {
+        m_indexes = defaultCommonIndexes();
     }
 }
 

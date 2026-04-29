@@ -129,8 +129,8 @@ inline QString normalizeHotRankSortOrder(const QString& rawOrder) {
 struct AppConfig {
     int pollMs = 3000;
     double opacity = 0.9;
-    QString hotkey = "Ctrl+Alt+S";
-    QString marketBreadthHotkey = "Ctrl+Alt+M";
+    QString hotkey;
+    QString marketBreadthHotkey;
     bool startupShowFloatingWindow = true;
     QString language = "auto";
 
@@ -151,8 +151,8 @@ struct AppConfig {
     bool logEnabled = true;
     QString logLevel = "info";
 
-    bool transparentBackgroundEnabled = false;
-    int transparentBackgroundOpacity = 100;
+    bool transparentBackgroundEnabled = true;
+    int transparentBackgroundOpacity = 60;
     QString floatingWindowFontFamily = defaultFloatingWindowFontFamily();
     int floatingWindowFontSize = 0;
     bool floatingWindowFontBold = false;
@@ -198,7 +198,7 @@ struct AppConfig {
     double hoverReadingDelaySecs = 1.0;
     QString hoverReadingUiMode = "dark";
     bool hoverReadingTransparentBackgroundEnabled = true;
-    bool timelineChartEnabled = false;
+    bool timelineChartEnabled = true;
     int timelineChartRefreshSecs = 10;
     bool marketBreadthEnabled = true;
     int marketBreadthRefreshSecs = 10;
