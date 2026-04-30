@@ -1,6 +1,7 @@
 #pragma once
 
 #include "types.h"
+#include "updater.h"
 
 #include <QDate>
 #include <QDateTime>
@@ -93,6 +94,8 @@ private:
     QDate m_hotProbeDate;
     QDateTime m_hotProbeCheckedAt;
     bool m_hotProbeTradingDay = true;
+
+    Updater* m_updater = nullptr;
 
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     QHotkey* m_hotkey = nullptr;

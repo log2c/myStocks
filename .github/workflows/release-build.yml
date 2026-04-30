@@ -2,13 +2,12 @@ name: Build Release (macOS + Windows)
 
 on:
   push:
-    branches:
-      - main
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 jobs:
   build-release:
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -16,15 +15,20 @@ jobs:
         include:
           - os: macos-latest
             artifact_name: MyStocks-macos-release
-            artifact_file: MyStocks-macos-release.zip
+            artifact_platform: macos
           - os: windows-latest
             artifact_name: MyStocks-windows-release
-            artifact_file: MyStocks-windows-release.zip
+            artifact_platform: windows
             qt_arch: win64_msvc2019_64
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set artifact filename
+        shell: bash
+        run: |
+          echo "ARTIFACT_FILE=MyStocks-${{ matrix.artifact_platform }}-release-${{ github.ref_name }}.zip" >> "$GITHUB_ENV"
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
@@ -71,7 +75,7 @@ jobs:
           fi
 
           macdeployqt "$APP_PATH"
-          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "${{ matrix.artifact_file }}"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "${{ env.ARTIFACT_FILE }}"
 
       - name: Package Windows bundle
         if: runner.os == 'Windows'
@@ -101,12 +105,40 @@ jobs:
           }
 
           windeployqt --release --no-translations --no-compiler-runtime --dir $bundleDir $bundleExe
-          Compress-Archive -Path "$bundleDir/*" -DestinationPath "${{ matrix.artifact_file }}" -Force
+          Compress-Archive -Path "$bundleDir/*" -DestinationPath "${{ env.ARTIFACT_FILE }}" -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.artifact_file }}
+          path: ${{ env.ARTIFACT_FILE }}
           compression-level: 9
           if-no-files-found: error
+
+  create-release:
+    needs: build-release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MyStocks-macos-release
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MyStocks-windows-release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: myStocks ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: |
+            MyStocks-macos-release-${{ github.ref_name }}.zip
+            MyStocks-windows-release-${{ github.ref_name }}.zip

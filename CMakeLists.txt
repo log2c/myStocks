@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(MyStocks VERSION 0.1 LANGUAGES CXX)
+project(MyStocks VERSION 0.0.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -52,6 +52,7 @@ set(MYSTOCKS_SOURCES
     src/quote_model.cpp
     src/quote_provider.cpp
     src/settings_dialog.cpp
+    src/updater.cpp
     src/watchlist_utils.cpp
 )
 
@@ -70,6 +71,7 @@ set(MYSTOCKS_HEADERS
     include/quote_provider.h
     include/settings_dialog.h
     include/types.h
+    include/updater.h
     include/watchlist_utils.h
 )
 

@@ -5,12 +5,14 @@
 #include "i18n.h"
 #include "network_logger.h"
 #include "network_utils.h"
+#include "updater.h"
 #include "watchlist_utils.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QButtonGroup>
 #include <QColorDialog>
+#include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QDropEvent>
 #include <QFormLayout>
@@ -27,6 +29,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPixmap>
+#include <QProgressBar>
 #include <QRadioButton>
 #include <QScrollArea>
 #include <QSet>
@@ -2141,6 +2144,115 @@ QWidget* SettingsDialog::buildAboutTab() {
     linkLabel->setOpenExternalLinks(true);
     linkLabel->setTextInteractionFlags(Qt::TextBrowserInteraction);
     vbox->addWidget(linkLabel);
+
+    vbox->addSpacing(16);
+
+    // --- Update section ---
+    m_checkUpdateBtn = new QPushButton(trText("settings.about.checkUpdate"), w);
+    m_checkUpdateBtn->setFixedWidth(160);
+    vbox->addWidget(m_checkUpdateBtn, 0, Qt::AlignCenter);
+
+    m_checkUpdateStatus = new QLabel(w);
+    m_checkUpdateStatus->setAlignment(Qt::AlignCenter);
+    m_checkUpdateStatus->setWordWrap(true);
+    vbox->addWidget(m_checkUpdateStatus);
+
+    m_downloadProgress = new QProgressBar(w);
+    m_downloadProgress->setRange(0, 100);
+    m_downloadProgress->setFixedWidth(300);
+    m_downloadProgress->setVisible(false);
+    vbox->addWidget(m_downloadProgress, 0, Qt::AlignCenter);
+
+    // --- Updater setup ---
+    m_updater = new Updater(this);
+    m_updater->setConfig(m_cfg);
+
+    connect(m_checkUpdateBtn, &QPushButton::clicked, this, [this]() {
+        m_checkUpdateBtn->setEnabled(false);
+        m_checkUpdateStatus->setText(trText("settings.about.checking"));
+        m_downloadProgress->setVisible(false);
+        m_updater->setConfig(m_cfg);
+        m_updater->checkForUpdates();
+    });
+
+    connect(m_updater, &Updater::noUpdateAvailable, this, [this]() {
+        m_checkUpdateBtn->setEnabled(true);
+        m_checkUpdateStatus->setText(trText("settings.about.upToDate"));
+    });
+
+    connect(m_updater, &Updater::checkFailed, this, [this](const QString&) {
+        m_checkUpdateBtn->setEnabled(true);
+        m_checkUpdateStatus->setText(trText("settings.about.checkFailed"));
+    });
+
+    connect(m_updater, &Updater::updateAvailable, this,
+        [this](const Updater::ReleaseInfo& info) {
+            m_checkUpdateBtn->setEnabled(true);
+            m_checkUpdateStatus->setText(
+                trText("settings.about.updateAvailable").arg(info.tagName)
+            );
+
+            const Updater::ReleaseAsset asset = info.platformAsset();
+            const bool hasAsset = !asset.browserDownloadUrl.isEmpty();
+
+            QMessageBox msgBox(this);
+            msgBox.setWindowTitle(trText("settings.about.updateAvailableTitle"));
+            msgBox.setText(
+                trText("settings.about.updateAvailableMsg").arg(info.tagName)
+            );
+            const QIcon windowIcon = dialogWindowIcon(this);
+            if (!windowIcon.isNull()) {
+                msgBox.setWindowIcon(windowIcon);
+            }
+            msgBox.setIcon(QMessageBox::Information);
+
+            QPushButton* openPageBtn = msgBox.addButton(
+                trText("settings.about.openReleasePage"), QMessageBox::ActionRole
+            );
+            QPushButton* downloadBtn = nullptr;
+            if (hasAsset) {
+                downloadBtn = msgBox.addButton(
+                    trText("settings.about.download"), QMessageBox::AcceptRole
+                );
+            }
+            msgBox.addButton(QMessageBox::Cancel);
+
+            msgBox.exec();
+
+            if (msgBox.clickedButton() == openPageBtn) {
+                QDesktopServices::openUrl(QUrl(info.htmlUrl));
+            } else if (downloadBtn && msgBox.clickedButton() == downloadBtn) {
+                m_checkUpdateBtn->setEnabled(false);
+                m_downloadProgress->setValue(0);
+                m_downloadProgress->setVisible(true);
+                m_checkUpdateStatus->setText(trText("settings.about.downloading").arg(0));
+                m_updater->downloadAsset(asset);
+            }
+        }
+    );
+
+    connect(m_updater, &Updater::downloadProgress, this,
+        [this](qint64 received, qint64 total) {
+            if (total > 0) {
+                const int pct = static_cast<int>(received * 100 / total);
+                m_downloadProgress->setValue(pct);
+                m_checkUpdateStatus->setText(trText("settings.about.downloading").arg(pct));
+            }
+        }
+    );
+
+    connect(m_updater, &Updater::downloadFinished, this, [this](const QString& filePath) {
+        m_checkUpdateBtn->setEnabled(true);
+        m_downloadProgress->setVisible(false);
+        m_checkUpdateStatus->setText(trText("settings.about.downloadDone"));
+        QDesktopServices::openUrl(QUrl::fromLocalFile(filePath));
+    });
+
+    connect(m_updater, &Updater::downloadFailed, this, [this](const QString&) {
+        m_checkUpdateBtn->setEnabled(true);
+        m_downloadProgress->setVisible(false);
+        m_checkUpdateStatus->setText(trText("settings.about.downloadFailed"));
+    });
 
     vbox->addStretch();
     return w;

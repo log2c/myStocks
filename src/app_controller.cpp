@@ -10,6 +10,7 @@
 #include "quote_model.h"
 #include "quote_provider.h"
 #include "settings_dialog.h"
+#include "updater.h"
 #include "watchlist_utils.h"
 
 #include <QApplication>
@@ -213,6 +214,28 @@ AppController::AppController(QObject* parent)
     if (m_window && m_window->isVisible()) {
         refreshMarketBreadth(true);
     }
+
+    // Auto-check for updates ~10 s after startup (non-blocking).
+    m_updater = new Updater(this);
+    m_updater->setConfig(m_cfg);
+    connect(m_updater, &Updater::updateAvailable, this,
+        [this](const Updater::ReleaseInfo& info) {
+            qInfo() << "[AppController] update available:" << info.tagName;
+            if (m_tray) {
+                m_tray->showMessage(
+                    i18n::t("app.name", m_resolvedLanguage),
+                    i18n::t("settings.about.updateAvailable", m_resolvedLanguage)
+                        .arg(info.tagName),
+                    QSystemTrayIcon::Information,
+                    6000
+                );
+            }
+        }
+    );
+    QTimer::singleShot(10000, this, [this]() {
+        m_updater->setConfig(m_cfg);
+        m_updater->checkForUpdates();
+    });
 }
 
 namespace {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "types.h"
+#include "updater.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -12,6 +13,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QSlider>
 #include <QSpinBox>
@@ -160,4 +162,10 @@ private:
 
     // Common indexes tab
     QListWidget* m_indexList = nullptr;
+
+    // About tab – update checker
+    Updater* m_updater = nullptr;
+    QPushButton* m_checkUpdateBtn = nullptr;
+    QLabel* m_checkUpdateStatus = nullptr;
+    QProgressBar* m_downloadProgress = nullptr;
 };
