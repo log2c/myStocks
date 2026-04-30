@@ -11,7 +11,7 @@
 #include <QWidget>
 
 class TimelineChartPopup;
-class MarketBreadthDetailPopup;
+class MarketBreadthDetailWindow;
 
 class FloatingWindow : public QWidget {
     Q_OBJECT
@@ -48,14 +48,11 @@ private:
     void refreshMousePassthroughState(bool force = false);
     bool setMousePassthroughActive(bool active);
     bool canShowTimelinePopup() const;
-    bool canShowMarketBreadthDetailPopup() const;
     void updateHoverPopupsForViewport(const QPoint& viewportPos);
     void updateTimelinePopupForHover(const QPoint& viewportPos);
     void hideTimelinePopup();
-    void updateMarketBreadthDetailPopupForHover(const QPoint& viewportPos);
-    void showMarketBreadthDetailPopup();
     void refreshMarketBreadthDetailPopup();
-    void hideMarketBreadthDetailPopup(bool immediate = false);
+    void hideMarketBreadthDetailPopup();
     void enforceWindowLevel(bool activate = false);
     void applyStyle();
     void applyHoverReadingStyle();
@@ -70,11 +67,10 @@ private:
     QFrame* m_panel = nullptr;
     QTableView* m_table = nullptr;
     TimelineChartPopup* m_timelinePopup = nullptr;
-    MarketBreadthDetailPopup* m_marketBreadthDetailPopup = nullptr;
+    MarketBreadthDetailWindow* m_marketBreadthDetailPopup = nullptr;
     QString m_timelineHoverCode;
     QString m_timelineHoverName;
     QRect m_marketBreadthDetailAnchorRect;
-    bool m_marketBreadthDetailHoverPending = false;
 
     AppConfig m_cfg;
     bool m_dragging = false;
@@ -83,8 +79,6 @@ private:
 
     QTimer* m_hoverTimer = nullptr;
     QTimer* m_mousePassthroughTimer = nullptr;
-    QTimer* m_marketBreadthDetailShowTimer = nullptr;
-    QTimer* m_marketBreadthDetailHideTimer = nullptr;
     QVariantAnimation* m_styleAnimation = nullptr;
     bool m_hoverReadingActive = false;
     qreal m_hoverReadingProgress = 0.0;

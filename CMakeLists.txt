@@ -45,6 +45,7 @@ set(MYSTOCKS_SOURCES
     src/config_manager.cpp
     src/crash_logging.cpp
     src/floating_window.cpp
+    src/market_breadth_window.cpp
     src/i18n.cpp
     src/network_logger.cpp
     src/network_utils.cpp
@@ -61,6 +62,7 @@ set(MYSTOCKS_HEADERS
     include/config_manager.h
     include/crash_logging.h
     include/floating_window.h
+    include/market_breadth_window.h
     include/i18n.h
     include/network_logger.h
     include/network_utils.h
