@@ -412,6 +412,26 @@ QVector<QJsonObject> extractDiffObjects(const QJsonValue& diffValue) {
     return out;
 }
 
+const QVector<QPair<QString, QString>>& indexQuoteConfig() {
+    static const QVector<QPair<QString, QString>> kConfig = {
+        {QStringLiteral("1.000001"),   QStringLiteral("上证指数")},
+        {QStringLiteral("0.399001"),   QStringLiteral("深证成指")},
+        {QStringLiteral("0.399006"),   QStringLiteral("创业板指")},
+        {QStringLiteral("1.000688"),   QStringLiteral("科创50")},
+        {QStringLiteral("47.800005"),  QStringLiteral("A股均价")},
+        {QStringLiteral("100.HSI"),    QStringLiteral("恒生指数")},
+        {QStringLiteral("124.HSTECH"), QStringLiteral("恒生科技")},
+        {QStringLiteral("100.XIN9"),   QStringLiteral("富时A50")},
+        {QStringLiteral("133.USDCNH"), QStringLiteral("美元/人民币")},
+        {QStringLiteral("118.AUTD"),       QStringLiteral("黄金T+D")},
+        {QStringLiteral("100.NDX100"), QStringLiteral("纳斯达克")},
+        {QStringLiteral("100.SPX"),    QStringLiteral("标普500")},
+        {QStringLiteral("100.N225"),   QStringLiteral("日经225")},
+        {QStringLiteral("100.KS11"),   QStringLiteral("韩国KOSPI")},
+    };
+    return kConfig;
+}
+
 } // namespace
 
 IQuoteProvider::IQuoteProvider(QObject* parent)
@@ -1565,4 +1585,170 @@ void AshareMarketBreadthProvider::finalizeFetch(int token) {
     }
 
     m_lastError.clear();
+}
+
+EastMoneyIndexQuoteProvider::EastMoneyIndexQuoteProvider(QObject* parent)
+    : QObject(parent) {}
+
+void EastMoneyIndexQuoteProvider::applyConfig(const AppConfig& cfg) {
+    m_userAgent = network_utils::effectiveUserAgent(cfg);
+    m_proxy = network_utils::proxyFromConfig(cfg);
+    m_cacheValid = false;
+    m_cacheExpiresAtMs = 0;
+    if (m_reply) {
+        m_reply->setProperty("myStocksIgnoreAbort", true);
+        m_reply->abort();
+        m_reply = nullptr;
+    }
+}
+
+void EastMoneyIndexQuoteProvider::fetch(bool forceRefresh) {
+    m_nam.setProxy(m_proxy);
+
+    if (forceRefresh) {
+        m_cacheValid = false;
+        m_cacheExpiresAtMs = 0;
+    }
+
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (!forceRefresh && m_cacheValid && nowMs < m_cacheExpiresAtMs) {
+        qInfo() << "[IndexQuote] cache hit ttl_ms=" << (m_cacheExpiresAtMs - nowMs);
+        emit dataReady(m_cachedItems);
+        return;
+    }
+
+    if (m_reply) {
+        if (forceRefresh) {
+            m_reply->setProperty("myStocksIgnoreAbort", true);
+            m_reply->abort();
+            m_reply = nullptr;
+        } else {
+            qInfo() << "[IndexQuote] request already in flight, skip";
+            return;
+        }
+    }
+
+    const QVector<QPair<QString, QString>>& config = indexQuoteConfig();
+    QStringList secIds;
+    secIds.reserve(config.size());
+    for (const auto& pair : config) {
+        secIds.push_back(pair.first);
+    }
+
+    QUrl url(QStringLiteral("https://push2delay.eastmoney.com/api/qt/ulist.np/get"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("fltt"), QStringLiteral("2"));
+    query.addQueryItem(QStringLiteral("fields"), QStringLiteral("f2,f3,f4,f12,f13"));
+    query.addQueryItem(QStringLiteral("secids"), secIds.join(QLatin1Char(',')));
+    url.setQuery(query);
+
+    QNetworkRequest req(url);
+    req.setRawHeader(headers::kUserAgent, m_userAgent.toUtf8());
+    req.setRawHeader(headers::kReferer, headers::kEastMoneyReferer);
+    req.setRawHeader(headers::kAccept, "*/*");
+    req.setRawHeader(headers::kConnection, "keep-alive");
+    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
+
+    const network_logger::RequestTrace trace = network_logger::logRequestStart(
+        QStringLiteral("eastmoney-index-quote"),
+        QStringLiteral("GET"),
+        req,
+        m_proxy
+    );
+
+    m_reply = m_nam.get(req);
+    QNetworkReply* reply = m_reply;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, trace]() {
+        if (reply == m_reply) {
+            m_reply = nullptr;
+        }
+        if (reply->property("myStocksIgnoreAbort").toBool()) {
+            reply->deleteLater();
+            return;
+        }
+        const QString err = (reply->error() == QNetworkReply::NoError)
+            ? QString()
+            : reply->errorString();
+        const QByteArray body = reply->readAll();
+        network_logger::logRequestFinish(trace, reply, body.size(), body);
+        reply->deleteLater();
+        handleResponse(body, err);
+    });
+}
+
+void EastMoneyIndexQuoteProvider::handleResponse(
+    const QByteArray& body,
+    const QString& errorText
+) {
+    if (!errorText.isEmpty()) {
+        const QString msg = QStringLiteral("index quote request failed: %1").arg(errorText);
+        if (msg != m_lastError) {
+            emit error(msg);
+            m_lastError = msg;
+        }
+        return;
+    }
+
+    QJsonParseError pe;
+    const QJsonDocument doc = QJsonDocument::fromJson(body, &pe);
+    if (pe.error != QJsonParseError::NoError) {
+        const QString msg = QStringLiteral("index quote json parse error: %1").arg(pe.errorString());
+        if (msg != m_lastError) {
+            emit error(msg);
+            m_lastError = msg;
+        }
+        return;
+    }
+    if (!doc.isObject()) {
+        emit error(QStringLiteral("index quote invalid payload"));
+        return;
+    }
+
+    const QJsonObject root = doc.object();
+    if (!root.value(QStringLiteral("data")).isObject()) {
+        emit error(QStringLiteral("index quote data missing"));
+        return;
+    }
+
+    const QJsonObject data = root.value(QStringLiteral("data")).toObject();
+    const QVector<QJsonObject> diff = extractDiffObjects(data.value(QStringLiteral("diff")));
+
+    struct QuoteData {
+        double price = qQNaN();
+        double change = qQNaN();
+        double pct = qQNaN();
+    };
+    QHash<QString, QuoteData> lookup;
+    lookup.reserve(diff.size());
+    for (const QJsonObject& row : diff) {
+        const QString key = secIdKeyFromDiffItem(row);
+        if (key.isEmpty()) {
+            continue;
+        }
+        QuoteData qd;
+        qd.price = firstNumberFromObject(row, {QStringLiteral("f2")});
+        qd.pct = normalizeEastMoneyPercent(firstNumberFromObject(row, {QStringLiteral("f3")}));
+        qd.change = firstNumberFromObject(row, {QStringLiteral("f4")});
+        lookup.insert(key, qd);
+    }
+
+    const QVector<QPair<QString, QString>>& config = indexQuoteConfig();
+    QVector<IndexQuoteItem> items;
+    items.reserve(config.size());
+    for (const auto& pair : config) {
+        const QString key = secIdKey(pair.first);
+        IndexQuoteItem item;
+        item.displayName = pair.second;
+        const QuoteData qd = lookup.value(key);
+        item.price = qd.price;
+        item.change = qd.change;
+        item.pct = qd.pct;
+        items.push_back(item);
+    }
+
+    m_lastError.clear();
+    m_cachedItems = items;
+    m_cacheExpiresAtMs = QDateTime::currentMSecsSinceEpoch() + app_constants::kNetworkCacheTtlMs;
+    m_cacheValid = true;
+    emit dataReady(items);
 }

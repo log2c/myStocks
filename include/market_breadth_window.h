@@ -9,6 +9,7 @@
 #include <functional>
 
 class EastMoneyHotRankProvider;
+class EastMoneyIndexQuoteProvider;
 
 class MarketBreadthDetailWindow : public QWidget {
 public:
@@ -57,8 +58,10 @@ private:
     void ensureSingleVisible();
     void enforceAlwaysOnTop();
     void ensureHotRankProviders();
+    void ensureIndexQuoteProvider();
     int popupHotRankLimit(bool concept) const;
     void requestHotRankData(bool concept, bool forceRefresh = false);
+    void requestIndexQuoteData(bool forceRefresh = false);
 
     QWidget* m_parentWindow = nullptr;
     AppConfig m_cfg;
@@ -69,6 +72,8 @@ private:
     QVector<HotRankItem> m_hotSectorsRanked;
     QVector<HotRankItem> m_hotConceptsRanked;
     EastMoneyHotRankProvider* m_hotRankProvider = nullptr;
+    EastMoneyIndexQuoteProvider* m_indexQuoteProvider = nullptr;
+    QVector<IndexQuoteItem> m_indexQuotes;
     QString m_lastHotRankError;
     HotRankTabMode m_hotRankTabMode = HotRankTabMode::Auto;
     bool m_pinnedFromTray = false;

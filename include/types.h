@@ -39,6 +39,13 @@ struct HotRankItem {
     double mainNetInflow = qQNaN();
 };
 
+struct IndexQuoteItem {
+    QString displayName;
+    double price = qQNaN();
+    double change = qQNaN();
+    double pct = qQNaN();
+};
+
 struct MarketBreadthDistributionItem {
     QString bucket;
     int value = 0;

@@ -262,7 +262,7 @@ MarketBreadthDetailWindow* MarketBreadthDetailWindow::s_visiblePopup = nullptr;
     setAttribute(Qt::WA_TransparentForMouseEvents, true);
     setAttribute(Qt::WA_TranslucentBackground, true);
     setMouseTracking(true);
-    resize(740, 550);
+    resize(740, 715);
 
     m_refreshFeedbackTimer = new QTimer(this);
     m_refreshFeedbackTimer->setInterval(33);
@@ -317,6 +317,9 @@ void  MarketBreadthDetailWindow::applyConfig(const AppConfig& cfg) {
     if (m_hotRankProvider) {
         m_hotRankProvider->applyConfig(m_cfg);
     }
+    if (m_indexQuoteProvider) {
+        m_indexQuoteProvider->applyConfig(m_cfg);
+    }
     setFont(effectiveFloatingWindowFont(cfg, font()));
     update();
 }
@@ -360,7 +363,7 @@ void  MarketBreadthDetailWindow::showCenteredForSnapshot(
     m_dragging = false;
     m_dragOffset = QPoint();
 
-    const QSize popupSize(740, 550);
+    const QSize popupSize(740, 715);
     resize(popupSize);
 
     QRect screenRect;
@@ -417,6 +420,7 @@ void  MarketBreadthDetailWindow::showCenteredForSnapshot(
     enforceAlwaysOnTop();
     requestHotRankData(false);
     requestHotRankData(true);
+    requestIndexQuoteData();
     update();
 }
 
@@ -433,6 +437,7 @@ void  MarketBreadthDetailWindow::refreshSnapshot(
     if (!hotConcepts.isEmpty()) {
         m_hotConcepts = hotConcepts;
     }
+    requestIndexQuoteData();
     startLastUpdatedTextTimer();
     update();
 }
@@ -626,6 +631,7 @@ void  MarketBreadthDetailWindow::mouseReleaseEvent(QMouseEvent* event) {
             startRefreshFeedback();
             requestHotRankData(false, true);
             requestHotRankData(true, true);
+            requestIndexQuoteData(true);
             if (m_forceRefreshCallback) {
                 m_forceRefreshCallback();
             }
@@ -938,7 +944,15 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
 #endif
         }
 
-        const QRect bodyRect = content.adjusted(0, 36, 0, 0);
+        constexpr int kIndexCardHeight = 142;
+        constexpr int kIndexSectionGap = 14;
+        const QRect bodyRect = content.adjusted(0, 36, 0, -(kIndexSectionGap + kIndexCardHeight));
+        const QRect indexCardRect(
+            content.left(),
+            content.bottom() - kIndexCardHeight + 1,
+            content.width(),
+            kIndexCardHeight
+        );
         const int splitGap = 18;
         const int leftWidth = qMax(120, (bodyRect.width() - splitGap) / 2);
         const QRect leftRect(bodyRect.left(), bodyRect.top(), leftWidth, bodyRect.height());
@@ -1780,6 +1794,128 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
             popupPainter.drawText(timelineInner, Qt::AlignCenter, noDataText);
         }
 
+        // ── Index Quotes Section ─────────────────────────────────────────────
+        drawCard(indexCardRect, QString(), Qt::AlignLeft | Qt::AlignTop);
+
+        const QRect indexInner = indexCardRect.adjusted(10, 10, -10, -10);
+
+        constexpr int kIdxRowH = 58;
+        constexpr int kIdxRowGap = 6;
+        constexpr int kIdxColumns = 7;
+        constexpr int kIdxCount = 14;
+        constexpr int kIdxCellGap = 6;
+
+        const int rowsTop = indexInner.top();
+        const int totalCellGap = (kIdxColumns - 1) * kIdxCellGap;
+        const int cellWidth = qMax(60, (indexInner.width() - totalCellGap) / kIdxColumns);
+
+        static const char* const kIdxNames[kIdxCount] = {
+            "上证指数", "深证成指", "创业板指", "科创50", "A股均价",
+            "恒生指数", "恒生科技",
+            "富时A50", "美元/人民币", "黄金T+D", "纳斯达克", "标普500", "日经225", "韩国KOSPI"
+        };
+
+        QFont idxNameFont = subtitleFont;
+        idxNameFont.setPointSizeF(qMax(7.8, idxNameFont.pointSizeF() - 0.6));
+        QFont idxPriceFont = bodyFont;
+        idxPriceFont.setPointSizeF(qMax(8.0, idxPriceFont.pointSizeF() - 0.3));
+        QFont idxChangeFont = bodyFont;
+        idxChangeFont.setPointSizeF(qMax(7.4, idxChangeFont.pointSizeF() - 0.5));
+
+        const auto fmtIndexPrice = [](const IndexQuoteItem& item) -> QString {
+            if (!std::isfinite(item.price)) {
+                return QStringLiteral("--");
+            }
+            const double absP = std::fabs(item.price);
+            const int prec = absP < 10.0 ? 4 : (absP < 1000.0 ? 2 : 0);
+            return QString::number(item.price, 'f', prec);
+        };
+
+        const auto fmtIndexChange = [](const IndexQuoteItem& item) -> QString {
+            if (!std::isfinite(item.change) || !std::isfinite(item.pct)) {
+                return QStringLiteral("--");
+            }
+            const double absChg = std::fabs(item.change);
+            const int chgPrec = absChg < 0.1 ? 4 : (absChg < 100.0 ? 2 : 0);
+            QString chgStr = QString::number(item.change, 'f', chgPrec);
+            if (item.change > 0.0) {
+                chgStr.prepend('+');
+            }
+            QString pctStr = QString::number(item.pct, 'f', 2);
+            if (item.pct > 0.0) {
+                pctStr.prepend('+');
+            }
+            pctStr.append('%');
+            return chgStr + QStringLiteral(" ") + pctStr;
+        };
+
+        const QColor cellBorderColor(
+            textColor.red(), textColor.green(), textColor.blue(), 45
+        );
+
+        for (int i = 0; i < kIdxCount; ++i) {
+            const int row = i / kIdxColumns;
+            const int col = i % kIdxColumns;
+
+            const int cellLeft = indexInner.left() + col * (cellWidth + kIdxCellGap);
+            const int cellTop = rowsTop + row * (kIdxRowH + kIdxRowGap);
+            const QRect cellRect(cellLeft, cellTop, cellWidth, kIdxRowH);
+
+            // Cell border
+            popupPainter.setPen(QPen(cellBorderColor, 0.4));
+            popupPainter.setBrush(Qt::NoBrush);
+            popupPainter.drawRoundedRect(cellRect, 6, 6);
+
+            const QString name = QString::fromUtf8(kIdxNames[i]);
+
+            IndexQuoteItem dummy;
+            const IndexQuoteItem& item = (i < m_indexQuotes.size()) ? m_indexQuotes.at(i) : dummy;
+
+            QColor itemColor = textColor;
+            if (std::isfinite(item.pct)) {
+                if (item.pct > 0.0) {
+                    itemColor = m_cfg.upColor;
+                } else if (item.pct < 0.0) {
+                    itemColor = m_cfg.downColor;
+                } else {
+                    itemColor = m_cfg.flatColor;
+                }
+            }
+
+            constexpr int kLineH = 14;
+            constexpr int kLineGap = 3;
+            const int totalH = kLineH * 3 + kLineGap * 2;
+            const int lineTop = cellTop + (kIdxRowH - totalH) / 2;
+
+            // Name line
+            popupPainter.setFont(idxNameFont);
+            popupPainter.setPen(textColor);
+            popupPainter.drawText(
+                QRect(cellLeft, lineTop, cellWidth, kLineH),
+                Qt::AlignHCenter | Qt::AlignVCenter,
+                name
+            );
+
+            // Price line
+            popupPainter.setFont(idxPriceFont);
+            popupPainter.setPen(itemColor);
+            popupPainter.drawText(
+                QRect(cellLeft, lineTop + kLineH + kLineGap, cellWidth, kLineH),
+                Qt::AlignHCenter | Qt::AlignVCenter,
+                fmtIndexPrice(item)
+            );
+
+            // Change line
+            popupPainter.setFont(idxChangeFont);
+            popupPainter.setPen(itemColor);
+            popupPainter.drawText(
+                QRect(cellLeft, lineTop + (kLineH + kLineGap) * 2, cellWidth, kLineH),
+                Qt::AlignHCenter | Qt::AlignVCenter,
+                fmtIndexChange(item)
+            );
+        }
+        // ── End Index Quotes Section ──────────────────────────────────────────
+
         return;
     }
 
@@ -2425,3 +2561,38 @@ void  MarketBreadthDetailWindow::requestHotRankData(bool concept, bool forceRefr
     }
 }
 
+
+void  MarketBreadthDetailWindow::ensureIndexQuoteProvider() {
+    if (m_indexQuoteProvider) {
+        return;
+    }
+
+    m_indexQuoteProvider = new EastMoneyIndexQuoteProvider(this);
+    m_indexQuoteProvider->applyConfig(m_cfg);
+
+    connect(
+        m_indexQuoteProvider,
+        &EastMoneyIndexQuoteProvider::dataReady,
+        this,
+        [this](const QVector<IndexQuoteItem>& items) {
+            m_indexQuotes = items;
+            update();
+        }
+    );
+    connect(
+        m_indexQuoteProvider,
+        &EastMoneyIndexQuoteProvider::error,
+        this,
+        [](const QString& message) {
+            qInfo() << "[IndexQuote] error:" << message;
+        }
+    );
+}
+
+
+void  MarketBreadthDetailWindow::requestIndexQuoteData(bool forceRefresh) {
+    ensureIndexQuoteProvider();
+    if (m_indexQuoteProvider) {
+        m_indexQuoteProvider->fetch(forceRefresh);
+    }
+}
