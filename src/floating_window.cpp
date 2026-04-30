@@ -1280,6 +1280,8 @@ protected:
         QPainterPath avgPath;
         bool hasPricePath = false;
         bool hasAvgPath = false;
+        int firstPriceX = 0;
+        int lastPriceX = 0;
         for (int i = 0; i < m_points.size(); ++i) {
             const int x = (hasSessionAxis && m_points.at(i).time.isValid())
                 ? xOfSessionTime(m_points.at(i).time.time())
@@ -1290,9 +1292,11 @@ protected:
                 if (!hasPricePath) {
                     pricePath.moveTo(x, yPrice);
                     hasPricePath = true;
+                    firstPriceX = x;
                 } else {
                     pricePath.lineTo(x, yPrice);
                 }
+                lastPriceX = x;
             }
 
             if (std::isfinite(m_points.at(i).avgPrice)) {
@@ -1326,7 +1330,22 @@ protected:
         }
 
         if (hasPricePath) {
-            painter.setPen(QPen(trendColor, 1.8));
+            QPainterPath fillPath = pricePath;
+            fillPath.lineTo(lastPriceX, plot.bottom());
+            fillPath.lineTo(firstPriceX, plot.bottom());
+            fillPath.closeSubpath();
+
+            QLinearGradient gradient(0, plot.top(), 0, plot.bottom());
+            gradient.setColorAt(0.0, QColor(0, 180, 255, 13));
+            gradient.setColorAt(0.5, QColor(0, 180, 255, 46));
+            gradient.setColorAt(1.0, QColor(0, 180, 255, 102));
+
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QBrush(gradient));
+            painter.drawPath(fillPath);
+
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(Qt::white, 1.8));
             painter.drawPath(pricePath);
         }
 
