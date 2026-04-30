@@ -205,7 +205,7 @@ struct AppConfig {
     bool timelineChartFixedRangeEnabled = false;
     QColor timelineChartBgColor = QColor(14, 18, 24, 238);
     QColor timelineChartGridColor = QColor(255, 255, 255, 45);
-    QColor timelineChartPriceLineColor = QColor(255, 89, 94);
+    QColor timelineChartPriceLineColor = QColor("#3cb2ef");
     QColor timelineChartAvgLineColor = QColor(229, 194, 104);
     QColor timelineChartTextColor = QColor(236, 240, 245);
     QColor timelineChartUpColor = QColor(255, 89, 94);
