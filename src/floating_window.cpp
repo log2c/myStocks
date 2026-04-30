@@ -1345,12 +1345,12 @@ protected:
             painter.drawPath(fillPath);
 
             painter.setBrush(Qt::NoBrush);
-            painter.setPen(QPen(Qt::white, 1.8));
+            painter.setPen(QPen(Qt::white, 0.5));
             painter.drawPath(pricePath);
         }
 
         if (hasAvgPath) {
-            painter.setPen(QPen(m_cfg.timelineChartAvgLineColor, 1.2));
+            painter.setPen(QPen(m_cfg.timelineChartAvgLineColor, 0.5));
             painter.drawPath(avgPath);
         }
 
