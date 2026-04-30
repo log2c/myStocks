@@ -85,16 +85,16 @@ QString withHongKongNamePrefix(const QString& code, const QString& name) {
         return name;
     }
 
+    if (!watchlist_utils::normalizeHongKongIndexCode(code).isEmpty()) {
+        return name;
+    }
+
     const QString trimmed = name.trimmed();
     if (trimmed.isEmpty()) {
         return name;
     }
 
-    if (trimmed.startsWith("H ")) {
-        return trimmed;
-    }
-
-    return "H " + trimmed;
+    return "H" + trimmed;
 }
 
 QString formatNetInflowYi(double value) {
