@@ -858,7 +858,13 @@ void AppController::setupTray() {
         m_tray = nullptr;
     }
 
-    QIcon icon(QStringLiteral(":/icon.png"));
+    QIcon icon;
+    if (!m_cfg.trayIconPath.isEmpty()) {
+        icon = QIcon(m_cfg.trayIconPath);
+    }
+    if (icon.isNull()) {
+        icon = QIcon(QStringLiteral(":/icon.png"));
+    }
     if (icon.isNull()) {
         icon = QIcon::fromTheme("view-financial");
     }

@@ -2,4 +2,32 @@
     <qresource prefix="/">
         <file alias="icon.png">assets/icons/icon.png</file>
     </qresource>
+    <qresource prefix="/tray_icons">
+        <file alias="apple-002-app2.png">assets/tray/apple-002-app2.png</file>
+        <file alias="apple-003-apple-1-copy.png">assets/tray/apple-003-apple-1-copy.png</file>
+        <file alias="apple-004-apple-2.png">assets/tray/apple-004-apple-2.png</file>
+        <file alias="apple-005-game.png">assets/tray/apple-005-game.png</file>
+        <file alias="apple-006-apple-3.png">assets/tray/apple-006-apple-3.png</file>
+        <file alias="apple-007-player.png">assets/tray/apple-007-player.png</file>
+        <file alias="apple-008-apple-4.png">assets/tray/apple-008-apple-4.png</file>
+        <file alias="apple-009-apple-5.png">assets/tray/apple-009-apple-5.png</file>
+        <file alias="buffalo.png">assets/tray/buffalo.png</file>
+        <file alias="chicken.png">assets/tray/chicken.png</file>
+        <file alias="crab.png">assets/tray/crab.png</file>
+        <file alias="delicious.png">assets/tray/delicious.png</file>
+        <file alias="dog.png">assets/tray/dog.png</file>
+        <file alias="dribbble.png">assets/tray/dribbble.png</file>
+        <file alias="github2.png">assets/tray/github2.png</file>
+        <file alias="google-drive.png">assets/tray/google-drive.png</file>
+        <file alias="happy.png">assets/tray/happy.png</file>
+        <file alias="instagram.png">assets/tray/instagram.png</file>
+        <file alias="lion.png">assets/tray/lion.png</file>
+        <file alias="logo.png">assets/tray/logo.png</file>
+        <file alias="telegram.png">assets/tray/telegram.png</file>
+        <file alias="wechat1.png">assets/tray/wechat1.png</file>
+        <file alias="wps1.png">assets/tray/wps1.png</file>
+        <file alias="xiaomi1.png">assets/tray/xiaomi1.png</file>
+        <file alias="yoga-ball.png">assets/tray/yoga-ball.png</file>
+        <file alias="youtube.png">assets/tray/youtube.png</file>
+    </qresource>
 </RCC>

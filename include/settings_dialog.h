@@ -145,6 +145,10 @@ private:
     QVector<QSpinBox*> m_columnMaxWidthSpins;
     bool m_normalizingHotkeySequence = false;
 
+    // Tray icon selection (Other tab)
+    QButtonGroup* m_trayIconBtnGroup = nullptr;
+    QStringList m_trayIconPaths;
+
     // Stocks tab
     QLineEdit* m_stockSearchEdit = nullptr;
     QPushButton* m_stockSearchBtn = nullptr;

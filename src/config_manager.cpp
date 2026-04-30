@@ -420,6 +420,7 @@ AppConfig ConfigManager::loadConfig() {
         "ui/floatingWindowPaddingPx",
         cfg.floatingWindowPaddingPx
     ).toDouble();
+    cfg.trayIconPath = s.value("ui/trayIconPath", cfg.trayIconPath).toString();
 
     cfg.showHeader = s.value("ui/showHeader", cfg.showHeader).toBool();
     cfg.showGrid = s.value("ui/showGrid", cfg.showGrid).toBool();
@@ -641,6 +642,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         cfg.floatingWindowDoubleClickToHide && !cfg.mousePassthroughEnabled
     );
     s.setValue("ui/floatingWindowPaddingPx", qMax(0.0, cfg.floatingWindowPaddingPx));
+    s.setValue("ui/trayIconPath", cfg.trayIconPath);
     s.setValue("ui/windowRect", cfg.windowRect);
 
     for (int i = 0; i < ColCount; ++i) {

@@ -9,6 +9,7 @@
 
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QButtonGroup>
 #include <QColorDialog>
 #include <QDialogButtonBox>
 #include <QDropEvent>
@@ -26,6 +27,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPixmap>
+#include <QRadioButton>
 #include <QScrollArea>
 #include <QSet>
 #include <QTableWidget>
@@ -556,6 +558,13 @@ AppConfig SettingsDialog::config() const {
     out.floatingWindowDoubleClickToHide = m_doubleClickCloseWindowCheck
         && m_doubleClickCloseWindowCheck->isChecked()
         && !out.mousePassthroughEnabled;
+
+    if (m_trayIconBtnGroup) {
+        const int id = m_trayIconBtnGroup->checkedId();
+        out.trayIconPath = (id >= 0 && id < m_trayIconPaths.size())
+            ? m_trayIconPaths[id]
+            : QString();
+    }
 
     for (int i = 0; i < ColCount; ++i) {
         out.visibleColumns[i] = false;
@@ -1425,16 +1434,22 @@ QWidget* SettingsDialog::buildDisplayTab() {
 
 QWidget* SettingsDialog::buildOtherTab() {
     QWidget* w = new QWidget(this);
-    QFormLayout* form = new QFormLayout(w);
+    QVBoxLayout* root = new QVBoxLayout(w);
+    root->setContentsMargins(6, 6, 6, 6);
+    root->setSpacing(6);
+
+    // --- Debug/Log group ---
+    QWidget* debugWidget = new QWidget(w);
+    QFormLayout* form = new QFormLayout(debugWidget);
     applyCompactFormLayout(form);
 
     m_debugIgnoreTradingTimeCheck = new QCheckBox(
         trText("settings.general.debugIgnoreTradingTime"),
-        w
+        debugWidget
     );
     m_debugIgnoreTradingTimeCheck->setChecked(m_cfg.debugIgnoreTradingTime);
 
-    m_logLevelCombo = new QComboBox(w);
+    m_logLevelCombo = new QComboBox(debugWidget);
     m_logLevelCombo->addItem(trText("settings.other.logLevel.debug"), "debug");
     m_logLevelCombo->addItem(trText("settings.other.logLevel.info"), "info");
     m_logLevelCombo->addItem(trText("settings.other.logLevel.warn"), "warn");
@@ -1450,7 +1465,117 @@ QWidget* SettingsDialog::buildOtherTab() {
 
     addCompactFormRow(form, m_debugIgnoreTradingTimeCheck);
     form->addRow(trText("settings.other.logLevel"), m_logLevelCombo);
+    root->addWidget(debugWidget);
 
+    // --- Tray icon group ---
+    QGroupBox* trayIconGroup = new QGroupBox(trText("settings.other.trayIconGroup"), w);
+    QVBoxLayout* trayLayout = new QVBoxLayout(trayIconGroup);
+    trayLayout->setContentsMargins(6, 8, 6, 6);
+    trayLayout->setSpacing(4);
+
+    QScrollArea* trayScroll = new QScrollArea(trayIconGroup);
+    trayScroll->setWidgetResizable(true);
+    trayScroll->setFrameShape(QFrame::NoFrame);
+    trayScroll->setFixedHeight(230);
+
+    QWidget* trayGrid = new QWidget;
+    const int kCols = 7;
+    QGridLayout* trayGridLayout = new QGridLayout(trayGrid);
+    trayGridLayout->setSpacing(6);
+    trayGridLayout->setContentsMargins(4, 4, 4, 4);
+
+    m_trayIconBtnGroup = new QButtonGroup(this);
+    m_trayIconBtnGroup->setExclusive(true);
+    m_trayIconPaths.clear();
+
+    const QStringList trayIconNames = {
+        QStringLiteral("apple-002-app2.png"),
+        QStringLiteral("apple-003-apple-1-copy.png"),
+        QStringLiteral("apple-004-apple-2.png"),
+        QStringLiteral("apple-005-game.png"),
+        QStringLiteral("apple-006-apple-3.png"),
+        QStringLiteral("apple-007-player.png"),
+        QStringLiteral("apple-008-apple-4.png"),
+        QStringLiteral("apple-009-apple-5.png"),
+        QStringLiteral("buffalo.png"),
+        QStringLiteral("chicken.png"),
+        QStringLiteral("crab.png"),
+        QStringLiteral("delicious.png"),
+        QStringLiteral("dog.png"),
+        QStringLiteral("dribbble.png"),
+        QStringLiteral("github2.png"),
+        QStringLiteral("google-drive.png"),
+        QStringLiteral("happy.png"),
+        QStringLiteral("instagram.png"),
+        QStringLiteral("lion.png"),
+        QStringLiteral("logo.png"),
+        QStringLiteral("telegram.png"),
+        QStringLiteral("wechat1.png"),
+        QStringLiteral("wps1.png"),
+        QStringLiteral("xiaomi1.png"),
+        QStringLiteral("yoga-ball.png"),
+        QStringLiteral("youtube.png")
+    };
+
+    auto addTrayIconCell = [&](const QString& resourcePath, const QString& tooltip) {
+        const int id = m_trayIconPaths.size();
+        m_trayIconPaths.append(resourcePath);
+
+        QWidget* cell = new QWidget(trayGrid);
+        QVBoxLayout* cl = new QVBoxLayout(cell);
+        cl->setContentsMargins(2, 2, 2, 2);
+        cl->setSpacing(2);
+        cl->setAlignment(Qt::AlignCenter);
+
+        QLabel* iconLabel = new QLabel(cell);
+        const QString imgPath = resourcePath.isEmpty()
+            ? QStringLiteral(":/icon.png")
+            : resourcePath;
+        QPixmap pm(imgPath);
+        iconLabel->setPixmap(pm.scaled(36, 36, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        iconLabel->setAlignment(Qt::AlignCenter);
+        iconLabel->setToolTip(tooltip);
+
+        QRadioButton* rb = new QRadioButton(cell); // no text
+        rb->setToolTip(tooltip);
+
+        cl->addWidget(iconLabel, 0, Qt::AlignCenter);
+        cl->addWidget(rb, 0, Qt::AlignCenter);
+
+        trayGridLayout->addWidget(cell, id / kCols, id % kCols);
+        m_trayIconBtnGroup->addButton(rb, id);
+    };
+
+    // First: default icon
+    addTrayIconCell(QString(), trText("settings.other.trayIconDefault"));
+    // Then all tray icons
+    for (const QString& name : trayIconNames) {
+        const QString resourcePath = QStringLiteral(":/tray_icons/") + name;
+        QString tip = name;
+        const int dot = tip.lastIndexOf(QLatin1Char('.'));
+        if (dot > 0) tip.truncate(dot);
+        addTrayIconCell(resourcePath, tip);
+    }
+
+    // Select the currently configured icon
+    {
+        const QString currentPath = m_cfg.trayIconPath;
+        int selectedId = 0;
+        for (int i = 0; i < m_trayIconPaths.size(); ++i) {
+            if (m_trayIconPaths[i] == currentPath) {
+                selectedId = i;
+                break;
+            }
+        }
+        QAbstractButton* btn = m_trayIconBtnGroup->button(selectedId);
+        if (btn) btn->setChecked(true);
+    }
+
+    trayScroll->setWidget(trayGrid);
+    trayLayout->addWidget(trayScroll);
+    root->addWidget(trayIconGroup);
+
+    root->addStretch();
     return w;
 }
 

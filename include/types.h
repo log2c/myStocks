@@ -226,6 +226,10 @@ struct AppConfig {
     bool floatingWindowDoubleClickToHide = true;
     double floatingWindowPaddingPx = static_cast<double>(kFloatingWindowPaddingPx);
 
+    // Empty string means use the default app icon (:/icon.png).
+    // Otherwise, a Qt resource path like ":/tray_icons/logo.png".
+    QString trayIconPath;
+
     QMap<int, int> columnWidths;
     QRect windowRect = QRect(120, 120, 760, 280);
 };
