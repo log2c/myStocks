@@ -251,7 +251,29 @@ QString marketBreadthLastUpdatedText(const MarketBreadthSnapshot& snapshot, cons
         return i18n::t("quote.noData", language);
     }
 
-    return sampleTs.toString(QStringLiteral("HH:mm"));
+    QDateTime nowTs = QDateTime::currentDateTimeUtc().toTimeZone(bjZone);
+    if (!nowTs.isValid()) {
+        nowTs = QDateTime::currentDateTime();
+    }
+
+    const qint64 elapsedSecsRaw = sampleTs.secsTo(nowTs);
+    const qint64 elapsedSecs = qMax<qint64>(0, elapsedSecsRaw);
+    if (elapsedSecs < 60) {
+        const qint64 seconds = qMax<qint64>(1, elapsedSecs);
+        return i18n::t("popup.marketBreadth.updatedSecondsAgoFmt", language)
+            .arg(QString::number(seconds));
+    }
+
+    if (elapsedSecs < 3600) {
+        const qint64 minutes = qMax<qint64>(1, elapsedSecs / 60);
+        return i18n::t("popup.marketBreadth.updatedMinutesAgoFmt", language)
+            .arg(QString::number(minutes));
+    }
+
+    const QString exactFormat = (sampleTs.date() == nowTs.date())
+        ? QStringLiteral("HH:mm:ss")
+        : QStringLiteral("MM-dd HH:mm:ss");
+    return sampleTs.toString(exactFormat);
 }
 
 QString marketBreadthTurnoverChangeText(double value, const QString& language) {
@@ -376,6 +398,19 @@ void setMacWindowIgnoresMouseEvents(const QWidget* widget, bool ignore) {
 
     auto sendBoolMessage = reinterpret_cast<void (*)(void*, SEL, bool)>(objc_msgSend);
     sendBoolMessage(nsWindow, sel_registerName("setIgnoresMouseEvents:"), ignore);
+}
+
+// Make the window appear in Mission Control / Exposé.
+// NSWindowCollectionBehaviorManaged (4) | NSWindowCollectionBehaviorMoveToActiveSpace (8)
+// | NSWindowCollectionBehaviorParticipatesInCycle (32)
+void setMacWindowCollectionBehaviorManaged(const QWidget* widget) {
+    void* nsWindow = macWindowHandleForWidget(widget);
+    if (!nsWindow) {
+        return;
+    }
+    constexpr unsigned long kBehavior = 4UL | 8UL | 32UL; // Managed | MoveToActiveSpace | ParticipatesInCycle
+    auto sendULMessage = reinterpret_cast<void (*)(void*, SEL, unsigned long)>(objc_msgSend);
+    sendULMessage(nsWindow, sel_registerName("setCollectionBehavior:"), kBehavior);
 }
 #endif
 
@@ -1754,7 +1789,7 @@ public:
     explicit MarketBreadthDetailPopup(QWidget* parent = nullptr)
         : QWidget(nullptr)
         , m_parentWindow(parent) {
-        setWindowFlags(Qt::FramelessWindowHint | Qt::Tool | Qt::WindowStaysOnTopHint);
+        setWindowFlags(Qt::FramelessWindowHint | Qt::Window | Qt::WindowStaysOnTopHint);
         setAttribute(Qt::WA_ShowWithoutActivating, true);
         setAttribute(Qt::WA_TransparentForMouseEvents, true);
         setAttribute(Qt::WA_TranslucentBackground, true);
@@ -1777,16 +1812,40 @@ public:
                 update();
             }
         });
+
+        m_lastUpdatedTextTimer = new QTimer(this);
+        m_lastUpdatedTextTimer->setInterval(1000);
+        connect(m_lastUpdatedTextTimer, &QTimer::timeout, this, [this]() {
+            if (!isVisible()) {
+                m_lastUpdatedTextTimer->stop();
+                return;
+            }
+
+            QRect dirtyRect = m_updatedTextRect;
+            if (m_refreshButtonRect.isValid()) {
+                dirtyRect = dirtyRect.isValid()
+                    ? dirtyRect.united(m_refreshButtonRect)
+                    : m_refreshButtonRect;
+            }
+            if (dirtyRect.isValid()) {
+                update(dirtyRect.adjusted(-3, -3, 3, 3));
+            } else {
+                update();
+            }
+        });
+    }
+
+    ~MarketBreadthDetailPopup() override {
+        if (s_visiblePopup == this) {
+            s_visiblePopup = nullptr;
+        }
     }
 
     void applyConfig(const AppConfig& cfg) {
         m_cfg = cfg;
         ensureHotRankProviders();
-        if (m_hotRankRiseProvider) {
-            m_hotRankRiseProvider->applyConfig(m_cfg);
-        }
-        if (m_hotRankFallProvider) {
-            m_hotRankFallProvider->applyConfig(m_cfg);
+        if (m_hotRankProvider) {
+            m_hotRankProvider->applyConfig(m_cfg);
         }
         setFont(effectiveFloatingWindowFont(cfg, font()));
         update();
@@ -1808,6 +1867,7 @@ public:
         const QRect& anchorRect,
         int baseWidth
     ) {
+        ensureSingleVisible();
         Q_UNUSED(baseWidth);
 
         m_snapshot = snapshot;
@@ -1868,8 +1928,9 @@ public:
         setGeometry(targetRect);
         if (!isVisible()) {
             show();
-            raise();
         }
+        startLastUpdatedTextTimer();
+        enforceAlwaysOnTop();
         requestHotRankData(false);
         requestHotRankData(true);
         update();
@@ -1881,6 +1942,7 @@ public:
         const QVector<HotRankItem>& hotConcepts,
         const QRect& referenceRect
     ) {
+        ensureSingleVisible();
         m_snapshot = snapshot;
         m_hotSectors = hotSectors;
         m_hotConcepts = hotConcepts;
@@ -1949,7 +2011,13 @@ public:
         if (!isVisible()) {
             show();
         }
-        raise();
+#if defined(Q_OS_MACOS)
+        // Override collection behavior set by Qt (WindowStaysOnTopHint causes
+        // NSWindowCollectionBehaviorTransient, hiding it from Mission Control).
+        setMacWindowCollectionBehaviorManaged(this);
+#endif
+        startLastUpdatedTextTimer();
+        enforceAlwaysOnTop();
         requestHotRankData(false);
         requestHotRankData(true);
         update();
@@ -1967,6 +2035,7 @@ public:
         if (!hotConcepts.isEmpty()) {
             m_hotConcepts = hotConcepts;
         }
+        startLastUpdatedTextTimer();
         update();
     }
 
@@ -1991,12 +2060,25 @@ public:
         m_dragging = false;
         m_dragOffset = QPoint();
         m_refreshButtonRect = QRect();
+        m_updatedTextRect = QRect();
         m_hotSectorTabRect = QRect();
         m_hotConceptTabRect = QRect();
+        stopLastUpdatedTextTimer();
         hide();
+        if (s_visiblePopup == this) {
+            s_visiblePopup = nullptr;
+        }
     }
 
 protected:
+    void hideEvent(QHideEvent* event) override {
+        QWidget::hideEvent(event);
+        stopLastUpdatedTextTimer();
+        if (s_visiblePopup == this) {
+            s_visiblePopup = nullptr;
+        }
+    }
+
     void mouseMoveEvent(QMouseEvent* event) override {
         if (!event || testAttribute(Qt::WA_TransparentForMouseEvents)) {
             QWidget::mouseMoveEvent(event);
@@ -2138,10 +2220,8 @@ protected:
             }
             if (shouldRefresh) {
                 startRefreshFeedback();
-                requestHotRankData(false, true, true);
-                requestHotRankData(false, false, true);
-                requestHotRankData(true, true, true);
-                requestHotRankData(true, false, true);
+                requestHotRankData(false, true);
+                requestHotRankData(true, true);
                 if (m_forceRefreshCallback) {
                     m_forceRefreshCallback();
                 }
@@ -2189,6 +2269,7 @@ protected:
 
     void paintEvent(QPaintEvent* event) override {
         Q_UNUSED(event);
+        m_updatedTextRect = QRect();
 
         {
             QPainter popupPainter(this);
@@ -2292,6 +2373,7 @@ protected:
                 m_refreshButtonRect = QRect();
                 updatedTextRect = updatedRect;
             }
+            m_updatedTextRect = updatedTextRect;
 
             popupPainter.setFont(titleFont);
             popupPainter.setPen(textColor);
@@ -2351,15 +2433,51 @@ protected:
                 const QPoint center = m_refreshButtonRect.center();
                 const int radius = qMax(4, (qMin(m_refreshButtonRect.width(), m_refreshButtonRect.height()) / 2) - 5);
                 const QRect arcRect(center.x() - radius, center.y() - radius, radius * 2, radius * 2);
+                constexpr qreal kRefreshArcStartDeg = 38.0;
+                constexpr qreal kRefreshArcSpanDeg = 286.0;
                 const int rotateDegrees = refreshAnimating
                     ? qRound(refreshAnimProgress * 320.0)
                     : 0;
-                popupPainter.drawArc(arcRect, (38 + rotateDegrees) * 16, 286 * 16);
+                popupPainter.save();
+                if (rotateDegrees != 0) {
+                    popupPainter.translate(center);
+                    popupPainter.rotate(rotateDegrees);
+                    popupPainter.translate(-center);
+                }
+                popupPainter.drawArc(
+                    arcRect,
+                    qRound(kRefreshArcStartDeg * 16.0),
+                    qRound(kRefreshArcSpanDeg * 16.0)
+                );
 
-                const QPoint arrowTip(center.x() + radius - 1, center.y() - radius / 2 - 1);
-                const int arrowArm = qMax(3, radius / 2 + 1);
-                popupPainter.drawLine(arrowTip, arrowTip + QPoint(-arrowArm, -1));
-                popupPainter.drawLine(arrowTip, arrowTip + QPoint(-1, arrowArm));
+                const auto pointAtAngle = [&](qreal distance, qreal angleDeg) {
+                    constexpr qreal kPi = 3.14159265358979323846;
+                    const qreal radians = angleDeg * kPi / 180.0;
+                    return QPointF(
+                        center.x() + distance * std::cos(radians),
+                        center.y() - distance * std::sin(radians)
+                    );
+                };
+
+                const qreal arrowTipAngle = kRefreshArcStartDeg;
+                const QPointF arrowTip = pointAtAngle(static_cast<qreal>(radius), arrowTipAngle);
+                // Clockwise tangent at the tip = arrowTipAngle - 90°
+                const qreal arrowDirDeg = arrowTipAngle - 90.0;
+                // Wing directions: opposite of arrow direction ± spread
+                constexpr qreal kPi2 = 3.14159265358979323846;
+                const qreal armLen = qMax<qreal>(3.0, static_cast<qreal>(radius) * 0.52);
+                const qreal backDeg = arrowDirDeg + 180.0;
+                constexpr qreal arrowSpreadDeg = 28.0;
+                const qreal wA_rad = (backDeg + arrowSpreadDeg) * kPi2 / 180.0;
+                const qreal wB_rad = (backDeg - arrowSpreadDeg) * kPi2 / 180.0;
+                // Offset from tip (same coord convention: cos for x, -sin for y)
+                const QPointF arrowWingA(arrowTip.x() + armLen * std::cos(wA_rad),
+                                         arrowTip.y() - armLen * std::sin(wA_rad));
+                const QPointF arrowWingB(arrowTip.x() + armLen * std::cos(wB_rad),
+                                         arrowTip.y() - armLen * std::sin(wB_rad));
+                popupPainter.drawLine(arrowTip, arrowWingA);
+                popupPainter.drawLine(arrowTip, arrowWingB);
+                popupPainter.restore();
             }
 
             if (!testAttribute(Qt::WA_TransparentForMouseEvents)) {
@@ -2614,8 +2732,8 @@ protected:
             }
 
             const QRect noteInner = noteCard.adjusted(12, 10, -12, -12);
-            const bool hasSectorData = !m_hotSectors.isEmpty();
-            const bool hasConceptData = !m_hotConcepts.isEmpty();
+            const bool hasSectorData = !m_hotSectorsRanked.isEmpty() || !m_hotSectors.isEmpty();
+            const bool hasConceptData = !m_hotConceptsRanked.isEmpty() || !m_hotConcepts.isEmpty();
             const bool useConceptData = [this, hasSectorData, hasConceptData]() {
                 switch (m_hotRankTabMode) {
                 case HotRankTabMode::Sector:
@@ -2627,12 +2745,9 @@ protected:
                     return !hasSectorData && hasConceptData;
                 }
             }();
-            const QVector<HotRankItem>& risingSource = useConceptData
-                ? (!m_hotConceptsRise.isEmpty() ? m_hotConceptsRise : m_hotConcepts)
-                : (!m_hotSectorsRise.isEmpty() ? m_hotSectorsRise : m_hotSectors);
-            const QVector<HotRankItem>& fallingSource = useConceptData
-                ? (!m_hotConceptsFall.isEmpty() ? m_hotConceptsFall : m_hotConcepts)
-                : (!m_hotSectorsFall.isEmpty() ? m_hotSectorsFall : m_hotSectors);
+            const QVector<HotRankItem>& rankedSource = useConceptData
+                ? (!m_hotConceptsRanked.isEmpty() ? m_hotConceptsRanked : m_hotConcepts)
+                : (!m_hotSectorsRanked.isEmpty() ? m_hotSectorsRanked : m_hotSectors);
 
             QFont tabFont = bodyFont;
             tabFont.setBold(true);
@@ -2694,37 +2809,27 @@ protected:
 
             QVector<HotRankItem> risingItems;
             QVector<HotRankItem> fallingItems;
-            risingItems.reserve(risingSource.size());
-            fallingItems.reserve(fallingSource.size());
-            for (const HotRankItem& item : risingSource) {
-                if (!std::isfinite(item.pct)) {
-                    continue;
-                }
-                if (item.pct > 0.0) {
+            if (useConceptData) {
+                risingItems.reserve(rankedSource.size());
+                for (const HotRankItem& item : rankedSource) {
+                    if (!std::isfinite(item.pct) || item.pct <= 0.0) {
+                        continue;
+                    }
                     risingItems.push_back(item);
                 }
-            }
-            for (const HotRankItem& item : fallingSource) {
-                if (!std::isfinite(item.pct)) {
-                    continue;
+            } else {
+                const int displayCount = 4;
+                const int totalRanked = rankedSource.size();
+                const int topCount = qMin(displayCount, totalRanked);
+                const int bottomCount = qMin(displayCount, totalRanked);
+                risingItems.reserve(topCount);
+                fallingItems.reserve(bottomCount);
+                for (int i = 0; i < topCount; ++i) {
+                    risingItems.push_back(rankedSource.at(i));
                 }
-                if (item.pct < 0.0) {
-                    fallingItems.push_back(item);
+                for (int i = 0; i < bottomCount; ++i) {
+                    fallingItems.push_back(rankedSource.at(totalRanked - 1 - i));
                 }
-            }
-
-            std::sort(risingItems.begin(), risingItems.end(), [](const HotRankItem& lhs, const HotRankItem& rhs) {
-                return lhs.pct > rhs.pct;
-            });
-            std::sort(fallingItems.begin(), fallingItems.end(), [](const HotRankItem& lhs, const HotRankItem& rhs) {
-                return lhs.pct < rhs.pct;
-            });
-
-            if (risingItems.size() > 4) {
-                risingItems.resize(4);
-            }
-            if (fallingItems.size() > 4) {
-                fallingItems.resize(4);
             }
 
             const auto formatHotPct = [](double pct) {
@@ -2797,7 +2902,8 @@ protected:
             );
 
             auto drawRankColumn = [&](const QRect& columnRect,
-                                      const QVector<HotRankItem>& sortedItems) {
+                                      const QVector<HotRankItem>& sortedItems,
+                                      int maxRows) {
                 if (columnRect.width() <= 8 || columnRect.height() <= 8) {
                     return;
                 }
@@ -2813,7 +2919,7 @@ protected:
                     qMax(0, columnRect.bottom() - (columnRect.top() + sectionTitleHeight + innerGap + columnHeaderHeight))
                 );
 
-                const int visibleRows = qMin(4, sortedItems.size());
+                const int visibleRows = qMin(qMax(1, maxRows), sortedItems.size());
 
                 if (visibleRows <= 0) {
                     popupPainter.setFont(bodyFont);
@@ -2908,14 +3014,12 @@ protected:
                 }
             };
 
-            drawRankColumn(
-                riseSectionRect,
-                risingItems
-            );
-            drawRankColumn(
-                fallSectionRect,
-                fallingItems
-            );
+            if (useConceptData) {
+                drawRankColumn(rankArea, risingItems, 8);
+            } else {
+                drawRankColumn(riseSectionRect, risingItems, 4);
+                drawRankColumn(fallSectionRect, fallingItems, 4);
+            }
 
             const int rightGap = 12;
             const int maxDistributionCardHeight = qMax(160, rightRect.height() - rightGap - 120);
@@ -3804,109 +3908,112 @@ private:
         return nowMs < m_refreshFeedbackUntilMs;
     }
 
+    void startLastUpdatedTextTimer() {
+        if (!isVisible() || !m_lastUpdatedTextTimer) {
+            return;
+        }
+        if (!m_lastUpdatedTextTimer->isActive()) {
+            m_lastUpdatedTextTimer->start();
+        }
+    }
+
+    void stopLastUpdatedTextTimer() {
+        if (m_lastUpdatedTextTimer) {
+            m_lastUpdatedTextTimer->stop();
+        }
+    }
+
+    void ensureSingleVisible() {
+        if (s_visiblePopup && s_visiblePopup != this) {
+            s_visiblePopup->hidePopup();
+        }
+        s_visiblePopup = this;
+    }
+
+    void enforceAlwaysOnTop() {
+#ifdef WIN32
+        const HWND hwnd = reinterpret_cast<HWND>(winId());
+        if (hwnd) {
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING
+            );
+        }
+#endif
+        raise();
+    }
+
     void ensureHotRankProviders() {
-        if (m_hotRankRiseProvider && m_hotRankFallProvider) {
+        if (m_hotRankProvider) {
             return;
         }
 
-        if (!m_hotRankRiseProvider) {
-            m_hotRankRiseProvider = new EastMoneyHotRankProvider(this);
-            m_hotRankRiseProvider->applyConfig(m_cfg);
+        m_hotRankProvider = new EastMoneyHotRankProvider(this);
+        m_hotRankProvider->applyConfig(m_cfg);
 
-            connect(
-                m_hotRankRiseProvider,
-                &EastMoneyHotRankProvider::hotSectorsReady,
-                this,
-                [this](const QVector<HotRankItem>& items) {
-                    m_hotSectorsRise = items;
-                    update();
+        connect(
+            m_hotRankProvider,
+            &EastMoneyHotRankProvider::hotSectorsReady,
+            this,
+            [this](const QVector<HotRankItem>& items) {
+                m_hotSectorsRanked = items;
+                update();
+            }
+        );
+        connect(
+            m_hotRankProvider,
+            &EastMoneyHotRankProvider::hotConceptsReady,
+            this,
+            [this](const QVector<HotRankItem>& items) {
+                m_hotConceptsRanked = items;
+                update();
+            }
+        );
+        connect(
+            m_hotRankProvider,
+            &EastMoneyHotRankProvider::error,
+            this,
+            [this](const QString& message) {
+                const QString trimmed = message.trimmed();
+                if (trimmed.isEmpty() || trimmed == m_lastHotRankError) {
+                    return;
                 }
-            );
-            connect(
-                m_hotRankRiseProvider,
-                &EastMoneyHotRankProvider::hotConceptsReady,
-                this,
-                [this](const QVector<HotRankItem>& items) {
-                    m_hotConceptsRise = items;
-                    update();
-                }
-            );
-            connect(
-                m_hotRankRiseProvider,
-                &EastMoneyHotRankProvider::error,
-                this,
-                [this](const QString& message) {
-                    const QString trimmed = message.trimmed();
-                    if (trimmed.isEmpty() || trimmed == m_lastHotRankErrorRise) {
-                        return;
-                    }
-                    m_lastHotRankErrorRise = trimmed;
-                    qInfo() << "[MarketBreadthPopup] hot rank rise request error:" << trimmed;
-                }
-            );
-        }
-
-        if (!m_hotRankFallProvider) {
-            m_hotRankFallProvider = new EastMoneyHotRankProvider(this);
-            m_hotRankFallProvider->applyConfig(m_cfg);
-
-            connect(
-                m_hotRankFallProvider,
-                &EastMoneyHotRankProvider::hotSectorsReady,
-                this,
-                [this](const QVector<HotRankItem>& items) {
-                    m_hotSectorsFall = items;
-                    update();
-                }
-            );
-            connect(
-                m_hotRankFallProvider,
-                &EastMoneyHotRankProvider::hotConceptsReady,
-                this,
-                [this](const QVector<HotRankItem>& items) {
-                    m_hotConceptsFall = items;
-                    update();
-                }
-            );
-            connect(
-                m_hotRankFallProvider,
-                &EastMoneyHotRankProvider::error,
-                this,
-                [this](const QString& message) {
-                    const QString trimmed = message.trimmed();
-                    if (trimmed.isEmpty() || trimmed == m_lastHotRankErrorFall) {
-                        return;
-                    }
-                    m_lastHotRankErrorFall = trimmed;
-                    qInfo() << "[MarketBreadthPopup] hot rank fall request error:" << trimmed;
-                }
-            );
-        }
+                m_lastHotRankError = trimmed;
+                qInfo() << "[MarketBreadthPopup] hot rank request error:" << trimmed;
+            }
+        );
     }
 
     int popupHotRankLimit(bool concept) const {
-        Q_UNUSED(concept);
-        return 4;
+        return concept ? 100 : 2000;
     }
 
-    void requestHotRankData(bool concept) {
-        requestHotRankData(concept, true, false);
-        requestHotRankData(concept, false, false);
-    }
-
-    void requestHotRankData(bool concept, bool rising, bool forceRefresh = false) {
+    void requestHotRankData(bool concept, bool forceRefresh = false) {
         ensureHotRankProviders();
-        EastMoneyHotRankProvider* provider = rising ? m_hotRankRiseProvider : m_hotRankFallProvider;
-        if (!provider) {
+        if (!m_hotRankProvider) {
             return;
         }
 
         const int limit = popupHotRankLimit(concept);
-        const QString order = rising ? QStringLiteral("desc") : QStringLiteral("asc");
         if (concept) {
-            provider->fetchHotConcepts(limit, QStringLiteral("pct"), order, forceRefresh);
+            m_hotRankProvider->fetchHotConcepts(
+                limit,
+                QStringLiteral("pct"),
+                QStringLiteral("desc"),
+                forceRefresh
+            );
         } else {
-            provider->fetchHotSectors(limit, QStringLiteral("pct"), order, forceRefresh);
+            m_hotRankProvider->fetchHotSectors(
+                limit,
+                QStringLiteral("pct"),
+                QStringLiteral("desc"),
+                forceRefresh
+            );
         }
     }
 
@@ -3916,18 +4023,15 @@ private:
     MarketBreadthSnapshot m_snapshot;
     QVector<HotRankItem> m_hotSectors;
     QVector<HotRankItem> m_hotConcepts;
-    QVector<HotRankItem> m_hotSectorsRise;
-    QVector<HotRankItem> m_hotSectorsFall;
-    QVector<HotRankItem> m_hotConceptsRise;
-    QVector<HotRankItem> m_hotConceptsFall;
-    EastMoneyHotRankProvider* m_hotRankRiseProvider = nullptr;
-    EastMoneyHotRankProvider* m_hotRankFallProvider = nullptr;
-    QString m_lastHotRankErrorRise;
-    QString m_lastHotRankErrorFall;
+    QVector<HotRankItem> m_hotSectorsRanked;
+    QVector<HotRankItem> m_hotConceptsRanked;
+    EastMoneyHotRankProvider* m_hotRankProvider = nullptr;
+    QString m_lastHotRankError;
     HotRankTabMode m_hotRankTabMode = HotRankTabMode::Auto;
     bool m_pinnedFromTray = false;
     QRect m_closeButtonRect;
     QRect m_refreshButtonRect;
+    QRect m_updatedTextRect;
     QRect m_hotSectorTabRect;
     QRect m_hotConceptTabRect;
     bool m_closeButtonHovered = false;
@@ -3940,10 +4044,14 @@ private:
     bool m_dragging = false;
     QPoint m_dragOffset;
     QTimer* m_refreshFeedbackTimer = nullptr;
+    QTimer* m_lastUpdatedTextTimer = nullptr;
     qint64 m_refreshFeedbackStartedMs = 0;
     qint64 m_refreshFeedbackUntilMs = 0;
     std::function<void()> m_forceRefreshCallback;
+    static MarketBreadthDetailPopup* s_visiblePopup;
 };
+
+MarketBreadthDetailPopup* MarketBreadthDetailPopup::s_visiblePopup = nullptr;
 
 namespace {
 
@@ -4718,6 +4826,20 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
     });
 }
 
+FloatingWindow::~FloatingWindow() {
+    if (m_timelinePopup) {
+        m_timelinePopup->hidePopup();
+        delete m_timelinePopup;
+        m_timelinePopup = nullptr;
+    }
+
+    if (m_marketBreadthDetailPopup) {
+        m_marketBreadthDetailPopup->hidePopup();
+        delete m_marketBreadthDetailPopup;
+        m_marketBreadthDetailPopup = nullptr;
+    }
+}
+
 bool FloatingWindow::isCursorInsideWindow() const {
     return frameGeometry().contains(QCursor::pos());
 }
@@ -4872,14 +4994,6 @@ void FloatingWindow::updateHoverPopupsForViewport(const QPoint& viewportPos) {
         return;
     }
 
-    const QModelIndex index = m_table->indexAt(viewportPos);
-    if (index.isValid() && m_model->rowKind(index.row()) == QuoteModel::RowKindMarketBreadth) {
-        hideTimelinePopup();
-        updateMarketBreadthDetailPopupForHover(viewportPos);
-        return;
-    }
-
-    hideMarketBreadthDetailPopup();
     updateTimelinePopupForHover(viewportPos);
 }
 

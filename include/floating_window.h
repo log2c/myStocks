@@ -17,6 +17,7 @@ class FloatingWindow : public QWidget {
     Q_OBJECT
 public:
     explicit FloatingWindow(QuoteModel* model, QWidget* parent = nullptr);
+    ~FloatingWindow() override;
 
     void applyConfig(const AppConfig& cfg);
     void toggleMarketBreadthDetailPopupFromTray();

@@ -851,17 +851,20 @@ void EastMoneyHotRankProvider::fetchHotList(
         : QStringLiteral("f62");
     const QString fs = concept
         ? QStringLiteral("m:90+t:3")
-        : QStringLiteral("m:90+t:2");
+        : QStringLiteral("b:MK0878");
+    const int effectiveLimit = concept
+        ? qMin(100, qMax(1, limit))
+        : qMin(2000, qMax(1, limit));
 
     QUrl url(QStringLiteral("https://push2delay.eastmoney.com/api/qt/clist/get"));
     QUrlQuery query;
     query.addQueryItem(QStringLiteral("pn"), QStringLiteral("1"));
-    query.addQueryItem(QStringLiteral("pz"), QString::number(qMax(1, limit)));
+    query.addQueryItem(QStringLiteral("pz"), QString::number(effectiveLimit));
     query.addQueryItem(
         QStringLiteral("po"),
         normalizedSortOrder == QLatin1String("asc") ? QStringLiteral("0") : QStringLiteral("1")
     );
-    query.addQueryItem(QStringLiteral("np"), QStringLiteral("1"));
+    query.addQueryItem(QStringLiteral("np"), QStringLiteral("3"));
     query.addQueryItem(QStringLiteral("fltt"), QStringLiteral("2"));
     query.addQueryItem(QStringLiteral("invt"), QStringLiteral("2"));
     query.addQueryItem(QStringLiteral("fid"), fid);
