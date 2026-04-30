@@ -1,0 +1,31 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "MyStocks: Debug (dev-debug)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/dev-debug/MyStocks.app/Contents/MacOS/MyStocks",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [],
+      "externalConsole": false,
+      "MIMode": "lldb",
+      "preLaunchTask": "CMake: Prepare (dev-debug)"
+    },
+    {
+      "name": "MyStocks: Debug (dev-release)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build/dev-release/MyStocks.app/Contents/MacOS/MyStocks",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${workspaceFolder}",
+      "environment": [],
+      "externalConsole": false,
+      "MIMode": "lldb",
+      "preLaunchTask": "CMake: Prepare (dev-release)"
+    }
+  ]
+}

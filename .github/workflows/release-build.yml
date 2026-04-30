@@ -1,0 +1,144 @@
+name: Build Release (macOS + Windows)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-release:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact_name: MyStocks-macos-release
+            artifact_platform: macos
+          - os: windows-latest
+            artifact_name: MyStocks-windows-release
+            artifact_platform: windows
+            qt_arch: win64_msvc2019_64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set artifact filename
+        shell: bash
+        run: |
+          echo "ARTIFACT_FILE=MyStocks-${{ matrix.artifact_platform }}-release-${{ github.ref_name }}.zip" >> "$GITHUB_ENV"
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.2'
+          arch: ${{ matrix.qt_arch }}
+          cache: true
+
+      - name: Setup MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure (Release)
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cmake -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DQt6_DIR="${Qt6_DIR}" \
+              -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          else
+            cmake -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DQt6_DIR="${Qt6_DIR}"
+          fi
+
+      - name: Build (Release)
+        shell: bash
+        run: |
+          cmake --build build --config Release --parallel
+
+      - name: Package macOS bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP_PATH="build/MyStocks.app"
+          if [[ ! -d "$APP_PATH" && -d "build/Release/MyStocks.app" ]]; then
+            APP_PATH="build/Release/MyStocks.app"
+          fi
+
+          if [[ ! -d "$APP_PATH" ]]; then
+            echo "MyStocks.app not found"
+            exit 1
+          fi
+
+          macdeployqt "$APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "${{ env.ARTIFACT_FILE }}"
+
+      - name: Package Windows bundle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $exePath = "build/MyStocks.exe"
+          if (!(Test-Path $exePath) -and (Test-Path "build/Release/MyStocks.exe")) {
+            $exePath = "build/Release/MyStocks.exe"
+          }
+
+          if (!(Test-Path $exePath)) {
+            throw "MyStocks.exe not found"
+          }
+
+          $bundleDir = "build/windows-bundle"
+          if (Test-Path $bundleDir) {
+            Remove-Item -Recurse -Force $bundleDir
+          }
+
+          New-Item -ItemType Directory -Path $bundleDir | Out-Null
+
+          $bundleExe = Join-Path $bundleDir "MyStocks.exe"
+          Copy-Item -Path $exePath -Destination $bundleExe -Force
+
+          if (Test-Path "data.yaml") {
+            Copy-Item -Path "data.yaml" -Destination (Join-Path $bundleDir "data.yaml") -Force
+          }
+
+          windeployqt --release --no-translations --no-compiler-runtime --dir $bundleDir $bundleExe
+          Compress-Archive -Path "$bundleDir/*" -DestinationPath "${{ env.ARTIFACT_FILE }}" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ env.ARTIFACT_FILE }}
+          compression-level: 9
+          if-no-files-found: error
+
+  create-release:
+    needs: build-release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MyStocks-macos-release
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MyStocks-windows-release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: myStocks ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: |
+            MyStocks-macos-release-${{ github.ref_name }}.zip
+            MyStocks-windows-release-${{ github.ref_name }}.zip

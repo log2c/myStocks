@@ -1,0 +1,100 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "CMake: Configure (dev-debug)",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--preset",
+        "dev-debug"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: Build (dev-debug)",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--build",
+        "--preset",
+        "dev-debug",
+        "-j"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [
+        "$gcc"
+      ]
+    },
+    {
+      "label": "CMake: Configure (dev-release)",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--preset",
+        "dev-release"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: Build (dev-release)",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--build",
+        "--preset",
+        "dev-release",
+        "-j"
+      ],
+      "problemMatcher": [
+        "$gcc"
+      ]
+    },
+    {
+      "label": "CMake: Prepare (dev-debug)",
+      "type": "shell",
+      "command": "true",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "CMake: Configure (dev-debug)",
+        "CMake: Build (dev-debug)"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: Prepare (dev-release)",
+      "type": "shell",
+      "command": "true",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "CMake: Configure (dev-release)",
+        "CMake: Build (dev-release)"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Run: MyStocks (dev-debug)",
+      "type": "shell",
+      "command": "${workspaceFolder}/build/dev-debug/MyStocks.app/Contents/MacOS/MyStocks",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "CMake: Configure (dev-debug)",
+        "CMake: Build (dev-debug)"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "One Click: Configure + Build + Run",
+      "type": "shell",
+      "command": "true",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "Run: MyStocks (dev-debug)"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}
