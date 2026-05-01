@@ -141,3 +141,28 @@ private:
     bool m_turnoverDone = false;
     QStringList m_pendingErrors;
 };
+
+class EastMoneyIndexQuoteProvider : public QObject {
+    Q_OBJECT
+public:
+    explicit EastMoneyIndexQuoteProvider(QObject* parent = nullptr);
+
+    void applyConfig(const AppConfig& cfg);
+    void fetch(bool forceRefresh = false);
+
+signals:
+    void dataReady(const QVector<IndexQuoteItem>& items);
+    void error(const QString& message);
+
+private:
+    void handleResponse(const QByteArray& body, const QString& errorText);
+
+    QString m_userAgent = defaultChrome100UserAgent();
+    QNetworkProxy m_proxy = QNetworkProxy(QNetworkProxy::NoProxy);
+    QNetworkAccessManager m_nam;
+    QNetworkReply* m_reply = nullptr;
+    QVector<IndexQuoteItem> m_cachedItems;
+    qint64 m_cacheExpiresAtMs = 0;
+    bool m_cacheValid = false;
+    QString m_lastError;
+};

@@ -9,6 +9,7 @@
 #include <functional>
 
 class EastMoneyHotRankProvider;
+class EastMoneyIndexQuoteProvider;
 
 class MarketBreadthDetailWindow : public QWidget {
 public:
@@ -50,15 +51,18 @@ private:
         Concept = 2,
     };
 
+    void triggerPopupRefresh(bool withFeedback);
     void startRefreshFeedback();
     bool isRefreshFeedbackActive(qint64* nowMsOut = nullptr) const;
-    void startLastUpdatedTextTimer();
-    void stopLastUpdatedTextTimer();
+    void startAutoRefreshTimer();
+    void stopAutoRefreshTimer();
     void ensureSingleVisible();
     void enforceAlwaysOnTop();
     void ensureHotRankProviders();
+    void ensureIndexQuoteProvider();
     int popupHotRankLimit(bool concept) const;
     void requestHotRankData(bool concept, bool forceRefresh = false);
+    void requestIndexQuoteData(bool forceRefresh = false);
 
     QWidget* m_parentWindow = nullptr;
     AppConfig m_cfg;
@@ -69,6 +73,8 @@ private:
     QVector<HotRankItem> m_hotSectorsRanked;
     QVector<HotRankItem> m_hotConceptsRanked;
     EastMoneyHotRankProvider* m_hotRankProvider = nullptr;
+    EastMoneyIndexQuoteProvider* m_indexQuoteProvider = nullptr;
+    QVector<IndexQuoteItem> m_indexQuotes;
     QString m_lastHotRankError;
     HotRankTabMode m_hotRankTabMode = HotRankTabMode::Auto;
     bool m_pinnedFromTray = false;
@@ -87,7 +93,7 @@ private:
     bool m_dragging = false;
     QPoint m_dragOffset;
     QTimer* m_refreshFeedbackTimer = nullptr;
-    QTimer* m_lastUpdatedTextTimer = nullptr;
+    QTimer* m_autoRefreshTimer = nullptr;
     qint64 m_refreshFeedbackStartedMs = 0;
     qint64 m_refreshFeedbackUntilMs = 0;
     std::function<void()> m_forceRefreshCallback;
