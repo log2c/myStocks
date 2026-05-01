@@ -12,5 +12,8 @@ inline constexpr auto kLegacyConfigPrefix = "general/";
 inline constexpr auto kWatchIndexesKey = "watch/indexes";
 inline constexpr qint64 kNetworkCacheTtlSecs = 30;
 inline constexpr qint64 kNetworkCacheTtlMs = kNetworkCacheTtlSecs * 1000;
+inline constexpr qint64 kMarketBreadthPopupAutoRefreshDelayMs = 1000;
+inline constexpr qint64 kMarketBreadthPopupAutoRefreshIntervalMs =
+    kNetworkCacheTtlMs + kMarketBreadthPopupAutoRefreshDelayMs;
 
 } // namespace app_constants

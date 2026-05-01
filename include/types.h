@@ -65,6 +65,7 @@ struct MarketBreadthSnapshot {
     int downCount = 0;
     int limitUpCount = 0;
     int limitDownCount = 0;
+    qint64 lastUpdatedAtMs = 0;
     bool overviewValid = false;
     bool breadthValid = false;
     QVector<MarketBreadthDistributionItem> distribution;

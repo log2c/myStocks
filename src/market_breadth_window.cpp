@@ -97,16 +97,12 @@ double estimateAshareFullDayTurnover(const MarketBreadthSnapshot& snapshot) {
 }
 
 QString marketBreadthLastUpdatedText(const MarketBreadthSnapshot& snapshot, const QString& language) {
-    if (snapshot.overviewTimeline.isEmpty()) {
-        return i18n::t("quote.noData", language);
-    }
-
-    const qint64 timestampMs = snapshot.overviewTimeline.last().timestampMs;
+    const QTimeZone bjZone("Asia/Shanghai");
+    const qint64 timestampMs = snapshot.lastUpdatedAtMs;
     if (timestampMs <= 0) {
         return i18n::t("quote.noData", language);
     }
 
-    const QTimeZone bjZone("Asia/Shanghai");
     QDateTime sampleTs = QDateTime::fromMSecsSinceEpoch(timestampMs, bjZone);
     if (!sampleTs.isValid()) {
         sampleTs = QDateTime::fromMSecsSinceEpoch(timestampMs);
@@ -119,21 +115,6 @@ QString marketBreadthLastUpdatedText(const MarketBreadthSnapshot& snapshot, cons
     if (!nowTs.isValid()) {
         nowTs = QDateTime::currentDateTime();
     }
-
-    const qint64 elapsedSecsRaw = sampleTs.secsTo(nowTs);
-    const qint64 elapsedSecs = qMax<qint64>(0, elapsedSecsRaw);
-    if (elapsedSecs < 60) {
-        const qint64 seconds = qMax<qint64>(1, elapsedSecs);
-        return i18n::t("popup.marketBreadth.updatedSecondsAgoFmt", language)
-            .arg(QString::number(seconds));
-    }
-
-    if (elapsedSecs < 3600) {
-        const qint64 minutes = qMax<qint64>(1, elapsedSecs / 60);
-        return i18n::t("popup.marketBreadth.updatedMinutesAgoFmt", language)
-            .arg(QString::number(minutes));
-    }
-
     const QString exactFormat = (sampleTs.date() == nowTs.date())
         ? QStringLiteral("HH:mm:ss")
         : QStringLiteral("MM-dd HH:mm:ss");
@@ -281,25 +262,16 @@ MarketBreadthDetailWindow* MarketBreadthDetailWindow::s_visiblePopup = nullptr;
         }
     });
 
-    m_lastUpdatedTextTimer = new QTimer(this);
-    m_lastUpdatedTextTimer->setInterval(1000);
-    connect(m_lastUpdatedTextTimer, &QTimer::timeout, this, [this]() {
+    m_autoRefreshTimer = new QTimer(this);
+    m_autoRefreshTimer->setInterval(
+        static_cast<int>(app_constants::kMarketBreadthPopupAutoRefreshIntervalMs)
+    );
+    connect(m_autoRefreshTimer, &QTimer::timeout, this, [this]() {
         if (!isVisible()) {
-            m_lastUpdatedTextTimer->stop();
+            stopAutoRefreshTimer();
             return;
         }
-
-        QRect dirtyRect = m_updatedTextRect;
-        if (m_refreshButtonRect.isValid()) {
-            dirtyRect = dirtyRect.isValid()
-                ? dirtyRect.united(m_refreshButtonRect)
-                : m_refreshButtonRect;
-        }
-        if (dirtyRect.isValid()) {
-            update(dirtyRect.adjusted(-3, -3, 3, 3));
-        } else {
-            update();
-        }
+        triggerPopupRefresh(false);
     });
 }
 
@@ -416,7 +388,7 @@ void  MarketBreadthDetailWindow::showCenteredForSnapshot(
     // NSWindowCollectionBehaviorTransient, hiding it from Mission Control).
     setMacWindowCollectionBehaviorManaged(this);
 #endif
-    startLastUpdatedTextTimer();
+    startAutoRefreshTimer();
     enforceAlwaysOnTop();
     requestHotRankData(false);
     requestHotRankData(true);
@@ -438,7 +410,6 @@ void  MarketBreadthDetailWindow::refreshSnapshot(
         m_hotConcepts = hotConcepts;
     }
     requestIndexQuoteData();
-    startLastUpdatedTextTimer();
     update();
 }
 
@@ -468,7 +439,7 @@ void  MarketBreadthDetailWindow::hidePopup() {
     m_updatedTextRect = QRect();
     m_hotSectorTabRect = QRect();
     m_hotConceptTabRect = QRect();
-    stopLastUpdatedTextTimer();
+    stopAutoRefreshTimer();
     hide();
     if (s_visiblePopup == this) {
         s_visiblePopup = nullptr;
@@ -478,7 +449,7 @@ void  MarketBreadthDetailWindow::hidePopup() {
 
 void  MarketBreadthDetailWindow::hideEvent(QHideEvent* event) {
     QWidget::hideEvent(event);
-    stopLastUpdatedTextTimer();
+    stopAutoRefreshTimer();
     if (s_visiblePopup == this) {
         s_visiblePopup = nullptr;
     }
@@ -628,13 +599,7 @@ void  MarketBreadthDetailWindow::mouseReleaseEvent(QMouseEvent* event) {
             update(m_refreshButtonRect.adjusted(-2, -2, 2, 2));
         }
         if (shouldRefresh) {
-            startRefreshFeedback();
-            requestHotRankData(false, true);
-            requestHotRankData(true, true);
-            requestIndexQuoteData(true);
-            if (m_forceRefreshCallback) {
-                m_forceRefreshCallback();
-            }
+            triggerPopupRefresh(true);
             event->accept();
             return;
         }
@@ -2423,6 +2388,19 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
 }
 
 
+void  MarketBreadthDetailWindow::triggerPopupRefresh(bool withFeedback) {
+    if (withFeedback) {
+        startRefreshFeedback();
+    }
+    requestHotRankData(false, true);
+    requestHotRankData(true, true);
+    requestIndexQuoteData(true);
+    if (m_forceRefreshCallback) {
+        m_forceRefreshCallback();
+    }
+}
+
+
 void  MarketBreadthDetailWindow::startRefreshFeedback() {
     constexpr qint64 kRefreshFeedbackDurationMs = 600;
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
@@ -2446,19 +2424,19 @@ bool  MarketBreadthDetailWindow::isRefreshFeedbackActive(qint64* nowMsOut) const
 }
 
 
-void  MarketBreadthDetailWindow::startLastUpdatedTextTimer() {
-    if (!isVisible() || !m_lastUpdatedTextTimer) {
+void  MarketBreadthDetailWindow::startAutoRefreshTimer() {
+    if (!m_autoRefreshTimer) {
         return;
     }
-    if (!m_lastUpdatedTextTimer->isActive()) {
-        m_lastUpdatedTextTimer->start();
+    if (!m_autoRefreshTimer->isActive()) {
+        m_autoRefreshTimer->start();
     }
 }
 
 
-void  MarketBreadthDetailWindow::stopLastUpdatedTextTimer() {
-    if (m_lastUpdatedTextTimer) {
-        m_lastUpdatedTextTimer->stop();
+void  MarketBreadthDetailWindow::stopAutoRefreshTimer() {
+    if (m_autoRefreshTimer) {
+        m_autoRefreshTimer->stop();
     }
 }
 

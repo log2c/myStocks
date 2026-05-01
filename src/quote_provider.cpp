@@ -294,6 +294,13 @@ bool isFutureSecIdLike(const QString& rawCode) {
     return !normalizedFutureSecId(rawCode).isEmpty();
 }
 
+void markSnapshotUpdatedNow(MarketBreadthSnapshot* snapshot) {
+    if (!snapshot) {
+        return;
+    }
+    snapshot->lastUpdatedAtMs = qMax(snapshot->lastUpdatedAtMs, QDateTime::currentMSecsSinceEpoch());
+}
+
 QString normalizeHongKongIndexSecId(const QString& rawCode) {
     const QString code = rawCode.trimmed().toLower();
     if (code.isEmpty()) {
@@ -1449,6 +1456,9 @@ void AshareMarketBreadthProvider::fetch(bool forceRefresh) {
             errorMessage = QStringLiteral("market overview request failed: %1").arg(networkError);
         } else {
             errorMessage = parseMarketOverviewPayload(body, &m_pendingSnapshot);
+            if (errorMessage.isEmpty()) {
+                markSnapshotUpdatedNow(&m_pendingSnapshot);
+            }
         }
         if (!errorMessage.isEmpty()) {
             m_pendingErrors.push_back(errorMessage);
@@ -1502,6 +1512,9 @@ void AshareMarketBreadthProvider::fetch(bool forceRefresh) {
                 errorMessage = QStringLiteral("market distribution request failed: %1").arg(networkError);
             } else {
                 errorMessage = parseMarketDistributionPayload(body, &m_pendingSnapshot);
+                if (errorMessage.isEmpty()) {
+                    markSnapshotUpdatedNow(&m_pendingSnapshot);
+                }
             }
             if (!errorMessage.isEmpty()) {
                 m_pendingErrors.push_back(errorMessage);
@@ -1552,6 +1565,9 @@ void AshareMarketBreadthProvider::fetch(bool forceRefresh) {
             errorMessage = QStringLiteral("market turnover request failed: %1").arg(networkError);
         } else {
             errorMessage = parseMarketTurnoverPayload(body, &m_pendingSnapshot);
+            if (errorMessage.isEmpty()) {
+                markSnapshotUpdatedNow(&m_pendingSnapshot);
+            }
         }
         if (!errorMessage.isEmpty()) {
             m_pendingErrors.push_back(errorMessage);
