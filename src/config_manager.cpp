@@ -431,6 +431,10 @@ AppConfig ConfigManager::loadConfig() {
     cfg.downColor = s.value("ui/downColor", cfg.downColor).value<QColor>();
     cfg.flatColor = s.value("ui/flatColor", cfg.flatColor).value<QColor>();
     cfg.windowRect = s.value("ui/windowRect", cfg.windowRect).toRect();
+    cfg.marketBreadthWindowRect = s.value(
+        "ui/marketBreadthWindowRect",
+        cfg.marketBreadthWindowRect
+    ).toRect();
 
     for (int i = 0; i < ColCount; ++i) {
         cfg.visibleColumns[i] = s.value(
@@ -644,6 +648,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue("ui/floatingWindowPaddingPx", qMax(0.0, cfg.floatingWindowPaddingPx));
     s.setValue("ui/trayIconPath", cfg.trayIconPath);
     s.setValue("ui/windowRect", cfg.windowRect);
+    s.setValue("ui/marketBreadthWindowRect", cfg.marketBreadthWindowRect);
 
     for (int i = 0; i < ColCount; ++i) {
         s.setValue(QString("ui/columns/%1").arg(i), cfg.visibleColumns.value(i, true));

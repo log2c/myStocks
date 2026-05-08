@@ -21,6 +21,8 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QIcon>
+#include <QPainter>
+#include <QPixmap>
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
 #include <QHotkey>
 #endif
@@ -53,6 +55,26 @@ using watchlist_utils::watchCodeKey;
 QRect resetFloatingWindowRect() {
     const AppConfig defaultCfg;
     QRect rect = defaultCfg.windowRect;
+
+    QScreen* screen = QGuiApplication::primaryScreen();
+    if (!screen) {
+        return rect;
+    }
+
+    const QRect available = screen->availableGeometry();
+    if (!available.isValid()) {
+        return rect;
+    }
+
+    rect.setWidth(qMin(rect.width(), available.width()));
+    rect.setHeight(qMin(rect.height(), available.height()));
+    rect.moveLeft(available.left() + qMax(0, (available.width() - rect.width()) / 2));
+    rect.moveTop(available.top() + qMax(0, (available.height() - rect.height()) / 2));
+    return rect;
+}
+
+QRect resetMarketBreadthWindowRect() {
+    QRect rect(0, 0, kMarketBreadthPopupDefaultWidthPx, kMarketBreadthPopupDefaultHeightPx);
 
     QScreen* screen = QGuiApplication::primaryScreen();
     if (!screen) {
@@ -147,6 +169,13 @@ AppController::AppController(QObject* parent)
         refreshHotRanks(true);
         refreshMarketBreadth(true);
     });
+    m_window->setMarketBreadthDetailWatchlistCallbacks(
+        [this](const QString& code) { return isYamlWatchStockTracked(code); },
+        [this](const QString& code, const QString& name, bool add) {
+            return updateYamlWatchStock(code, name, add);
+        },
+        [this]() { reloadStocksFromYaml(); }
+    );
     m_window->setGeometry(m_cfg.windowRect);
     m_window->applyConfig(m_cfg);
     if (m_cfg.startupShowFloatingWindow) {
@@ -203,9 +232,7 @@ AppController::AppController(QObject* parent)
 
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() {
         qInfo() << "Application aboutToQuit. Persisting runtime config.";
-        if (m_window) {
-            m_cfg.windowRect = m_window->geometry();
-        }
+        captureRuntimeWindowGeometries(&m_cfg);
         ConfigManager::saveConfig(m_cfg);
     });
 
@@ -565,13 +592,29 @@ void AppController::toggleMarketBreadthDetailWindow() {
     m_window->toggleMarketBreadthDetailPopupFromTray();
 }
 
+void AppController::captureRuntimeWindowGeometries(AppConfig* cfg) const {
+    if (!cfg) {
+        return;
+    }
+
+    if (m_window) {
+        cfg->windowRect = m_window->geometry();
+        const QRect marketBreadthRect = m_window->marketBreadthDetailPopupGeometry();
+        if (marketBreadthRect.isValid()) {
+            cfg->marketBreadthWindowRect = marketBreadthRect;
+        }
+    }
+}
+
 void AppController::resetFloatingWindowPosition() {
     if (!m_window) {
         return;
     }
 
     m_cfg.windowRect = resetFloatingWindowRect();
+    m_cfg.marketBreadthWindowRect = resetMarketBreadthWindowRect();
     m_window->setGeometry(m_cfg.windowRect);
+    m_window->setMarketBreadthDetailPopupGeometry(m_cfg.marketBreadthWindowRect);
     m_window->show();
     m_window->raise();
     m_window->activateWindow();
@@ -651,6 +694,8 @@ void AppController::openSettings() {
             << "logEnabled:" << m_cfg.logEnabled << "->" << updatedCfg.logEnabled
             << "logLevel:" << m_cfg.logLevel << "->" << updatedCfg.logLevel;
 
+    captureRuntimeWindowGeometries(&updatedCfg);
+
     m_cfg = updatedCfg;
     m_resolvedLanguage = i18n::resolveLanguage(m_cfg.language);
     m_probeCheckedAt = QDateTime();
@@ -680,6 +725,13 @@ void AppController::openSettings() {
         refreshHotRanks(true);
         refreshMarketBreadth(true);
     });
+    m_window->setMarketBreadthDetailWatchlistCallbacks(
+        [this](const QString& code) { return isYamlWatchStockTracked(code); },
+        [this](const QString& code, const QString& name, bool add) {
+            return updateYamlWatchStock(code, name, add);
+        },
+        [this]() { reloadStocksFromYaml(); }
+    );
     m_window->move(windowPos);
     m_window->applyConfig(m_cfg);
     if (wasVisible) {
@@ -741,19 +793,6 @@ void AppController::reloadStocksFromYaml() {
     }
 
     const QVector<StockItem> loadedRaw = ConfigManager::loadStocksFromYaml(dataPath);
-    if (loadedRaw.isEmpty()) {
-        qWarning() << "Reload stocks failed: no valid stocks in" << dataPath;
-        if (m_tray) {
-            m_tray->showMessage(
-                i18n::t("app.name", m_resolvedLanguage),
-                i18n::t("reload.config.failed", m_resolvedLanguage),
-                QSystemTrayIcon::Warning,
-                2500
-            );
-        }
-        return;
-    }
-
     QStringList ignoredIndexes;
     const QVector<StockItem> loaded = filterYamlStocks(loadedRaw, &ignoredIndexes);
 
@@ -794,6 +833,62 @@ void AppController::reloadStocksFromYaml() {
             );
         }
     }
+}
+
+bool AppController::isYamlWatchStockTracked(const QString& code) const {
+    const QString normalizedCode = normalizeApiWatchCode(code);
+    if (normalizedCode.isEmpty() || isPredefinedIndexCode(normalizedCode)) {
+        return false;
+    }
+
+    const QString key = watchCodeKey(normalizedCode);
+    for (const StockItem& item : m_stocks) {
+        if (watchCodeKey(item.code) == key) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool AppController::updateYamlWatchStock(const QString& code, const QString& name, bool add) {
+    const QString dataPath = findDataYaml();
+    if (dataPath.isEmpty()) {
+        qWarning() << "Update YAML watch stock failed: data.yaml path not found.";
+        return false;
+    }
+
+    const QString normalizedCode = normalizeApiWatchCode(code);
+    if (normalizedCode.isEmpty() || isPredefinedIndexCode(normalizedCode)) {
+        qWarning() << "Update YAML watch stock failed: invalid code" << code;
+        return false;
+    }
+
+    QVector<StockItem> loaded = filterYamlStocks(ConfigManager::loadStocksFromYaml(dataPath));
+    const QString key = watchCodeKey(normalizedCode);
+    int existingIndex = -1;
+    for (int index = 0; index < loaded.size(); ++index) {
+        if (watchCodeKey(loaded.at(index).code) == key) {
+            existingIndex = index;
+            break;
+        }
+    }
+
+    if (add) {
+        if (existingIndex < 0) {
+            const QString normalizedName = name.trimmed().isEmpty() ? normalizedCode : name.trimmed();
+            loaded.push_back({normalizedCode, normalizedName});
+        }
+    } else if (existingIndex >= 0) {
+        loaded.removeAt(existingIndex);
+    }
+
+    const bool saved = ConfigManager::saveStocksToYaml(dataPath, loaded);
+    if (!saved) {
+        qWarning() << "Update YAML watch stock failed to save path=" << dataPath
+                   << "code=" << normalizedCode
+                   << "add=" << add;
+    }
+    return saved;
 }
 
 void AppController::refreshQuotes(bool force) {
@@ -865,8 +960,46 @@ void AppController::onProviderError(const QString& message) {
     m_lastTrayErrorMessage = text;
     m_lastTrayErrorAt = now;
 
-    if (m_tray) {
-        m_tray->showMessage(i18n::t("app.name", m_resolvedLanguage), text, QSystemTrayIcon::Warning, 2500);
+    showTrayErrorBadge();
+}
+
+void AppController::showTrayErrorBadge() {
+    if (!m_tray) {
+        return;
+    }
+
+    const QIcon baseIcon = m_trayBaseIcon.isNull() ? m_tray->icon() : m_trayBaseIcon;
+    if (baseIcon.isNull()) {
+        return;
+    }
+
+    const int sz = 32;
+    QPixmap pm(sz, sz);
+    pm.fill(Qt::transparent);
+    QPainter painter(&pm);
+    painter.setRenderHint(QPainter::Antialiasing);
+    baseIcon.paint(&painter, 0, 0, sz, sz);
+    const int badgeDiam = sz / 2;
+    painter.setBrush(Qt::red);
+    painter.setPen(Qt::NoPen);
+    painter.drawEllipse(sz - badgeDiam, 0, badgeDiam, badgeDiam);
+    painter.end();
+
+    m_tray->setIcon(QIcon(pm));
+
+    if (!m_trayErrorBadgeTimer) {
+        m_trayErrorBadgeTimer = new QTimer(this);
+        m_trayErrorBadgeTimer->setSingleShot(true);
+        connect(m_trayErrorBadgeTimer, &QTimer::timeout, this, [this]() {
+            restoreTrayIcon();
+        });
+    }
+    m_trayErrorBadgeTimer->start(app_constants::kTrayErrorBadgeDurationMs);
+}
+
+void AppController::restoreTrayIcon() {
+    if (m_tray && !m_trayBaseIcon.isNull()) {
+        m_tray->setIcon(m_trayBaseIcon);
     }
 }
 
@@ -895,6 +1028,7 @@ void AppController::setupTray() {
         icon = qApp->style()->standardIcon(QStyle::SP_DesktopIcon);
     }
 
+    m_trayBaseIcon = icon;
     m_tray = new QSystemTrayIcon(icon, this);
     QMenu* menu = new QMenu;
     QAction* toggleAction = menu->addAction(QString(), this, [this]() { toggleWindow(); });

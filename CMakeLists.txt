@@ -52,6 +52,7 @@ set(MYSTOCKS_SOURCES
     src/quote_model.cpp
     src/quote_provider.cpp
     src/settings_dialog.cpp
+    src/timeline_popup.cpp
     src/updater.cpp
     src/watchlist_utils.cpp
 )
@@ -70,6 +71,7 @@ set(MYSTOCKS_HEADERS
     include/quote_model.h
     include/quote_provider.h
     include/settings_dialog.h
+    include/timeline_popup.h
     include/types.h
     include/updater.h
     include/watchlist_utils.h
