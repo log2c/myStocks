@@ -109,6 +109,74 @@ private:
     bool m_hotConceptCacheValid = false;
 };
 
+class TonghuashunStockHeatProvider : public QObject {
+    Q_OBJECT
+public:
+    explicit TonghuashunStockHeatProvider(QObject* parent = nullptr);
+
+    void applyConfig(const AppConfig& cfg);
+    void fetchHourHotStocks(int limit, bool forceRefresh = false);
+    void fetchDayHotStocks(int limit, bool forceRefresh = false);
+
+signals:
+    void hourHotStocksReady(const QVector<HotRankItem>& items);
+    void dayHotStocksReady(const QVector<HotRankItem>& items);
+    void error(const QString& message);
+
+private:
+    void fetchHotStocks(const QString& periodType, int limit, bool forceRefresh);
+    void handleHotStocksResponse(
+        const QString& periodType,
+        const QByteArray& body,
+        const QString& errorText,
+        const QString& requestKey
+    );
+
+    QString m_userAgent = defaultChrome100UserAgent();
+    QNetworkProxy m_proxy = QNetworkProxy(QNetworkProxy::NoProxy);
+    QNetworkAccessManager m_nam;
+    QString m_lastError;
+    QNetworkReply* m_hourReply = nullptr;
+    QNetworkReply* m_dayReply = nullptr;
+    QVector<HotRankItem> m_cachedHourItems;
+    QVector<HotRankItem> m_cachedDayItems;
+    QString m_hourCacheRequestKey;
+    QString m_dayCacheRequestKey;
+    QString m_hourInFlightRequestKey;
+    QString m_dayInFlightRequestKey;
+    qint64 m_hourCacheExpiresAtMs = 0;
+    qint64 m_dayCacheExpiresAtMs = 0;
+    bool m_hourCacheValid = false;
+    bool m_dayCacheValid = false;
+};
+
+class EastMoneyHotRankDetailProvider : public QObject {
+    Q_OBJECT
+public:
+    explicit EastMoneyHotRankDetailProvider(QObject* parent = nullptr);
+
+    void applyConfig(const AppConfig& cfg);
+    void fetch(const QString& fs, int limit = 300, bool forceRefresh = false);
+
+signals:
+    void dataReady(const QString& fs, const QVector<HotRankDetailItem>& items);
+    void error(const QString& fs, const QString& message);
+
+private:
+    void handleResponse(const QString& fs, const QByteArray& body, const QString& errorText);
+
+    QString m_userAgent = defaultChrome100UserAgent();
+    QNetworkProxy m_proxy = QNetworkProxy(QNetworkProxy::NoProxy);
+    QNetworkAccessManager m_nam;
+    QNetworkReply* m_reply = nullptr;
+    QString m_inFlightFs;
+    QString m_cachedFs;
+    QVector<HotRankDetailItem> m_cachedItems;
+    qint64 m_cacheExpiresAtMs = 0;
+    bool m_cacheValid = false;
+    QString m_lastError;
+};
+
 class AshareMarketBreadthProvider : public QObject {
     Q_OBJECT
 public:

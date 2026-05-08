@@ -10,6 +10,8 @@
 #include <QVariantAnimation>
 #include <QWidget>
 
+#include <functional>
+
 class TimelineChartPopup;
 class MarketBreadthDetailWindow;
 
@@ -21,6 +23,13 @@ public:
 
     void applyConfig(const AppConfig& cfg);
     void toggleMarketBreadthDetailPopupFromTray();
+    QRect marketBreadthDetailPopupGeometry() const;
+    void setMarketBreadthDetailPopupGeometry(const QRect& rect);
+    void setMarketBreadthDetailWatchlistCallbacks(
+        std::function<bool(const QString&)> containsCallback,
+        std::function<bool(const QString&, const QString&, bool)> mutateCallback,
+        std::function<void()> reloadCallback
+    );
 
 signals:
     void forceRefreshRequested();

@@ -18,6 +18,8 @@ enum QuoteColumn {
 };
 
 inline constexpr int kFloatingWindowPaddingPx = 6;
+inline constexpr int kMarketBreadthPopupDefaultWidthPx = 860;
+inline constexpr int kMarketBreadthPopupDefaultHeightPx = 715;
 
 struct StockItem {
     QString code;
@@ -35,11 +37,29 @@ struct QuoteItem {
 struct HotRankItem {
     QString code;
     QString name;
+    QString detailFs;
+    QString watchCode;
     double pct = qQNaN();
+    double change = qQNaN();
     double mainNetInflow = qQNaN();
+    double yearPct = qQNaN();
+    double heat = qQNaN();
+    QStringList tags;
+};
+
+struct HotRankDetailItem {
+    QString code;
+    QString watchCode;
+    QString name;
+    double price = qQNaN();
+    double pct = qQNaN();
+    double marketCap = qQNaN();
+    double turnover = qQNaN();
+    double yearPct = qQNaN();
 };
 
 struct IndexQuoteItem {
+    QString code;
     QString displayName;
     double price = qQNaN();
     double change = qQNaN();
@@ -240,4 +260,5 @@ struct AppConfig {
 
     QMap<int, int> columnWidths;
     QRect windowRect = QRect(120, 120, 760, 280);
+    QRect marketBreadthWindowRect;
 };

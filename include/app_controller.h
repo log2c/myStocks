@@ -6,6 +6,7 @@
 #include <QDate>
 #include <QDateTime>
 #include <QHash>
+#include <QIcon>
 #include <QNetworkAccessManager>
 #include <QObject>
 #include <QString>
@@ -36,6 +37,8 @@ private:
     void reloadStocksFromYaml();
     void refreshQuotes(bool force = false);
     void onProviderError(const QString& message);
+    void showTrayErrorBadge();
+    void restoreTrayIcon();
     void setupTray();
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     void setupHotkey();
@@ -65,6 +68,9 @@ private:
     void refreshMarketBreadth(bool force = false);
     QString probeTradingDateText(const QByteArray& body) const;
     void updateTrayTooltip();
+    void captureRuntimeWindowGeometries(AppConfig* cfg) const;
+    bool isYamlWatchStockTracked(const QString& code) const;
+    bool updateYamlWatchStock(const QString& code, const QString& name, bool add);
 
 private:
     AppConfig m_cfg;
@@ -86,6 +92,8 @@ private:
     QTimer* m_hotRankTimer = nullptr;
     QTimer* m_marketBreadthTimer = nullptr;
     QSystemTrayIcon* m_tray = nullptr;
+    QIcon m_trayBaseIcon;
+    QTimer* m_trayErrorBadgeTimer = nullptr;
 
     QNetworkAccessManager m_probeNam;
     QDate m_probeDate;

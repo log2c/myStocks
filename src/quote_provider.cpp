@@ -3,6 +3,7 @@
 #include "app_constants.h"
 #include "network_logger.h"
 #include "network_utils.h"
+#include "watchlist_utils.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -31,6 +32,12 @@ SharedHotRankCacheEntry& sharedHotRankCache(bool concept) {
     static SharedHotRankCacheEntry sectorCache;
     static SharedHotRankCacheEntry conceptCache;
     return concept ? conceptCache : sectorCache;
+}
+
+SharedHotRankCacheEntry& sharedStockHeatCache(const QString& periodType) {
+    static SharedHotRankCacheEntry hourCache;
+    static SharedHotRankCacheEntry dayCache;
+    return periodType == QLatin1String("day") ? dayCache : hourCache;
 }
 
 namespace headers {
@@ -419,6 +426,35 @@ QVector<QJsonObject> extractDiffObjects(const QJsonValue& diffValue) {
     return out;
 }
 
+QStringList extractTonghuashunStockTags(const QJsonObject& row) {
+    QStringList tags;
+
+    const QJsonValue tagValue = row.value(QStringLiteral("tag"));
+    if (!tagValue.isObject()) {
+        return tags;
+    }
+
+    const QJsonObject tagObject = tagValue.toObject();
+    const QJsonArray conceptTags = tagObject.value(QStringLiteral("concept_tag")).toArray();
+    for (const QJsonValue& conceptValue : conceptTags) {
+        if (!conceptValue.isString()) {
+            continue;
+        }
+
+        const QString concept = conceptValue.toString().trimmed();
+        if (!concept.isEmpty() && !tags.contains(concept)) {
+            tags.push_back(concept);
+        }
+    }
+
+    const QString popularityTag = tagObject.value(QStringLiteral("popularity_tag")).toString().trimmed();
+    if (!popularityTag.isEmpty() && !tags.contains(popularityTag)) {
+        tags.push_back(popularityTag);
+    }
+
+    return tags;
+}
+
 const QVector<QPair<QString, QString>>& indexQuoteConfig() {
     static const QVector<QPair<QString, QString>> kConfig = {
         {QStringLiteral("1.000001"),   QStringLiteral("上证指数")},
@@ -428,10 +464,10 @@ const QVector<QPair<QString, QString>>& indexQuoteConfig() {
         {QStringLiteral("47.800005"),  QStringLiteral("A股均价")},
         {QStringLiteral("100.HSI"),    QStringLiteral("恒生指数")},
         {QStringLiteral("124.HSTECH"), QStringLiteral("恒生科技")},
-        {QStringLiteral("100.XIN9"),   QStringLiteral("富时A50")},
+        {QStringLiteral("104.CN00Y"),   QStringLiteral("富时中国A50")},
         {QStringLiteral("133.USDCNH"), QStringLiteral("美元/人民币")},
         {QStringLiteral("118.AUTD"),       QStringLiteral("黄金T+D")},
-        {QStringLiteral("100.NDX100"), QStringLiteral("纳斯达克")},
+        {QStringLiteral("100.NDX"), QStringLiteral("纳斯达克")},
         {QStringLiteral("100.SPX"),    QStringLiteral("标普500")},
         {QStringLiteral("100.N225"),   QStringLiteral("日经225")},
         {QStringLiteral("100.KS11"),   QStringLiteral("韩国KOSPI")},
@@ -896,7 +932,7 @@ void EastMoneyHotRankProvider::fetchHotList(
     query.addQueryItem(QStringLiteral("invt"), QStringLiteral("2"));
     query.addQueryItem(QStringLiteral("fid"), fid);
     query.addQueryItem(QStringLiteral("fs"), fs);
-    query.addQueryItem(QStringLiteral("fields"), QStringLiteral("f12,f14,f3,f62"));
+    query.addQueryItem(QStringLiteral("fields"), QStringLiteral("f12,f14,f3,f25,f62"));
     url.setQuery(query);
 
     QNetworkRequest req(url);
@@ -982,10 +1018,17 @@ void EastMoneyHotRankProvider::handleHotListResponse(
                     HotRankItem item;
                     item.code = row.value(QStringLiteral("f12")).toString().trimmed();
                     item.name = row.value(QStringLiteral("f14")).toString().trimmed();
+                    item.detailFs = item.code.isEmpty()
+                        ? QString()
+                        : QStringLiteral("b:%1").arg(item.code);
                     item.pct = normalizeEastMoneyPercent(
                         firstNumberFromObject(row, {QStringLiteral("f3")})
                     );
+                    item.change = firstNumberFromObject(row, {QStringLiteral("f4")});
                     item.mainNetInflow = firstNumberFromObject(row, {QStringLiteral("f62")});
+                    item.yearPct = normalizeEastMoneyPercent(
+                        firstNumberFromObject(row, {QStringLiteral("f25")})
+                    );
                     if (!item.code.isEmpty() && !item.name.isEmpty()) {
                         items.push_back(item);
                     }
@@ -1024,6 +1067,186 @@ void EastMoneyHotRankProvider::handleHotListResponse(
     } else {
         emit hotSectorsReady(items);
     }
+}
+
+EastMoneyHotRankDetailProvider::EastMoneyHotRankDetailProvider(QObject* parent)
+    : QObject(parent) {}
+
+void EastMoneyHotRankDetailProvider::applyConfig(const AppConfig& cfg) {
+    m_userAgent = network_utils::effectiveUserAgent(cfg);
+    m_proxy = network_utils::proxyFromConfig(cfg);
+    m_cacheValid = false;
+    m_cacheExpiresAtMs = 0;
+    m_cachedFs.clear();
+
+    if (m_reply) {
+        QNetworkReply* pendingReply = m_reply;
+        m_reply = nullptr;
+        pendingReply->abort();
+        pendingReply->deleteLater();
+    }
+    m_inFlightFs.clear();
+}
+
+void EastMoneyHotRankDetailProvider::fetch(const QString& fs, int limit, bool forceRefresh) {
+    const QString normalizedFs = fs.trimmed();
+    if (normalizedFs.isEmpty()) {
+        emit error(fs, QStringLiteral("eastmoney hot detail fs missing"));
+        return;
+    }
+
+    m_nam.setProxy(m_proxy);
+
+    const int effectiveLimit = qBound(1, limit, 1000);
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (!forceRefresh
+        && m_cacheValid
+        && m_cachedFs == normalizedFs
+        && nowMs < m_cacheExpiresAtMs) {
+        emit dataReady(normalizedFs, m_cachedItems);
+        return;
+    }
+
+    if (m_reply && !forceRefresh && m_inFlightFs == normalizedFs) {
+        return;
+    }
+
+    if (forceRefresh && m_reply) {
+        m_reply->setProperty("myStocksIgnoreAbort", true);
+        m_reply->abort();
+        m_reply = nullptr;
+        m_inFlightFs.clear();
+    }
+
+    m_inFlightFs = normalizedFs;
+
+    QUrl url(QStringLiteral("https://push2delay.eastmoney.com/api/qt/clist/get"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("pn"), QStringLiteral("1"));
+    query.addQueryItem(QStringLiteral("pz"), QString::number(effectiveLimit));
+    query.addQueryItem(QStringLiteral("po"), QStringLiteral("1"));
+    query.addQueryItem(QStringLiteral("np"), QStringLiteral("3"));
+    query.addQueryItem(QStringLiteral("fltt"), QStringLiteral("2"));
+    query.addQueryItem(QStringLiteral("invt"), QStringLiteral("2"));
+    query.addQueryItem(QStringLiteral("fid"), QStringLiteral("f3"));
+    query.addQueryItem(QStringLiteral("fs"), normalizedFs);
+    query.addQueryItem(QStringLiteral("fields"), QStringLiteral("f12,f13,f14,f2,f3,f6,f20,f25"));
+    url.setQuery(query);
+
+    QNetworkRequest req(url);
+    req.setRawHeader(headers::kUserAgent, m_userAgent.toUtf8());
+    req.setRawHeader(headers::kReferer, headers::kEastMoneyReferer);
+    req.setRawHeader(headers::kAccept, "*/*");
+    req.setRawHeader(headers::kConnection, "keep-alive");
+    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
+
+    const network_logger::RequestTrace trace = network_logger::logRequestStart(
+        QStringLiteral("eastmoney-hot-detail"),
+        QStringLiteral("GET"),
+        req,
+        m_proxy
+    );
+
+    m_reply = m_nam.get(req);
+    QNetworkReply* reply = m_reply;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, trace, normalizedFs]() {
+        if (reply == m_reply) {
+            m_reply = nullptr;
+        }
+        m_inFlightFs.clear();
+
+        if (reply->property("myStocksIgnoreAbort").toBool()) {
+            reply->deleteLater();
+            return;
+        }
+
+        const QString err = (reply->error() == QNetworkReply::NoError)
+            ? QString()
+            : reply->errorString();
+        const QByteArray body = reply->readAll();
+
+        network_logger::logRequestFinish(trace, reply, body.size(), body);
+
+        reply->deleteLater();
+        handleResponse(normalizedFs, body, err);
+    });
+}
+
+void EastMoneyHotRankDetailProvider::handleResponse(
+    const QString& fs,
+    const QByteArray& body,
+    const QString& errorText
+) {
+    QString errorMessage;
+    QVector<HotRankDetailItem> items;
+
+    if (!errorText.isEmpty()) {
+        errorMessage = QStringLiteral("eastmoney hot detail request failed: %1").arg(errorText);
+    } else {
+        QJsonParseError parseError;
+        const QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
+        if (parseError.error != QJsonParseError::NoError) {
+            errorMessage = QStringLiteral("eastmoney hot detail json parse error: %1")
+                .arg(parseError.errorString());
+        } else if (!doc.isObject()) {
+            errorMessage = QStringLiteral("eastmoney hot detail invalid payload");
+        } else {
+            const QJsonObject root = doc.object();
+            const int rc = root.value(QStringLiteral("rc")).toInt(0);
+            if (root.contains(QStringLiteral("rc")) && rc != 0) {
+                const QString rcMsg = firstNonEmptyStringFromObject(root, {"msg", "message"});
+                const QString suffix = rcMsg.isEmpty() ? QString() : (QStringLiteral(" msg=") + rcMsg);
+                errorMessage = QStringLiteral("eastmoney hot detail rc=%1%2").arg(rc).arg(suffix);
+            } else if (!root.value(QStringLiteral("data")).isObject()) {
+                errorMessage = QStringLiteral("eastmoney hot detail data missing");
+            } else {
+                const QJsonObject data = root.value(QStringLiteral("data")).toObject();
+                const QVector<QJsonObject> diff = extractDiffObjects(data.value(QStringLiteral("diff")));
+                items.reserve(diff.size());
+
+                for (const QJsonObject& row : diff) {
+                    HotRankDetailItem item;
+                    item.code = row.value(QStringLiteral("f12")).toString().trimmed();
+                    const QString market = QString::number(
+                        row.value(QStringLiteral("f13")).toInt(-1)
+                    );
+                    item.watchCode = (item.code.isEmpty() || market == QStringLiteral("-1"))
+                        ? QString()
+                        : QStringLiteral("%1.%2").arg(market, item.code);
+                    item.name = row.value(QStringLiteral("f14")).toString().trimmed();
+                    item.price = normalizeEastMoneyPrice(
+                        firstNumberFromObject(row, {QStringLiteral("f2")})
+                    );
+                    item.pct = normalizeEastMoneyPercent(
+                        firstNumberFromObject(row, {QStringLiteral("f3")})
+                    );
+                    item.marketCap = firstNumberFromObject(row, {QStringLiteral("f20")});
+                    item.turnover = firstNumberFromObject(row, {QStringLiteral("f6")});
+                    item.yearPct = normalizeEastMoneyPercent(
+                        firstNumberFromObject(row, {QStringLiteral("f25")})
+                    );
+                    if (!item.code.isEmpty() && !item.name.isEmpty()) {
+                        items.push_back(item);
+                    }
+                }
+            }
+        }
+    }
+
+    if (!errorMessage.isEmpty()) {
+        if (errorMessage != m_lastError) {
+            emit error(fs, errorMessage);
+            m_lastError = errorMessage;
+        }
+        return;
+    }
+
+    m_lastError.clear();
+    m_cachedFs = fs;
+    m_cachedItems = items;
+    m_cacheExpiresAtMs = QDateTime::currentMSecsSinceEpoch() + app_constants::kNetworkCacheTtlMs;
+    m_cacheValid = true;
+    emit dataReady(fs, items);
 }
 
 AshareMarketBreadthProvider::AshareMarketBreadthProvider(QObject* parent)
@@ -1603,6 +1826,273 @@ void AshareMarketBreadthProvider::finalizeFetch(int token) {
     m_lastError.clear();
 }
 
+
+TonghuashunStockHeatProvider::TonghuashunStockHeatProvider(QObject* parent)
+    : QObject(parent) {}
+
+void TonghuashunStockHeatProvider::applyConfig(const AppConfig& cfg) {
+    m_userAgent = network_utils::effectiveUserAgent(cfg);
+    m_proxy = network_utils::proxyFromConfig(cfg);
+
+    m_hourCacheValid = false;
+    m_dayCacheValid = false;
+    m_hourCacheExpiresAtMs = 0;
+    m_dayCacheExpiresAtMs = 0;
+    m_hourCacheRequestKey.clear();
+    m_dayCacheRequestKey.clear();
+
+    if (m_hourReply) {
+        QNetworkReply* pendingReply = m_hourReply;
+        m_hourReply = nullptr;
+        pendingReply->abort();
+        pendingReply->deleteLater();
+    }
+    if (m_dayReply) {
+        QNetworkReply* pendingReply = m_dayReply;
+        m_dayReply = nullptr;
+        pendingReply->abort();
+        pendingReply->deleteLater();
+    }
+    m_hourInFlightRequestKey.clear();
+    m_dayInFlightRequestKey.clear();
+}
+
+void TonghuashunStockHeatProvider::fetchHourHotStocks(int limit, bool forceRefresh) {
+    fetchHotStocks(QStringLiteral("hour"), limit, forceRefresh);
+}
+
+void TonghuashunStockHeatProvider::fetchDayHotStocks(int limit, bool forceRefresh) {
+    fetchHotStocks(QStringLiteral("day"), limit, forceRefresh);
+}
+
+void TonghuashunStockHeatProvider::fetchHotStocks(
+    const QString& periodType,
+    int limit,
+    bool forceRefresh
+) {
+    m_nam.setProxy(m_proxy);
+
+    const QString normalizedPeriod = periodType == QLatin1String("day")
+        ? QStringLiteral("day")
+        : QStringLiteral("hour");
+    const int effectiveLimit = qBound(1, limit, 100);
+    const QString requestKey = QString::number(effectiveLimit);
+
+    QVector<HotRankItem>& cachedItems = normalizedPeriod == QLatin1String("day")
+        ? m_cachedDayItems
+        : m_cachedHourItems;
+    QString& cacheRequestKey = normalizedPeriod == QLatin1String("day")
+        ? m_dayCacheRequestKey
+        : m_hourCacheRequestKey;
+    qint64& cacheExpiresAtMs = normalizedPeriod == QLatin1String("day")
+        ? m_dayCacheExpiresAtMs
+        : m_hourCacheExpiresAtMs;
+    bool& cacheValid = normalizedPeriod == QLatin1String("day")
+        ? m_dayCacheValid
+        : m_hourCacheValid;
+    QNetworkReply*& inFlightReply = normalizedPeriod == QLatin1String("day")
+        ? m_dayReply
+        : m_hourReply;
+    QString& inFlightRequestKey = normalizedPeriod == QLatin1String("day")
+        ? m_dayInFlightRequestKey
+        : m_hourInFlightRequestKey;
+
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (!forceRefresh && cacheValid && cacheRequestKey == requestKey && nowMs < cacheExpiresAtMs) {
+        qInfo() << "[StockHeat] cache hit type=" << normalizedPeriod
+                << "ttl_ms=" << (cacheExpiresAtMs - nowMs);
+        if (normalizedPeriod == QLatin1String("day")) {
+            emit dayHotStocksReady(cachedItems);
+        } else {
+            emit hourHotStocksReady(cachedItems);
+        }
+        return;
+    }
+
+    SharedHotRankCacheEntry& sharedCache = sharedStockHeatCache(normalizedPeriod);
+    if (!forceRefresh
+        && sharedCache.valid
+        && sharedCache.requestKey == requestKey
+        && nowMs < sharedCache.expiresAtMs) {
+        cachedItems = sharedCache.items;
+        cacheRequestKey = sharedCache.requestKey;
+        cacheExpiresAtMs = sharedCache.expiresAtMs;
+        cacheValid = true;
+
+        qInfo() << "[StockHeat] shared cache hit type=" << normalizedPeriod
+                << "ttl_ms=" << (sharedCache.expiresAtMs - nowMs);
+        if (normalizedPeriod == QLatin1String("day")) {
+            emit dayHotStocksReady(cachedItems);
+        } else {
+            emit hourHotStocksReady(cachedItems);
+        }
+        return;
+    }
+
+    if (inFlightReply && !forceRefresh) {
+        qInfo() << "[StockHeat] request already in flight type=" << normalizedPeriod
+                << "skip";
+        return;
+    }
+
+    if (forceRefresh && inFlightReply) {
+        inFlightReply->setProperty("myStocksIgnoreAbort", true);
+        inFlightReply->abort();
+        inFlightReply = nullptr;
+        inFlightRequestKey.clear();
+    }
+
+    inFlightRequestKey = requestKey;
+
+    QUrl url(QStringLiteral("https://dq.10jqka.com.cn/fuyao/hot_list_data/out/hot_list/v1/stock"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("stock_type"), QStringLiteral("a"));
+    query.addQueryItem(QStringLiteral("type"), normalizedPeriod);
+    query.addQueryItem(QStringLiteral("list_type"), QStringLiteral("normal"));
+    url.setQuery(query);
+
+    QNetworkRequest req(url);
+    applyTonghuashunCommonHeaders(&req, m_userAgent);
+
+    const network_logger::RequestTrace trace = network_logger::logRequestStart(
+        normalizedPeriod == QLatin1String("day")
+            ? QStringLiteral("tonghuashun-stock-heat-day")
+            : QStringLiteral("tonghuashun-stock-heat-hour"),
+        QStringLiteral("GET"),
+        req,
+        m_proxy
+    );
+
+    inFlightReply = m_nam.get(req);
+    QNetworkReply* reply = inFlightReply;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, normalizedPeriod, trace, requestKey]() {
+        if (normalizedPeriod == QLatin1String("day")) {
+            if (reply == m_dayReply) {
+                m_dayReply = nullptr;
+            }
+            m_dayInFlightRequestKey.clear();
+        } else {
+            if (reply == m_hourReply) {
+                m_hourReply = nullptr;
+            }
+            m_hourInFlightRequestKey.clear();
+        }
+
+        if (reply->property("myStocksIgnoreAbort").toBool()) {
+            reply->deleteLater();
+            return;
+        }
+
+        const QString err = (reply->error() == QNetworkReply::NoError)
+            ? QString()
+            : reply->errorString();
+        const QByteArray body = reply->readAll();
+
+        network_logger::logRequestFinish(trace, reply, body.size(), body);
+
+        reply->deleteLater();
+        handleHotStocksResponse(normalizedPeriod, body, err, requestKey);
+    });
+}
+
+void TonghuashunStockHeatProvider::handleHotStocksResponse(
+    const QString& periodType,
+    const QByteArray& body,
+    const QString& errorText,
+    const QString& requestKey
+) {
+    QString errorMessage;
+    QVector<HotRankItem> items;
+
+    if (!errorText.isEmpty()) {
+        errorMessage = QStringLiteral("stock heat request failed: %1").arg(errorText);
+    } else {
+        QJsonParseError parseError;
+        const QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
+        if (parseError.error != QJsonParseError::NoError) {
+            errorMessage = QStringLiteral("stock heat json parse error: %1")
+                .arg(parseError.errorString());
+        } else if (!doc.isObject()) {
+            errorMessage = QStringLiteral("stock heat invalid payload");
+        } else {
+            const QJsonObject root = doc.object();
+            const int statusCode = root.value(QStringLiteral("status_code")).toInt(-1);
+            if (statusCode != 0) {
+                const QString statusMsg = root.value(QStringLiteral("status_msg")).toString().trimmed();
+                errorMessage = statusMsg.isEmpty()
+                    ? QStringLiteral("stock heat status_code=%1").arg(statusCode)
+                    : QStringLiteral("stock heat status_code=%1 msg=%2").arg(statusCode).arg(statusMsg);
+            } else if (!root.value(QStringLiteral("data")).isObject()) {
+                errorMessage = QStringLiteral("stock heat data missing");
+            } else {
+                const QJsonObject data = root.value(QStringLiteral("data")).toObject();
+                const QJsonArray stockList = data.value(QStringLiteral("stock_list")).toArray();
+                items.reserve(qMin(stockList.size(), 100));
+
+                for (const QJsonValue& stockValue : stockList) {
+                    if (!stockValue.isObject()) {
+                        continue;
+                    }
+
+                    const QJsonObject row = stockValue.toObject();
+                    HotRankItem item;
+                    item.code = row.value(QStringLiteral("code")).toString().trimmed();
+                    item.name = row.value(QStringLiteral("name")).toString().trimmed();
+                    item.watchCode = watchlist_utils::normalizeApiWatchCode(item.code);
+                    item.pct = firstNumberFromObject(row, {QStringLiteral("rise_and_fall")});
+                    item.heat = firstNumberFromObject(row, {QStringLiteral("rate")});
+                    item.tags = extractTonghuashunStockTags(row);
+                    if (!item.code.isEmpty() && !item.name.isEmpty()) {
+                        items.push_back(item);
+                    }
+                    if (items.size() >= requestKey.toInt()) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!errorMessage.isEmpty()) {
+        if (errorMessage != m_lastError) {
+            emit error(errorMessage);
+            m_lastError = errorMessage;
+        }
+        return;
+    }
+
+    m_lastError.clear();
+    QVector<HotRankItem>& cachedItems = periodType == QLatin1String("day")
+        ? m_cachedDayItems
+        : m_cachedHourItems;
+    QString& cacheRequestKey = periodType == QLatin1String("day")
+        ? m_dayCacheRequestKey
+        : m_hourCacheRequestKey;
+    qint64& cacheExpiresAtMs = periodType == QLatin1String("day")
+        ? m_dayCacheExpiresAtMs
+        : m_hourCacheExpiresAtMs;
+    bool& cacheValid = periodType == QLatin1String("day")
+        ? m_dayCacheValid
+        : m_hourCacheValid;
+
+    cachedItems = items;
+    cacheRequestKey = requestKey;
+    cacheExpiresAtMs = QDateTime::currentMSecsSinceEpoch() + app_constants::kNetworkCacheTtlMs;
+    cacheValid = true;
+
+    SharedHotRankCacheEntry& sharedCache = sharedStockHeatCache(periodType);
+    sharedCache.items = items;
+    sharedCache.requestKey = requestKey;
+    sharedCache.expiresAtMs = cacheExpiresAtMs;
+    sharedCache.valid = true;
+
+    if (periodType == QLatin1String("day")) {
+        emit dayHotStocksReady(items);
+    } else {
+        emit hourHotStocksReady(items);
+    }
+}
+
 EastMoneyIndexQuoteProvider::EastMoneyIndexQuoteProvider(QObject* parent)
     : QObject(parent) {}
 
@@ -1754,6 +2244,7 @@ void EastMoneyIndexQuoteProvider::handleResponse(
     for (const auto& pair : config) {
         const QString key = secIdKey(pair.first);
         IndexQuoteItem item;
+        item.code = pair.first;
         item.displayName = pair.second;
         const QuoteData qd = lookup.value(key);
         item.price = qd.price;

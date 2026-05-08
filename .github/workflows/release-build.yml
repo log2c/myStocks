@@ -28,7 +28,9 @@ jobs:
       - name: Set artifact filename
         shell: bash
         run: |
-          echo "ARTIFACT_FILE=MyStocks-${{ matrix.artifact_platform }}-release-${{ github.ref_name }}.zip" >> "$GITHUB_ENV"
+          SAFE_REF="${{ github.ref_name }}"
+          SAFE_REF="${SAFE_REF//\//-}"
+          echo "ARTIFACT_FILE=MyStocks-${{ matrix.artifact_platform }}-release-${SAFE_REF}.zip" >> "$GITHUB_ENV"
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
@@ -132,6 +134,12 @@ jobs:
         with:
           name: MyStocks-windows-release
 
+      - name: Set safe ref name
+        run: |
+          SAFE_REF="${{ github.ref_name }}"
+          SAFE_REF="${SAFE_REF//\//-}"
+          echo "SAFE_REF=${SAFE_REF}" >> "$GITHUB_ENV"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -140,5 +148,5 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            MyStocks-macos-release-${{ github.ref_name }}.zip
-            MyStocks-windows-release-${{ github.ref_name }}.zip
+            MyStocks-macos-release-${{ env.SAFE_REF }}.zip
+            MyStocks-windows-release-${{ env.SAFE_REF }}.zip
