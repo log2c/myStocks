@@ -395,12 +395,14 @@ SettingsDialog::SettingsDialog(
     const QVector<StockItem>& indexes,
     const QHash<QString, QString>& apiNamesByCode,
     const QString& dataYamlPath,
+    const QVector<StockGroup>& groups,
     QWidget* parent
 )
     : QDialog(parent)
     , m_cfg(cfg)
     , m_stocks(stocks)
     , m_indexes(indexes)
+    , m_groups(groups)
     , m_apiNamesByCode(apiNamesByCode)
     , m_dataYamlPath(dataYamlPath)
     , m_uiLanguage(i18n::resolveLanguage(cfg.language)) {
@@ -423,6 +425,7 @@ SettingsDialog::SettingsDialog(
     tabs->addTab(makeScrollableTab(buildDisplayTab(), tabs), trText("settings.tab.display"));
     tabs->addTab(makeScrollableTab(buildStocksTab(), tabs), trText("settings.tab.data"));
     tabs->addTab(buildIndexSectorTab(), trText("settings.tab.indexSector"));
+    tabs->addTab(buildGroupsTab(), QStringLiteral("\u5206\u7ec4")); // "分组"
     tabs->addTab(makeScrollableTab(buildOtherTab(), tabs), trText("settings.tab.other"));
     tabs->addTab(makeScrollableTab(buildAboutTab(), tabs), trText("settings.tab.about"));
     root->addWidget(tabs);
@@ -630,6 +633,10 @@ QVector<StockItem> SettingsDialog::selectedIndexes() const {
     return out;
 }
 
+QVector<StockGroup> SettingsDialog::groups() const {
+    return m_groups;
+}
+
 QString SettingsDialog::trText(const QString& key) const {
     return i18n::t(key, m_uiLanguage);
 }
@@ -800,11 +807,111 @@ QWidget* SettingsDialog::buildGeneralTab() {
     }
 
     form->addRow(trText("settings.general.poll"), m_pollSpin);
-    form->addRow(trText("settings.general.hotkey"), hotkeyWidget);
-    form->addRow(trText("settings.general.marketBreadthHotkey"), marketBreadthHotkeyWidget);
     addCompactFormRow(form, m_startupShowFloatingWindowCheck);
     form->addRow(trText("settings.general.language"), m_languageCombo);
     root->addWidget(baseSection);
+
+    QGroupBox* hotkeyGroup = new QGroupBox(trText("settings.general.groupHotkey"), w);
+    QFormLayout* hotkeyForm = new QFormLayout(hotkeyGroup);
+    applyCompactFormLayout(hotkeyForm);
+    hotkeyForm->setContentsMargins(6, 6, 6, 6);
+    hotkeyForm->setVerticalSpacing(8);
+    hotkeyForm->addRow(trText("settings.general.floatingWindowHotkey"), hotkeyWidget);
+    hotkeyForm->addRow(trText("settings.general.marketBreadthHotkey"), marketBreadthHotkeyWidget);
+
+    // ── Group switch hotkey prefix ─────────────────────────────────────────
+    {
+        const QVector<QPair<QString,QString>> modOptions = {
+            {QStringLiteral("—"), QStringLiteral("")},   // — (None)
+#if defined(Q_OS_MACOS)
+            {QStringLiteral("Shift"),   QStringLiteral("Shift")},
+            {QStringLiteral("Control"), QStringLiteral("Meta")},
+            {QStringLiteral("Option"),  QStringLiteral("Alt")},
+            {QStringLiteral("Command"), QStringLiteral("Ctrl")},
+#else
+            {QStringLiteral("Shift"),   QStringLiteral("Shift")},
+            {QStringLiteral("Ctrl"),    QStringLiteral("Ctrl")},
+            {QStringLiteral("Alt"),     QStringLiteral("Alt")},
+            {QStringLiteral("Win"),     QStringLiteral("Meta")},
+#endif
+        };
+
+        const auto fillCombo = [&modOptions](QComboBox* cb) {
+            for (const auto& e : modOptions)
+                cb->addItem(e.first, e.second);
+        };
+        const auto findModIndex = [&modOptions](const QString& qtName) -> int {
+            for (int i = 0; i < modOptions.size(); ++i)
+                if (modOptions[i].second == qtName) return i;
+            return 0;
+        };
+
+        m_groupMod1Combo = new QComboBox(hotkeyGroup);
+        fillCombo(m_groupMod1Combo);
+        m_groupMod2Combo = new QComboBox(hotkeyGroup);
+        fillCombo(m_groupMod2Combo);
+
+        {
+            const QStringList prefParts =
+                m_cfg.groupSwitchHotkeyPrefix.split(QLatin1Char('+'), Qt::SkipEmptyParts);
+            if (prefParts.size() >= 1) m_groupMod1Combo->setCurrentIndex(findModIndex(prefParts[0]));
+            if (prefParts.size() >= 2) m_groupMod2Combo->setCurrentIndex(findModIndex(prefParts[1]));
+        }
+
+        m_groupHotkeyPreviewLabel = new QLabel(hotkeyGroup);
+        m_groupHotkeyPreviewLabel->setWordWrap(true);
+
+        QWidget* groupHotkeyWidget = new QWidget(hotkeyGroup);
+        QHBoxLayout* groupHotkeyLayout = new QHBoxLayout(groupHotkeyWidget);
+        groupHotkeyLayout->setContentsMargins(0, 0, 0, 0);
+        groupHotkeyLayout->setSpacing(6);
+        groupHotkeyLayout->addWidget(m_groupMod1Combo);
+        groupHotkeyLayout->addWidget(m_groupMod2Combo);
+        groupHotkeyLayout->addWidget(m_groupHotkeyPreviewLabel, 1);
+        hotkeyForm->addRow(trText("settings.general.groupSwitchHotkey"), groupHotkeyWidget);
+
+        const auto updatePreview = [this]() {
+            if (!m_groupHotkeyPreviewLabel) return;
+            const QString& prefix = m_cfg.groupSwitchHotkeyPrefix;
+            if (prefix.isEmpty() || m_groups.isEmpty()) {
+                m_groupHotkeyPreviewLabel->setText({});
+                return;
+            }
+            const int total = 1 + m_groups.size();
+            QStringList lines;
+            for (int vi = 0; vi < qMin(total, 10); ++vi) {
+                QString name;
+                if (vi == m_cfg.groupAllPosition) {
+                    name = trText("settings.group.allGroup");
+                } else {
+                    const int gi = vi < m_cfg.groupAllPosition ? vi : vi - 1;
+                    name = (gi >= 0 && gi < m_groups.size())
+                        ? m_groups.at(gi).name : QStringLiteral("?");
+                }
+                lines << QStringLiteral("%1+F%2 (%3)").arg(prefix).arg(vi + 1).arg(name);
+            }
+            m_groupHotkeyPreviewLabel->setText(lines.join(QStringLiteral("  ")));
+        };
+
+        const auto updatePrefixFromCombos = [this, updatePreview]() {
+            const QString qt1 = m_groupMod1Combo->currentData().toString();
+            const QString qt2 = m_groupMod2Combo->currentData().toString();
+            if (!qt1.isEmpty() && !qt2.isEmpty() && qt1 != qt2) {
+                m_cfg.groupSwitchHotkeyPrefix = qt1 + QLatin1Char('+') + qt2;
+            } else {
+                m_cfg.groupSwitchHotkeyPrefix.clear();
+            }
+            updatePreview();
+        };
+
+        updatePreview();
+
+        connect(m_groupMod1Combo, qOverload<int>(&QComboBox::currentIndexChanged),
+                this, updatePrefixFromCombos);
+        connect(m_groupMod2Combo, qOverload<int>(&QComboBox::currentIndexChanged),
+                this, updatePrefixFromCombos);
+    }
+    root->addWidget(hotkeyGroup);
 
     QGroupBox* fontGroup = new QGroupBox(trText("settings.general.groupFont"), w);
     QFormLayout* fontForm = new QFormLayout(fontGroup);
@@ -2095,6 +2202,308 @@ void SettingsDialog::doStockSearch(bool forceSearch) {
 
         parseSearchResult(data);
     });
+}
+
+QWidget* SettingsDialog::buildGroupsTab() {
+    QWidget* w = new QWidget(this);
+    QVBoxLayout* vbox = new QVBoxLayout(w);
+    vbox->setContentsMargins(10, 10, 10, 10);
+    vbox->setSpacing(8);
+
+    // ── Main body ─────────────────────────────────────────────────────────
+    QHBoxLayout* mainRow = new QHBoxLayout;
+    vbox->addLayout(mainRow, 1);
+
+    // Helpers
+    const auto refreshListUserRoles = [this]() {
+        int ci = 0;
+        for (int i = 0; i < m_groupList->count(); ++i) {
+            QListWidgetItem* it = m_groupList->item(i);
+            if (it->data(Qt::UserRole).toInt() != -1)
+                it->setData(Qt::UserRole, ci++);
+        }
+    };
+    const auto findAllGroupRow = [this]() -> int {
+        for (int i = 0; i < m_groupList->count(); ++i)
+            if (m_groupList->item(i)->data(Qt::UserRole).toInt() == -1) return i;
+        return 0;
+    };
+
+    // ── Left: group list ──────────────────────────────────────────────────
+    {
+        QVBoxLayout* leftVbox = new QVBoxLayout;
+        leftVbox->setSpacing(4);
+        mainRow->addLayout(leftVbox, 0);
+        leftVbox->addWidget(new QLabel(trText("settings.group.list"), w));
+
+        m_groupList = new QListWidget(w);
+        m_groupList->setMaximumWidth(180);
+        m_groupList->setMinimumHeight(240);
+        leftVbox->addWidget(m_groupList, 1);
+
+        // Populate list: "所有" at groupAllPosition, custom groups elsewhere
+        {
+            const int allPos = qBound(0, m_cfg.groupAllPosition, m_groups.size());
+            m_cfg.groupAllPosition = allPos;
+            for (int vi = 0; vi <= m_groups.size(); ++vi) {
+                if (vi == allPos) {
+                    QListWidgetItem* it = new QListWidgetItem(
+                        trText("settings.group.allGroup"), m_groupList);
+                    it->setData(Qt::UserRole, -1);
+                    it->setFlags(it->flags() & ~Qt::ItemIsEditable);
+                    QFont f = it->font(); f.setItalic(true); it->setFont(f);
+                } else {
+                    const int gi = vi < allPos ? vi : vi - 1;
+                    QListWidgetItem* it = new QListWidgetItem(m_groups.at(gi).name, m_groupList);
+                    it->setData(Qt::UserRole, gi);
+                    it->setFlags(it->flags() | Qt::ItemIsEditable);
+                }
+            }
+        }
+
+        QHBoxLayout* btnRow = new QHBoxLayout;
+        btnRow->setSpacing(4);
+        leftVbox->addLayout(btnRow);
+        QPushButton* addBtn  = new QPushButton(QStringLiteral("+"), w); addBtn->setMaximumWidth(32);
+        QPushButton* delBtn  = new QPushButton(QStringLiteral("\u2212"), w); delBtn->setMaximumWidth(32);
+        QPushButton* upBtn   = new QPushButton(QStringLiteral("\u2191"), w); upBtn->setMaximumWidth(32);
+        QPushButton* downBtn = new QPushButton(QStringLiteral("\u2193"), w); downBtn->setMaximumWidth(32);
+        btnRow->addWidget(addBtn); btnRow->addWidget(delBtn);
+        btnRow->addWidget(upBtn);  btnRow->addWidget(downBtn);
+        btnRow->addStretch();
+
+        connect(addBtn, &QPushButton::clicked, this, [this, refreshListUserRoles]() {
+            const QString name = QStringLiteral("\u65b0\u5206\u7ec4");
+            StockGroup g; g.name = name;
+            m_groups.append(g);
+            QListWidgetItem* it = new QListWidgetItem(name, m_groupList);
+            it->setData(Qt::UserRole, m_groups.size() - 1);
+            it->setFlags(it->flags() | Qt::ItemIsEditable);
+            refreshListUserRoles();
+            m_groupList->setCurrentItem(it);
+            m_groupList->editItem(it);
+        });
+
+        connect(delBtn, &QPushButton::clicked, this,
+            [this, refreshListUserRoles, findAllGroupRow]() {
+                const int row = m_groupList->currentRow();
+                if (row < 0) return;
+                const int ur = m_groupList->item(row)->data(Qt::UserRole).toInt();
+                if (ur == -1) return; // protect "所有"
+                m_groups.removeAt(ur);
+                if (row < findAllGroupRow())
+                    m_cfg.groupAllPosition = qMax(0, m_cfg.groupAllPosition - 1);
+                delete m_groupList->takeItem(row);
+                refreshListUserRoles();
+                if (m_groupMemberList) { m_groupMemberList->clear(); m_groupMemberList->setEnabled(false); }
+                if (m_groupStockList) {
+                    m_groupStockList->setEnabled(false);
+                    QSignalBlocker b(m_groupStockList);
+                    for (int i = 0; i < m_groupStockList->count(); ++i)
+                        m_groupStockList->item(i)->setCheckState(Qt::Unchecked);
+                }
+            }
+        );
+
+        connect(upBtn, &QPushButton::clicked, this,
+            [this, refreshListUserRoles]() {
+                const int row = m_groupList->currentRow();
+                if (row <= 0) return;
+                const int ur  = m_groupList->item(row)->data(Qt::UserRole).toInt();
+                const int pur = m_groupList->item(row - 1)->data(Qt::UserRole).toInt();
+                if (ur >= 0 && pur >= 0) m_groups.swapItemsAt(ur, pur);
+                if (ur  == -1) m_cfg.groupAllPosition = row - 1;
+                else if (pur == -1) m_cfg.groupAllPosition = row;
+                QListWidgetItem* it = m_groupList->takeItem(row);
+                m_groupList->insertItem(row - 1, it);
+                m_groupList->setCurrentRow(row - 1);
+                refreshListUserRoles();
+            }
+        );
+
+        connect(downBtn, &QPushButton::clicked, this,
+            [this, refreshListUserRoles]() {
+                const int row = m_groupList->currentRow();
+                if (row < 0 || row >= m_groupList->count() - 1) return;
+                const int ur  = m_groupList->item(row)->data(Qt::UserRole).toInt();
+                const int nur = m_groupList->item(row + 1)->data(Qt::UserRole).toInt();
+                if (ur >= 0 && nur >= 0) m_groups.swapItemsAt(ur, nur);
+                if (ur  == -1) m_cfg.groupAllPosition = row + 1;
+                else if (nur == -1) m_cfg.groupAllPosition = row;
+                QListWidgetItem* it = m_groupList->takeItem(row);
+                m_groupList->insertItem(row + 1, it);
+                m_groupList->setCurrentRow(row + 1);
+                refreshListUserRoles();
+            }
+        );
+
+        connect(m_groupList, &QListWidget::itemChanged, this,
+            [this](QListWidgetItem* it) {
+                const int ur = it->data(Qt::UserRole).toInt();
+                if (ur < 0 || ur >= m_groups.size()) return;
+                m_groups[ur].name = it->text().trimmed();
+            }
+        );
+    }
+
+    // ── Right: ordered members + stock checkboxes ─────────────────────────
+    {
+        QVBoxLayout* rightVbox = new QVBoxLayout;
+        rightVbox->setSpacing(4);
+        mainRow->addLayout(rightVbox, 1);
+
+        // Member order section
+        {
+            QHBoxLayout* mhdr = new QHBoxLayout;
+            mhdr->addWidget(new QLabel(trText("settings.group.orderedMembers"), w));
+            mhdr->addStretch();
+            QPushButton* mUp   = new QPushButton(QStringLiteral("\u2191"), w); mUp->setMaximumWidth(28);
+            QPushButton* mDown = new QPushButton(QStringLiteral("\u2193"), w); mDown->setMaximumWidth(28);
+            mhdr->addWidget(mUp); mhdr->addWidget(mDown);
+            rightVbox->addLayout(mhdr);
+
+            m_groupMemberList = new QListWidget(w);
+            m_groupMemberList->setEnabled(false);
+            m_groupMemberList->setMaximumHeight(130);
+            rightVbox->addWidget(m_groupMemberList);
+
+            connect(mUp, &QPushButton::clicked, this, [this]() {
+                if (!m_groupMemberList->isEnabled()) return;
+                const int row = m_groupMemberList->currentRow();
+                if (row <= 0) return;
+                const QListWidgetItem* cur = m_groupList->currentItem();
+                const int gi = cur ? cur->data(Qt::UserRole).toInt() : -1;
+                if (gi < 0 || gi >= m_groups.size()) return;
+                m_groups[gi].stockCodes.swapItemsAt(row, row - 1);
+                QListWidgetItem* it = m_groupMemberList->takeItem(row);
+                m_groupMemberList->insertItem(row - 1, it);
+                m_groupMemberList->setCurrentRow(row - 1);
+            });
+
+            connect(mDown, &QPushButton::clicked, this, [this]() {
+                if (!m_groupMemberList->isEnabled()) return;
+                const int row = m_groupMemberList->currentRow();
+                if (row < 0 || row >= m_groupMemberList->count() - 1) return;
+                const QListWidgetItem* cur = m_groupList->currentItem();
+                const int gi = cur ? cur->data(Qt::UserRole).toInt() : -1;
+                if (gi < 0 || gi >= m_groups.size()) return;
+                m_groups[gi].stockCodes.swapItemsAt(row, row + 1);
+                QListWidgetItem* it = m_groupMemberList->takeItem(row);
+                m_groupMemberList->insertItem(row + 1, it);
+                m_groupMemberList->setCurrentRow(row + 1);
+            });
+        }
+
+        // All stocks section
+        {
+            rightVbox->addWidget(new QLabel(
+                trText("settings.group.members")
+                    + QStringLiteral(" (") + trText("settings.group.membersHint") + QStringLiteral(")"),
+                w));
+            m_groupStockList = new QListWidget(w);
+            m_groupStockList->setEnabled(false);
+            rightVbox->addWidget(m_groupStockList, 1);
+
+            for (const StockItem& stock : m_stocks) {
+                if (stock.code.isEmpty()) continue;
+                QListWidgetItem* it = new QListWidgetItem(
+                    QStringLiteral("%1 %2").arg(stock.code, stock.name), m_groupStockList);
+                it->setData(Qt::UserRole, stock.code);
+                it->setCheckState(Qt::Unchecked);
+                it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+            }
+        }
+    }
+
+    // ── Group selection → populate right panels ───────────────────────────
+    const auto memberDisplayName = [this](const QString& code) -> QString {
+        for (const StockItem& s : m_stocks) {
+            if (watchCodeKey(s.code) == watchCodeKey(code))
+                return QStringLiteral("%1 %2").arg(s.code, s.name);
+        }
+        return code;
+    };
+
+    connect(m_groupList, &QListWidget::currentRowChanged, this,
+        [this, memberDisplayName](int) {
+            if (!m_groupStockList || !m_groupMemberList) return;
+            const QListWidgetItem* cur = m_groupList->currentItem();
+            if (!cur) return;
+            const int gi = cur->data(Qt::UserRole).toInt();
+
+            if (gi < 0) { // "所有"
+                m_groupMemberList->setEnabled(false);
+                m_groupMemberList->clear();
+                m_groupStockList->setEnabled(false);
+                QSignalBlocker b(m_groupStockList);
+                for (int i = 0; i < m_groupStockList->count(); ++i)
+                    m_groupStockList->item(i)->setCheckState(Qt::Unchecked);
+                return;
+            }
+            if (gi >= m_groups.size()) return;
+            const StockGroup& g = m_groups.at(gi);
+
+            // Populate ordered members
+            {
+                QSignalBlocker bl(m_groupMemberList);
+                m_groupMemberList->clear();
+                m_groupMemberList->setEnabled(true);
+                for (const QString& code : g.stockCodes) {
+                    QListWidgetItem* it = new QListWidgetItem(
+                        memberDisplayName(code), m_groupMemberList);
+                    it->setData(Qt::UserRole, code);
+                }
+            }
+
+            // Update checkboxes
+            {
+                QSet<QString> keys;
+                for (const QString& c : g.stockCodes) keys.insert(watchCodeKey(c));
+                QSignalBlocker bl(m_groupStockList);
+                m_groupStockList->setEnabled(true);
+                for (int i = 0; i < m_groupStockList->count(); ++i) {
+                    QListWidgetItem* it = m_groupStockList->item(i);
+                    it->setCheckState(keys.contains(watchCodeKey(it->data(Qt::UserRole).toString()))
+                        ? Qt::Checked : Qt::Unchecked);
+                }
+            }
+        }
+    );
+
+    // ── Stock checkbox → update group members ─────────────────────────────
+    connect(m_groupStockList, &QListWidget::itemChanged, this,
+        [this, memberDisplayName](QListWidgetItem* it) {
+            if (!m_groupList || !m_groupStockList->isEnabled()) return;
+            const QListWidgetItem* cur = m_groupList->currentItem();
+            if (!cur) return;
+            const int gi = cur->data(Qt::UserRole).toInt();
+            if (gi < 0 || gi >= m_groups.size()) return;
+
+            const QString code = it->data(Qt::UserRole).toString();
+            QStringList& codes = m_groups[gi].stockCodes;
+
+            QSignalBlocker bl(m_groupMemberList);
+            if (it->checkState() == Qt::Checked) {
+                if (!codes.contains(code)) {
+                    codes.append(code);
+                    QListWidgetItem* mi = new QListWidgetItem(
+                        memberDisplayName(code), m_groupMemberList);
+                    mi->setData(Qt::UserRole, code);
+                }
+            } else {
+                codes.removeAll(code);
+                for (int i = 0; i < m_groupMemberList->count(); ++i) {
+                    if (watchCodeKey(m_groupMemberList->item(i)->data(Qt::UserRole).toString())
+                            == watchCodeKey(code)) {
+                        delete m_groupMemberList->takeItem(i);
+                        break;
+                    }
+                }
+            }
+        }
+    );
+
+    return w;
 }
 
 QWidget* SettingsDialog::buildAboutTab() {

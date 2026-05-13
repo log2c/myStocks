@@ -26,6 +26,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPainter>
+#include <QPushButton>
 #include <QPainterPath>
 #include <QPalette>
 #include <QSignalBlocker>
@@ -2432,6 +2433,7 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
     m_panel->setAttribute(Qt::WA_StyledBackground, true);
 
     QVBoxLayout* panelLayout = new QVBoxLayout(m_panel);
+    panelLayout->setSpacing(0);
     const int initialPadding = floatingWindowPaddingPx(m_cfg);
     panelLayout->setContentsMargins(
         initialPadding,
@@ -2440,33 +2442,38 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
         initialPadding
     );
 
-    m_table = new BottomGridTableView(m_panel);
-    m_table->setModel(m_model);
-    m_table->setItemDelegate(new HotRankFlipDelegate(m_table, m_model, m_table));
-    m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_table->setSelectionMode(QAbstractItemView::NoSelection);
-    m_table->setShowGrid(false);
-    m_table->setAlternatingRowColors(false);
-    m_table->setFocusPolicy(Qt::NoFocus);
-    m_table->setMouseTracking(true);
-    m_table->viewport()->setMouseTracking(true);
-    m_table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_table->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_table->setFrameShape(QFrame::NoFrame);
-    m_table->viewport()->setObjectName("tableViewport");
-    m_table->viewport()->setAttribute(Qt::WA_StyledBackground, true);
-
+    // Helper lambda for shared QTableView setup
+    const auto setupTable = [&](BottomGridTableView* tbl, bool hasHeader) {
+        tbl->setModel(m_model);
+        tbl->setItemDelegate(new HotRankFlipDelegate(tbl, m_model, tbl));
+        tbl->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        tbl->setSelectionMode(QAbstractItemView::NoSelection);
+        tbl->setShowGrid(false);
+        tbl->setAlternatingRowColors(false);
+        tbl->setFocusPolicy(Qt::NoFocus);
+        tbl->setMouseTracking(true);
+        tbl->viewport()->setMouseTracking(true);
+        tbl->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        tbl->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        tbl->setFrameShape(QFrame::NoFrame);
+        tbl->viewport()->setObjectName("tableViewport");
+        tbl->viewport()->setAttribute(Qt::WA_StyledBackground, true);
+        tbl->verticalHeader()->setVisible(false);
+        tbl->verticalHeader()->setDefaultSectionSize(26);
+        tbl->horizontalHeader()->setVisible(hasHeader);
 #ifdef WIN32
-    // Windows native style (QWindowsVistaStyle) ignores stylesheet color and
-    // ForegroundRole. Force Fusion so our palette and stylesheet are respected.
-    if (QStyle* fusion = QStyleFactory::create("Fusion")) {
-        m_table->setStyle(fusion);
-        m_table->horizontalHeader()->setStyle(fusion);
-    }
+        if (QStyle* fusion = QStyleFactory::create("Fusion")) {
+            tbl->setStyle(fusion);
+            if (hasHeader) {
+                tbl->horizontalHeader()->setStyle(fusion);
+            }
+        }
 #endif
+    };
 
-    m_table->verticalHeader()->setVisible(false);
-    m_table->verticalHeader()->setDefaultSectionSize(26);
+    // Index table (top): shows header + index rows
+    m_table = new BottomGridTableView(m_panel);
+    setupTable(static_cast<BottomGridTableView*>(m_table), true);
 
     QHeaderView* header = m_table->horizontalHeader();
     header->viewport()->setObjectName("tableHeaderViewport");
@@ -2476,13 +2483,32 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
     header->setMinimumSectionSize(0);
     header->setSectionResizeMode(QHeaderView::Fixed);
 
+    // Group bar — shown only when more than one group exists (between index and stock tables)
+    m_groupBar = new QWidget(m_panel);
+    m_groupBar->setObjectName("groupBar");
+    m_groupBar->setAttribute(Qt::WA_StyledBackground, true);
+    m_groupBar->setFixedHeight(28);
+    m_groupBarLayout = new QHBoxLayout(m_groupBar);
+    m_groupBarLayout->setContentsMargins(initialPadding, 2, 0, 2);
+    m_groupBarLayout->setSpacing(4);
+    m_groupBarLayout->addStretch();
+    m_groupBar->hide();
+
+    // Stock table (bottom): shows stock rows (no header)
+    m_stockTable = new BottomGridTableView(m_panel);
+    setupTable(static_cast<BottomGridTableView*>(m_stockTable), false);
+
     panelLayout->addWidget(m_table);
+    panelLayout->addWidget(m_groupBar);
+    panelLayout->addWidget(m_stockTable);
     root->addWidget(m_panel);
 
     m_panel->installEventFilter(this);
     m_table->installEventFilter(this);
     m_table->viewport()->installEventFilter(this);
     m_table->horizontalHeader()->installEventFilter(this);
+    m_stockTable->installEventFilter(this);
+    m_stockTable->viewport()->installEventFilter(this);
 
     connect(m_model, &QAbstractItemModel::dataChanged, this, [this]() {
         adjustWindowSize();
@@ -2547,6 +2573,147 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
     m_marketBreadthDetailPopup->setForceRefreshCallback([this]() {
         emit forceRefreshRequested();
     });
+}
+
+void FloatingWindow::setIndexCount(int count) {
+    m_indexCount = count;
+    adjustWindowSize();
+}
+
+void FloatingWindow::unlockWidth() {
+    m_maxColumnWidths.clear();
+}
+
+void FloatingWindow::applyRowVisibility() {
+    if (!m_stockTable || !m_model) {
+        return;
+    }
+    const int total = m_model->rowCount();
+    for (int r = 0; r < total; ++r) {
+        const bool isIndex = (r < m_indexCount);
+        m_table->setRowHidden(r, !isIndex);
+        m_stockTable->setRowHidden(r, isIndex);
+    }
+}
+
+void FloatingWindow::setGroups(const QVector<StockGroup>& customGroups, int activeGroupIndex, int allGroupPosition) {
+    m_customGroups = customGroups;
+    m_activeGroupIndex = activeGroupIndex;
+    m_allGroupPosition = allGroupPosition;
+    rebuildGroupBar();
+    adjustWindowSize();
+}
+
+void FloatingWindow::setActiveGroupIndex(int index) {
+    if (m_activeGroupIndex == index) {
+        return;
+    }
+    m_activeGroupIndex = index;
+    applyGroupBarStyle();
+}
+
+void FloatingWindow::rebuildGroupBar() {
+    if (!m_groupBar || !m_groupBarLayout) {
+        return;
+    }
+
+    // Remove all existing buttons
+    while (m_groupBarLayout->count() > 0) {
+        QLayoutItem* item = m_groupBarLayout->takeAt(0);
+        if (item) {
+            if (item->widget()) {
+                item->widget()->deleteLater();
+            }
+            delete item;
+        }
+    }
+
+    // Total groups = custom groups + "所有" (always 1)
+    const int totalGroups = 1 + m_customGroups.size();
+    if (totalGroups <= 1) {
+        m_groupBar->hide();
+        return;
+    }
+
+    // Build group name list in visual order, inserting "所有" at m_allGroupPosition
+    const int allPos = qBound(0, m_allGroupPosition, m_customGroups.size());
+    QStringList groupNames;
+    groupNames.reserve(totalGroups);
+    for (int vi = 0; vi < totalGroups; ++vi) {
+        if (vi == allPos) {
+            groupNames.append(QStringLiteral("\u6240\u6709")); // "所有"
+        } else {
+            const int ci = vi < allPos ? vi : vi - 1;
+            const StockGroup& g = m_customGroups.at(ci);
+            groupNames.append(g.name.isEmpty() ? QStringLiteral("?") : g.name);
+        }
+    }
+
+    for (int i = 0; i < groupNames.size(); ++i) {
+        QPushButton* btn = new QPushButton(groupNames.at(i), m_groupBar);
+        btn->setObjectName(QStringLiteral("groupBtn"));
+        btn->setFlat(true);
+        btn->setCursor(Qt::PointingHandCursor);
+        btn->setFocusPolicy(Qt::NoFocus);
+        btn->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred);
+        btn->setMinimumHeight(20);
+        btn->setMaximumHeight(24);
+        const int idx = i;
+        connect(btn, &QPushButton::clicked, this, [this, idx]() {
+            if (m_activeGroupIndex != idx) {
+                m_activeGroupIndex = idx;
+                applyGroupBarStyle();
+                emit groupSwitchRequested(idx);
+            }
+        });
+        m_groupBarLayout->addWidget(btn);
+    }
+    m_groupBarLayout->addStretch();
+
+    applyGroupBarStyle();
+    m_groupBar->show();
+}
+
+void FloatingWindow::applyGroupBarStyle() {
+    if (!m_groupBar || !m_groupBarLayout) {
+        return;
+    }
+
+    const QColor textColor = m_cfg.textColor;
+    const QColor activeColor = m_cfg.upColor.isValid() ? m_cfg.upColor : QColor(255, 200, 60);
+    const QString activeStyle = QStringLiteral(
+        "QPushButton#groupBtn {"
+        "  color: %1;"
+        "  background: transparent;"
+        "  border: none;"
+        "  padding: 0 6px;"
+        "  font-size: 12px;"
+        "  font-weight: bold;"
+        "}"
+    ).arg(activeColor.name());
+    const QString normalStyle = QStringLiteral(
+        "QPushButton#groupBtn {"
+        "  color: %1;"
+        "  background: transparent;"
+        "  border: none;"
+        "  padding: 0 6px;"
+        "  font-size: 12px;"
+        "}"
+    ).arg(textColor.name(QColor::HexArgb));
+
+    int btnIdx = 0;
+    for (int i = 0; i < m_groupBarLayout->count(); ++i) {
+        QLayoutItem* item = m_groupBarLayout->itemAt(i);
+        if (!item || !item->widget()) {
+            continue;
+        }
+        QPushButton* btn = qobject_cast<QPushButton*>(item->widget());
+        if (!btn) {
+            continue;
+        }
+        btn->setStyleSheet(btnIdx == m_activeGroupIndex ? activeStyle : normalStyle);
+        ++btnIdx;
+    }
 }
 
 FloatingWindow::~FloatingWindow() {
@@ -2689,15 +2856,15 @@ bool FloatingWindow::canShowTimelinePopup() const {
     return true;
 }
 
-void FloatingWindow::updateHoverPopupsForViewport(const QPoint& viewportPos) {
+void FloatingWindow::updateHoverPopupsForViewport(const QPoint& viewportPos, QTableView* sourceView) {
     if (!m_table || !m_model) {
         return;
     }
 
-    updateTimelinePopupForHover(viewportPos);
+    updateTimelinePopupForHover(viewportPos, sourceView);
 }
 
-void FloatingWindow::updateTimelinePopupForHover(const QPoint& viewportPos) {
+void FloatingWindow::updateTimelinePopupForHover(const QPoint& viewportPos, QTableView* sourceView) {
     if (!m_table || !m_model || !m_timelinePopup) {
         return;
     }
@@ -2707,7 +2874,8 @@ void FloatingWindow::updateTimelinePopupForHover(const QPoint& viewportPos) {
         return;
     }
 
-    const QModelIndex index = m_table->indexAt(viewportPos);
+    QTableView* view = sourceView ? sourceView : m_table;
+    const QModelIndex index = view->indexAt(viewportPos);
     if (!index.isValid() || m_model->rowKind(index.row()) != QuoteModel::RowKindQuote) {
         hideTimelinePopup();
         return;
@@ -2729,8 +2897,8 @@ void FloatingWindow::updateTimelinePopupForHover(const QPoint& viewportPos) {
         return;
     }
 
-    const QRect visual = m_table->visualRect(index);
-    const QPoint globalTopLeft = m_table->viewport()->mapToGlobal(visual.topLeft());
+    const QRect visual = view->visualRect(index);
+    const QPoint globalTopLeft = view->viewport()->mapToGlobal(visual.topLeft());
     const QRect globalAnchor(globalTopLeft, visual.size());
 
     m_timelineHoverCode = code;
@@ -2872,6 +3040,14 @@ bool FloatingWindow::setMousePassthroughActive(bool active) {
 }
 
 bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
+    // Consume all wheel/scroll events — the window is sized to fit all rows without scrolling.
+    if (event->type() == QEvent::Wheel) {
+        return true;
+    }
+
+    const bool isFromStockTable = m_stockTable
+        && (watched == m_stockTable || watched == m_stockTable->viewport());
+
     switch (event->type()) {
     case QEvent::Enter:
     case QEvent::HoverEnter:
@@ -2879,7 +3055,8 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
         if (watched == m_panel
             || watched == m_table
             || watched == m_table->viewport()
-            || watched == m_table->horizontalHeader()) {
+            || watched == m_table->horizontalHeader()
+            || isFromStockTable) {
             if (!shouldAllowMouseInteraction()) {
                 if (m_hoverTimer) {
                     m_hoverTimer->stop();
@@ -2889,16 +3066,18 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
             }
             updateHoverReadingState(false);
 
-            if (watched == m_table->viewport()) {
+            if (watched == m_table->viewport() || (m_stockTable && watched == m_stockTable->viewport())) {
+                QTableView* srcView = (m_stockTable && watched == m_stockTable->viewport())
+                    ? m_stockTable : m_table;
                 QPoint hoverPos;
                 if (event->type() == QEvent::MouseMove) {
                     hoverPos = static_cast<QMouseEvent*>(event)->position().toPoint();
                 } else if (event->type() == QEvent::HoverMove || event->type() == QEvent::HoverEnter) {
                     hoverPos = static_cast<QHoverEvent*>(event)->position().toPoint();
                 } else {
-                    hoverPos = m_table->viewport()->mapFromGlobal(QCursor::pos());
+                    hoverPos = srcView->viewport()->mapFromGlobal(QCursor::pos());
                 }
-                updateHoverPopupsForViewport(hoverPos);
+                updateHoverPopupsForViewport(hoverPos, srcView);
             }
         }
         break;
@@ -2907,7 +3086,8 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
         if (watched == m_panel
             || watched == m_table
             || watched == m_table->viewport()
-            || watched == m_table->horizontalHeader()) {
+            || watched == m_table->horizontalHeader()
+            || isFromStockTable) {
             updateHoverReadingState(true);
             hideTimelinePopup();
             hideMarketBreadthDetailPopup();
@@ -2938,7 +3118,8 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
         if (watched == m_panel
             || watched == m_table
             || watched == m_table->viewport()
-            || watched == m_table->horizontalHeader()) {
+            || watched == m_table->horizontalHeader()
+            || isFromStockTable) {
             if (!shouldAllowMouseInteraction()) {
                 if (m_hoverTimer) {
                     m_hoverTimer->stop();
@@ -2948,8 +3129,10 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
             }
             updateHoverReadingState(false);
 
-            if (watched == m_table->viewport()) {
-                updateHoverPopupsForViewport(mouseEvent->position().toPoint());
+            if (watched == m_table->viewport() || (m_stockTable && watched == m_stockTable->viewport())) {
+                QTableView* srcView = (m_stockTable && watched == m_stockTable->viewport())
+                    ? m_stockTable : m_table;
+                updateHoverPopupsForViewport(mouseEvent->position().toPoint(), srcView);
             }
         }
         break;
@@ -3000,6 +3183,11 @@ void FloatingWindow::applyConfig(const AppConfig& cfg) {
         const int padding = floatingWindowPaddingPx(m_cfg);
         panelLayout->setContentsMargins(padding, padding, padding, padding);
     }
+    // Keep group bar text left-aligned with cell text (same horizontal padding as table cells).
+    if (m_groupBarLayout) {
+        const int padding = floatingWindowPaddingPx(m_cfg);
+        m_groupBarLayout->setContentsMargins(padding, 2, 0, 2);
+    }
 
     const bool topFlagChanged =
         windowFlags().testFlag(Qt::WindowStaysOnTopHint) != m_cfg.floatingWindowAlwaysOnTop;
@@ -3025,6 +3213,10 @@ void FloatingWindow::applyConfig(const AppConfig& cfg) {
     m_panel->setFont(tableFont);
     m_table->setFont(tableFont);
     m_table->viewport()->setFont(tableFont);
+    if (m_stockTable) {
+        m_stockTable->setFont(tableFont);
+        m_stockTable->viewport()->setFont(tableFont);
+    }
 
     const QFont baseHeaderFont = m_table->horizontalHeader()
         ? m_table->horizontalHeader()->font()
@@ -3041,6 +3233,8 @@ void FloatingWindow::applyConfig(const AppConfig& cfg) {
     m_dragging = false;
     m_dragButton = Qt::NoButton;
 
+    // Font or padding may have changed — reset max-width history so columns recompute from scratch.
+    m_maxColumnWidths.clear();
     applyStyle();
     applyColumns();
     if (m_timelinePopup) {
@@ -3271,6 +3465,11 @@ void FloatingWindow::applyStyle() {
     table->setBottomGridColor(g);
     m_table->setShowGrid(false);
     m_table->horizontalHeader()->setVisible(m_cfg.showHeader);
+    if (auto* st = static_cast<BottomGridTableView*>(m_stockTable)) {
+        st->setBottomGridVisible(m_cfg.showGrid);
+        st->setBottomGridColor(g);
+        m_stockTable->setShowGrid(false);
+    }
 
 #ifdef WIN32
     // Sync palette so Fusion style picks up the correct text / base colors.
@@ -3281,7 +3480,13 @@ void FloatingWindow::applyStyle() {
     m_table->setPalette(pal);
     m_table->viewport()->setPalette(pal);
     m_table->horizontalHeader()->setPalette(pal);
+    if (m_stockTable) {
+        m_stockTable->setPalette(pal);
+        m_stockTable->viewport()->setPalette(pal);
+    }
 #endif
+
+    applyGroupBarStyle();
 }
 
 void FloatingWindow::applyHoverReadingStyle() {
@@ -3365,6 +3570,11 @@ void FloatingWindow::applyHoverReadingStyle() {
     table->setBottomGridColor(grid);
     m_table->setShowGrid(false);
     m_table->horizontalHeader()->setVisible(m_cfg.showHeader);
+    if (auto* st = static_cast<BottomGridTableView*>(m_stockTable)) {
+        st->setBottomGridVisible(m_cfg.showGrid);
+        st->setBottomGridColor(grid);
+        m_stockTable->setShowGrid(false);
+    }
 
 #ifdef WIN32
     QPalette pal = m_table->palette();
@@ -3374,6 +3584,10 @@ void FloatingWindow::applyHoverReadingStyle() {
     m_table->setPalette(pal);
     m_table->viewport()->setPalette(pal);
     m_table->horizontalHeader()->setPalette(pal);
+    if (m_stockTable) {
+        m_stockTable->setPalette(pal);
+        m_stockTable->viewport()->setPalette(pal);
+    }
 #endif
 }
 
@@ -3531,6 +3745,11 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
     table->setBottomGridColor(grid);
     m_table->setShowGrid(false);
     m_table->horizontalHeader()->setVisible(m_cfg.showHeader);
+    if (auto* st = static_cast<BottomGridTableView*>(m_stockTable)) {
+        st->setBottomGridVisible(m_cfg.showGrid);
+        st->setBottomGridColor(grid);
+        m_stockTable->setShowGrid(false);
+    }
 
 #ifdef WIN32
     QPalette pal = m_table->palette();
@@ -3540,6 +3759,10 @@ void FloatingWindow::applyInterpolatedStyle(qreal hoverProgress) {
     m_table->setPalette(pal);
     m_table->viewport()->setPalette(pal);
     m_table->horizontalHeader()->setPalette(pal);
+    if (m_stockTable) {
+        m_stockTable->setPalette(pal);
+        m_stockTable->viewport()->setPalette(pal);
+    }
 #endif
 }
 
@@ -3547,24 +3770,33 @@ void FloatingWindow::applyColumns() {
     const QVector<int> columnOrder = watchlist_utils::normalizedColumnOrder(m_cfg.columnOrder);
     QHeaderView* header = m_table->horizontalHeader();
 
-    // Apply column visual order.
-    {
-        QSignalBlocker blocker(header);
-        header->setSectionsMovable(true);
+    // Helper to apply column ordering to a header
+    const auto applyOrder = [&](QHeaderView* hdr) {
+        QSignalBlocker blocker(hdr);
+        hdr->setSectionsMovable(true);
         for (int visualIndex = 0; visualIndex < columnOrder.size(); ++visualIndex) {
             const int logical = columnOrder[visualIndex];
-            const int from = header->visualIndex(logical);
+            const int from = hdr->visualIndex(logical);
             if (from >= 0 && from != visualIndex) {
-                header->moveSection(from, visualIndex);
+                hdr->moveSection(from, visualIndex);
             }
         }
-        header->setSectionsMovable(false);
+        hdr->setSectionsMovable(false);
+    };
+
+    // Apply column visual order to both tables.
+    applyOrder(header);
+    if (m_stockTable) {
+        applyOrder(m_stockTable->horizontalHeader());
     }
 
     // Set visibility for each column.
     for (int i = 0; i < ColCount; ++i) {
         const bool visible = m_cfg.visibleColumns.value(i, true);
         m_table->setColumnHidden(i, !visible);
+        if (m_stockTable) {
+            m_stockTable->setColumnHidden(i, !visible);
+        }
     }
 
     adjustWindowSize();
@@ -3574,46 +3806,57 @@ void FloatingWindow::adjustWindowSize() {
     if (auto* table = static_cast<BottomGridTableView*>(m_table)) {
         table->syncSpecialRowSpans(m_model);
     }
-
-    // Auto-size each visible column to its content.
-    for (int i = 0; i < ColCount; ++i) {
-        if (m_table->isColumnHidden(i)) {
-            continue;
-        }
-        m_table->setColumnWidth(i, autoColumnWidthFromContent(i));
+    if (auto* table = static_cast<BottomGridTableView*>(m_stockTable)) {
+        table->syncSpecialRowSpans(m_model);
     }
 
-    QVector<int> visibleColumns;
-    QHeaderView* header = m_table->horizontalHeader();
-    for (int visual = 0; visual < header->count(); ++visual) {
-        const int logical = header->logicalIndex(visual);
-        if (logical < 0 || m_table->isColumnHidden(logical)) {
-            continue;
-        }
-        visibleColumns.push_back(logical);
-    }
+    // Re-apply row visibility after any model reset (index rows → m_table, stock rows → m_stockTable)
+    applyRowVisibility();
 
-    // Width = sum of visible column widths.
+    // Column widths: always compute fresh from content, then take the running maximum per column.
+    // This ensures the window never shrinks when switching groups — it only grows or stays the same.
+    // The max history is reset by unlockWidth() on reload or position reset.
     int totalWidth = 0;
     for (int i = 0; i < ColCount; ++i) {
         if (m_table->isColumnHidden(i)) {
+            m_maxColumnWidths.remove(i);
             continue;
         }
-        totalWidth += m_table->columnWidth(i);
+        const int freshW = autoColumnWidthFromContent(i);
+        const int w = qMax(freshW, m_maxColumnWidths.value(i, 0));
+        m_maxColumnWidths[i] = w;
+        m_table->setColumnWidth(i, w);
+        if (m_stockTable) {
+            m_stockTable->setColumnWidth(i, w);
+        }
+        totalWidth += w;
     }
 
-    // Height = header + rows.
-    int totalHeight = 0;
-    if (m_table->horizontalHeader()->isVisible()) {
-        totalHeight += m_table->horizontalHeader()->sizeHint().height();
+    const int rowHeight = m_table->verticalHeader()->defaultSectionSize();
+    const int headerHeight = m_table->horizontalHeader()->isVisible()
+        ? m_table->horizontalHeader()->sizeHint().height()
+        : 0;
+
+    const int totalModelRows = m_model ? m_model->rowCount() : 0;
+    const int indexRows = qMin(m_indexCount, totalModelRows);
+    const int stockRows = qMax(0, totalModelRows - indexRows);
+
+    const int indexTableHeight = headerHeight + indexRows * rowHeight;
+    const int stockTableHeight = stockRows * rowHeight;
+    const int groupBarH = (m_groupBar && m_groupBar->isVisible()) ? m_groupBar->height() : 0;
+
+    // Fix heights so layout distributes correctly
+    m_table->setFixedHeight(qMax(indexTableHeight, headerHeight)); // always at least header
+    if (m_stockTable) {
+        m_stockTable->setFixedHeight(qMax(stockTableHeight, 0));
     }
-    totalHeight += m_model->rowCount() * m_table->verticalHeader()->defaultSectionSize();
 
     const int padding = floatingWindowPaddingPx(m_cfg);
-    const int horizontalPadding = padding * 2;
-    const int verticalPadding = padding * 2;
-    const int safeWidth = qMax(totalWidth + horizontalPadding, 1);
-    const int safeHeight = qMax(totalHeight + verticalPadding, 1);
+    const int safeWidth = qMax(totalWidth + padding * 2, 1);
+    const int safeHeight = qMax(
+        qMax(indexTableHeight, headerHeight) + groupBarH + stockTableHeight + padding * 2,
+        1
+    );
     setFixedSize(safeWidth, safeHeight);
 }
 

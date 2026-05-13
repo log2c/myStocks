@@ -26,6 +26,11 @@ struct StockItem {
     QString name;
 };
 
+struct StockGroup {
+    QString name;
+    QStringList stockCodes; // normalized codes in this group
+};
+
 struct QuoteItem {
     QString code;
     QString name;
@@ -257,6 +262,14 @@ struct AppConfig {
     // Empty string means use the default app icon (:/icon.png).
     // Otherwise, a Qt resource path like ":/tray_icons/logo.png".
     QString trayIconPath;
+
+    // Group switching hotkey prefix, e.g. "Ctrl+Shift".
+    // When non-empty, prefix+F1..F10 switch to groups in visual order.
+    QString groupSwitchHotkeyPrefix;
+
+    // Visual position of the "所有" group in the group bar (0-indexed).
+    // e.g. 0 = first (default), 1 = second, etc.
+    int groupAllPosition = 0;
 
     QMap<int, int> columnWidths;
     QRect windowRect = QRect(120, 120, 760, 280);

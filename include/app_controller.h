@@ -42,6 +42,8 @@ private:
     void setupTray();
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     void setupHotkey();
+    void setupGroupHotkeys();
+    void teardownGroupHotkeys();
 #endif
     void rebuildProvider();
     void rebuildHotRankProvider();
@@ -49,6 +51,7 @@ private:
     void loadExtraWatchItems();
     void saveExtraWatchItems() const;
     QVector<StockItem> mergedWatchItems() const;
+    QVector<StockItem> mergedWatchItemsForGroup() const;
     QVector<StockItem> filterYamlStocks(
         const QVector<StockItem>& loaded,
         QStringList* ignoredCodes = nullptr
@@ -71,12 +74,17 @@ private:
     void captureRuntimeWindowGeometries(AppConfig* cfg) const;
     bool isYamlWatchStockTracked(const QString& code) const;
     bool updateYamlWatchStock(const QString& code, const QString& name, bool add);
+    void applyActiveGroup(int groupIndex);
+    void applyGroupsToWindow();
+    bool pruneGroupsForDeletedStocks(const QString& dataPath);
 
 private:
     AppConfig m_cfg;
     QString m_resolvedLanguage;
     QVector<StockItem> m_stocks;
     QVector<StockItem> m_indexes;
+    QVector<StockGroup> m_groups;    // custom groups loaded from data.yaml
+    int m_activeGroupIndex = 0;      // 0 = "所有", 1+ = custom group
     QHash<QString, QString> m_apiNamesByCode;
     QStringList m_lastIgnoredYamlIndexCodes;
     QString m_lastTrayErrorMessage;
@@ -108,5 +116,6 @@ private:
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     QHotkey* m_hotkey = nullptr;
     QHotkey* m_marketBreadthHotkey = nullptr;
+    QVector<QHotkey*> m_groupHotkeys;
 #endif
 };
