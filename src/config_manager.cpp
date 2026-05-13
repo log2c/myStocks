@@ -214,13 +214,118 @@ QVector<StockItem> ConfigManager::loadStocksFromYaml(
 }
 
 bool ConfigManager::saveStocksToYaml(const QString& filePath, const QVector<StockItem>& stocks) {
+    // Preserve any existing groups when only updating stocks.
+    const QVector<StockGroup> currentGroups = loadGroupsFromYaml(filePath);
+    return saveDataYaml(filePath, stocks, currentGroups);
+}
+
+QVector<StockGroup> ConfigManager::loadGroupsFromYaml(const QString& filePath) {
+    QVector<StockGroup> out;
+    if (filePath.trimmed().isEmpty()) {
+        return out;
+    }
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return out;
+    }
+
+    // Parse state machine
+    enum class Sec { None, Stocks, Groups, GroupStocks };
+    Sec section = Sec::None;
+
+    StockGroup curGroup;
+    bool inGroup = false;
+
+    const auto flushGroup = [&]() {
+        if (inGroup && !curGroup.name.trimmed().isEmpty()) {
+            out.push_back(curGroup);
+        }
+        curGroup = StockGroup{};
+        inGroup = false;
+    };
+
+    while (!file.atEnd()) {
+        const QString rawLine = QString::fromUtf8(file.readLine());
+        const QString line = rawLine.trimmed();
+        if (line.isEmpty() || line.startsWith('#')) {
+            continue;
+        }
+
+        // Root-level section headers (no leading spaces)
+        if (!rawLine.isEmpty() && rawLine[0] != ' ' && rawLine[0] != '\t') {
+            if (line == QStringLiteral("stocks:")) {
+                flushGroup();
+                section = Sec::Stocks;
+                continue;
+            }
+            if (line == QStringLiteral("groups:")) {
+                flushGroup();
+                section = Sec::Groups;
+                continue;
+            }
+        }
+
+        if (section == Sec::Groups || section == Sec::GroupStocks) {
+            // "  - name: GroupName" — new group list item (2-space indent)
+            static const QRegularExpression rGroupName("^\\s{2}-\\s+name\\s*:\\s*(.+)$");
+            const QRegularExpressionMatch mGroupName = rGroupName.match(rawLine.trimmed().isEmpty() ? rawLine : rawLine);
+            {
+                const QRegularExpressionMatch m = QRegularExpression("^\\s{1,3}-\\s+name\\s*:\\s*(.+)$").match(rawLine);
+                if (m.hasMatch()) {
+                    flushGroup();
+                    curGroup.name = m.captured(1).trimmed();
+                    inGroup = true;
+                    section = Sec::Groups;
+                    continue;
+                }
+            }
+            // "    stocks:" — stock list inside a group (4-space indent)
+            {
+                const QRegularExpressionMatch m = QRegularExpression("^\\s{2,5}stocks\\s*:\\s*$").match(rawLine);
+                if (m.hasMatch() && inGroup) {
+                    section = Sec::GroupStocks;
+                    continue;
+                }
+            }
+            // "      - code" — stock code inside group stocks (6-space indent)
+            if (section == Sec::GroupStocks) {
+                const QRegularExpressionMatch m = QRegularExpression("^\\s+-\\s+(\\S+)").match(rawLine);
+                if (m.hasMatch()) {
+                    const QString code = watchlist_utils::normalizeApiWatchCode(m.captured(1).trimmed());
+                    if (!code.isEmpty()) {
+                        curGroup.stockCodes.append(code);
+                    }
+                }
+            }
+        }
+    }
+
+    flushGroup();
+
+    qInfo() << "ConfigManager::loadGroupsFromYaml loaded" << out.size() << "groups from" << filePath;
+    return out;
+}
+
+bool ConfigManager::saveGroupsToYaml(const QString& filePath, const QVector<StockGroup>& groups) {
+    // Preserve existing stocks when only updating groups.
+    const QVector<StockItem> currentStocks = loadStocksFromYaml(filePath);
+    return saveDataYaml(filePath, currentStocks, groups);
+}
+
+bool ConfigManager::saveDataYaml(
+    const QString& filePath,
+    const QVector<StockItem>& stocks,
+    const QVector<StockGroup>& groups
+) {
     if (filePath.isEmpty()) {
-        qWarning() << "ConfigManager::saveStocksToYaml path is empty.";
+        qWarning() << "ConfigManager::saveDataYaml path is empty.";
         return false;
     }
 
-    qInfo() << "ConfigManager::saveStocksToYaml begin path=" << filePath
-            << "count=" << stocks.size();
+    qInfo() << "ConfigManager::saveDataYaml begin path=" << filePath
+            << "stocks=" << stocks.size()
+            << "groups=" << groups.size();
 
     QString content;
     content += QStringLiteral("ver: 1\n\n");
@@ -231,36 +336,53 @@ bool ConfigManager::saveStocksToYaml(const QString& filePath, const QVector<Stoc
         if (normalizedCode.isEmpty()) {
             continue;
         }
-
         content += QStringLiteral("  - code: ") + normalizedCode + QStringLiteral("\n");
         const QString normalizedName = s.name.trimmed().isEmpty() ? normalizedCode : s.name.trimmed();
         content += QStringLiteral("    name: ") + normalizedName + QStringLiteral("\n");
     }
 
+    if (!groups.isEmpty()) {
+        content += QStringLiteral("\n# groups\n");
+        content += QStringLiteral("groups:\n");
+        for (const StockGroup& g : groups) {
+            const QString gname = g.name.trimmed();
+            if (gname.isEmpty()) {
+                continue;
+            }
+            content += QStringLiteral("  - name: ") + gname + QStringLiteral("\n");
+            content += QStringLiteral("    stocks:\n");
+            for (const QString& code : g.stockCodes) {
+                if (!code.trimmed().isEmpty()) {
+                    content += QStringLiteral("      - ") + code.trimmed() + QStringLiteral("\n");
+                }
+            }
+        }
+    }
+
     QSaveFile file(filePath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        qWarning() << "ConfigManager::saveStocksToYaml open failed"
+        qWarning() << "ConfigManager::saveDataYaml open failed"
                    << filePath << file.errorString();
         return false;
     }
     const QByteArray bytes = content.toUtf8();
     if (file.write(bytes) != bytes.size()) {
-        qWarning() << "ConfigManager::saveStocksToYaml write failed"
+        qWarning() << "ConfigManager::saveDataYaml write failed"
                    << filePath << file.errorString();
         file.cancelWriting();
         return false;
     }
     const bool committed = file.commit();
     if (!committed) {
-        qWarning() << "ConfigManager::saveStocksToYaml commit failed"
+        qWarning() << "ConfigManager::saveDataYaml commit failed"
                    << filePath << file.errorString();
         return false;
     }
 
-    qInfo() << "ConfigManager::saveStocksToYaml success path=" << filePath
-            << "count=" << stocks.size();
+    qInfo() << "ConfigManager::saveDataYaml success path=" << filePath;
     return true;
 }
+
 
 AppConfig ConfigManager::loadConfig() {
     AppConfig cfg;
@@ -435,6 +557,11 @@ AppConfig ConfigManager::loadConfig() {
         "ui/marketBreadthWindowRect",
         cfg.marketBreadthWindowRect
     ).toRect();
+    cfg.groupSwitchHotkeyPrefix = s.value(
+        "ui/groupSwitchHotkeyPrefix",
+        cfg.groupSwitchHotkeyPrefix
+    ).toString();
+    cfg.groupAllPosition = s.value("ui/groupAllPosition", 0).toInt();
 
     for (int i = 0; i < ColCount; ++i) {
         cfg.visibleColumns[i] = s.value(
@@ -649,6 +776,8 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue("ui/trayIconPath", cfg.trayIconPath);
     s.setValue("ui/windowRect", cfg.windowRect);
     s.setValue("ui/marketBreadthWindowRect", cfg.marketBreadthWindowRect);
+    s.setValue("ui/groupSwitchHotkeyPrefix", cfg.groupSwitchHotkeyPrefix);
+    s.setValue("ui/groupAllPosition", cfg.groupAllPosition);
 
     for (int i = 0; i < ColCount; ++i) {
         s.setValue(QString("ui/columns/%1").arg(i), cfg.visibleColumns.value(i, true));

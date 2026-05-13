@@ -15,7 +15,14 @@ public:
         const QString& filePath,
         bool* migratedLegacyCodes = nullptr
     );
+    static QVector<StockGroup> loadGroupsFromYaml(const QString& filePath);
     static bool saveStocksToYaml(const QString& filePath, const QVector<StockItem>& stocks);
+    static bool saveGroupsToYaml(const QString& filePath, const QVector<StockGroup>& groups);
+    static bool saveDataYaml(
+        const QString& filePath,
+        const QVector<StockItem>& stocks,
+        const QVector<StockGroup>& groups
+    );
     static QString appSettingsFilePath();
     static AppConfig loadConfig();
     static void saveConfig(const AppConfig& cfg);

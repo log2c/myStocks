@@ -52,6 +52,20 @@ using watchlist_utils::normalizeApiWatchCode;
 using watchlist_utils::normalizeFutureCode;
 using watchlist_utils::watchCodeKey;
 
+// Map a visual group-bar index (0..total-1) to a logical group index
+// (0 = "所有", 1..n = custom groups in m_groups order).
+// allPos = visual position of "所有".
+static int visualToLogicalGroup(int visual, int allPos) {
+    if (visual == allPos) return 0;
+    return visual < allPos ? visual + 1 : visual;
+}
+
+// Map a logical group index to the visual position in the group bar.
+static int logicalToVisualGroup(int logical, int allPos) {
+    if (logical == 0) return allPos;
+    return logical <= allPos ? logical - 1 : logical;
+}
+
 QRect resetFloatingWindowRect() {
     const AppConfig defaultCfg;
     QRect rect = defaultCfg.windowRect;
@@ -158,12 +172,26 @@ AppController::AppController(QObject* parent)
             << "indexes=" << m_indexes.size()
             << "merged=" << merged.size();
 
+    // Load custom groups
+    if (!dataYamlPath.isEmpty()) {
+        m_groups = ConfigManager::loadGroupsFromYaml(dataYamlPath);
+        pruneGroupsForDeletedStocks(dataYamlPath);
+    }
+    // Default to first custom group on startup (logical index 1), fall back to "所有" (0)
+    m_activeGroupIndex = m_groups.isEmpty() ? 0 : 1;
+
     m_model = new QuoteModel(this);
     m_model->setLanguage(m_resolvedLanguage);
     m_model->setConfig(m_cfg);
-    m_model->setStocks(merged);
+    m_model->setStocks(mergedWatchItemsForGroup());
 
     m_window = new FloatingWindow(m_model);
+    m_window->setIndexCount(m_indexes.size());
+    applyGroupsToWindow();
+    connect(m_window, &FloatingWindow::groupSwitchRequested, this, [this](int visualIdx) {
+        const int allPos = qBound(0, m_cfg.groupAllPosition, m_groups.size());
+        applyActiveGroup(visualToLogicalGroup(visualIdx, allPos));
+    });
     connect(m_window, &FloatingWindow::forceRefreshRequested, this, [this]() {
         refreshQuotes(true);
         refreshHotRanks(true);
@@ -209,6 +237,7 @@ AppController::AppController(QObject* parent)
     }
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     setupHotkey();
+    setupGroupHotkeys();
 #endif
     rebuildProvider();
     rebuildHotRankProvider();
@@ -497,6 +526,38 @@ QVector<StockItem> AppController::filterYamlStocks(
     return out;
 }
 
+bool AppController::pruneGroupsForDeletedStocks(const QString& dataPath) {
+    QSet<QString> stockKeys;
+    for (const StockItem& s : m_stocks) {
+        stockKeys.insert(watchCodeKey(s.code));
+    }
+
+    bool anyChanged = false;
+    for (StockGroup& group : m_groups) {
+        const int oldSize = group.stockCodes.size();
+        QStringList pruned;
+        for (const QString& code : group.stockCodes) {
+            if (stockKeys.contains(watchCodeKey(code))) {
+                pruned.append(code);
+            } else {
+                qInfo() << "pruneGroupsForDeletedStocks: removed" << code
+                        << "from group" << group.name;
+            }
+        }
+        if (pruned.size() != oldSize) {
+            group.stockCodes = std::move(pruned);
+            anyChanged = true;
+        }
+    }
+
+    if (anyChanged && !dataPath.isEmpty()) {
+        ConfigManager::saveGroupsToYaml(dataPath, m_groups);
+        qInfo() << "pruneGroupsForDeletedStocks: saved updated groups to" << dataPath;
+    }
+
+    return anyChanged;
+}
+
 QVector<StockItem> AppController::mergedWatchItems() const {
     QVector<StockItem> out;
     out.reserve(m_indexes.size() + m_stocks.size());
@@ -521,6 +582,48 @@ QVector<StockItem> AppController::mergedWatchItems() const {
 
     for (const StockItem& item : m_stocks) {
         appendUnique(item);
+    }
+
+    return out;
+}
+
+QVector<StockItem> AppController::mergedWatchItemsForGroup() const {
+    if (m_activeGroupIndex == 0 || m_activeGroupIndex > m_groups.size()) {
+        return mergedWatchItems();
+    }
+    const StockGroup& group = m_groups.at(m_activeGroupIndex - 1);
+
+    // Always include indexes, then filter stocks by group membership
+    QVector<StockItem> out;
+    out.reserve(m_indexes.size() + group.stockCodes.size());
+
+    QSet<QString> seen;
+    const auto appendUnique = [&out, &seen](const StockItem& item) {
+        const QString code = item.code.trimmed();
+        if (code.isEmpty()) {
+            return;
+        }
+        const QString key = watchCodeKey(code);
+        if (seen.contains(key)) {
+            return;
+        }
+        seen.insert(key);
+        out.push_back({code, item.name.trimmed()});
+    };
+
+    for (const StockItem& item : m_indexes) {
+        appendUnique(item);
+    }
+
+    QSet<QString> groupCodes;
+    groupCodes.reserve(group.stockCodes.size());
+    for (const QString& c : group.stockCodes) {
+        groupCodes.insert(watchCodeKey(c));
+    }
+    for (const StockItem& item : m_stocks) {
+        if (groupCodes.contains(watchCodeKey(item.code.trimmed()))) {
+            appendUnique(item);
+        }
     }
 
     return out;
@@ -613,6 +716,7 @@ void AppController::resetFloatingWindowPosition() {
 
     m_cfg.windowRect = resetFloatingWindowRect();
     m_cfg.marketBreadthWindowRect = resetMarketBreadthWindowRect();
+    m_window->unlockWidth();  // recompute column widths after position reset
     m_window->setGeometry(m_cfg.windowRect);
     m_window->setMarketBreadthDetailPopupGeometry(m_cfg.marketBreadthWindowRect);
     m_window->show();
@@ -644,6 +748,7 @@ void AppController::openSettings() {
             m_indexes,
             currentApiNamesByCode(),
             findDataYaml(),
+            m_groups,
             m_window
         );
         accepted = (dlg.exec() == QDialog::Accepted);
@@ -651,6 +756,13 @@ void AppController::openSettings() {
             updatedCfg = dlg.config();
             m_indexes = dlg.selectedIndexes();
             saveExtraWatchItems();
+            // Save updated groups
+            const QVector<StockGroup> newGroups = dlg.groups();
+            const QString dataPath = findDataYaml();
+            if (!dataPath.isEmpty()) {
+                ConfigManager::saveGroupsToYaml(dataPath, newGroups);
+            }
+            m_groups = newGroups;
         }
     }
 
@@ -675,8 +787,9 @@ void AppController::openSettings() {
             if (!reloadedRaw.isEmpty() || !ignoredIndexes.isEmpty()) {
                 m_stocks = reloaded;
                 m_apiNamesByCode.clear();
+                pruneGroupsForDeletedStocks(dataPath);
                 if (m_model) {
-                    m_model->setStocks(mergedWatchItems());
+                    m_model->setStocks(mergedWatchItemsForGroup());
                 }
             }
         }
@@ -716,10 +829,16 @@ void AppController::openSettings() {
 
     m_model->setLanguage(m_resolvedLanguage);
     m_model->setConfig(m_cfg);
-    m_model->setStocks(mergedWatchItems());
+    m_model->setStocks(mergedWatchItemsForGroup());
 
     // Recreate the floating window so column visibility/order takes effect cleanly.
     m_window = new FloatingWindow(m_model);
+    m_window->setIndexCount(m_indexes.size());
+    applyGroupsToWindow();
+    connect(m_window, &FloatingWindow::groupSwitchRequested, this, [this](int visualIdx) {
+        const int allPos = qBound(0, m_cfg.groupAllPosition, m_groups.size());
+        applyActiveGroup(visualToLogicalGroup(visualIdx, allPos));
+    });
     connect(m_window, &FloatingWindow::forceRefreshRequested, this, [this]() {
         refreshQuotes(true);
         refreshHotRanks(true);
@@ -764,6 +883,7 @@ void AppController::openSettings() {
     setupTray();
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     setupHotkey();
+    setupGroupHotkeys();
 #endif
     rebuildProvider();
     rebuildHotRankProvider();
@@ -804,8 +924,19 @@ void AppController::reloadStocksFromYaml() {
     m_probeCheckedAt = QDateTime();
     m_probeTradingDay = true;
 
+    // Also reload groups
+    m_groups = ConfigManager::loadGroupsFromYaml(dataPath);
+    pruneGroupsForDeletedStocks(dataPath);
+    if (m_activeGroupIndex > m_groups.size()) {
+        m_activeGroupIndex = 0;
+    }
+    if (m_window) {
+        m_window->unlockWidth();  // new stocks/config may require different column widths
+    }
+    applyGroupsToWindow(); // calls setIndexCount + setGroups
+
     if (m_model) {
-        m_model->setStocks(mergedWatchItems());
+        m_model->setStocks(mergedWatchItemsForGroup());
     }
 
     // Manual reload should refresh immediately regardless of polling window.
@@ -900,7 +1031,7 @@ void AppController::refreshQuotes(bool force) {
         return;
     }
 
-    const QVector<StockItem> merged = mergedWatchItems();
+    const QVector<StockItem> merged = mergedWatchItemsForGroup();
     if (!merged.isEmpty()) {
         m_provider->fetchQuotes(merged);
     }
@@ -1179,7 +1310,101 @@ void AppController::setupHotkey() {
         }
     }
 }
+
+void AppController::setupGroupHotkeys() {
+    teardownGroupHotkeys();
+
+    const QString prefix = m_cfg.groupSwitchHotkeyPrefix.trimmed();
+    if (prefix.isEmpty() || m_groups.isEmpty()) {
+        return;
+    }
+
+    const int allPos    = qBound(0, m_cfg.groupAllPosition, m_groups.size());
+    const int total     = 1 + m_groups.size();
+    const int maxKeys   = qMin(total, 10); // F1..F10
+
+    QStringList failed;
+    for (int vi = 0; vi < maxKeys; ++vi) {
+        const QString seqStr = prefix + QStringLiteral("+F%1").arg(vi + 1);
+        const QKeySequence seq = QKeySequence::fromString(seqStr, QKeySequence::PortableText);
+        if (seq.isEmpty()) {
+            qWarning() << "Invalid group hotkey sequence:" << seqStr;
+            continue;
+        }
+
+#if defined(Q_OS_MACOS)
+        addMacHotkeyMapping(seq);
 #endif
+
+        const int logicalIdx = visualToLogicalGroup(vi, allPos);
+        auto* hotkey = new QHotkey(seq, true, this);
+        connect(hotkey, &QHotkey::activated, this, [this, logicalIdx]() {
+            applyActiveGroup(logicalIdx);
+        });
+        m_groupHotkeys.append(hotkey);
+
+        if (!hotkey->isRegistered()) {
+            failed << QStringLiteral("F%1").arg(vi + 1);
+        }
+    }
+
+    qInfo() << "Registered" << m_groupHotkeys.size() << "group hotkeys with prefix=" << prefix
+            << "failed=" << failed;
+
+    if (!failed.isEmpty() && m_tray) {
+        m_tray->showMessage(
+            i18n::t("app.name", m_resolvedLanguage),
+            QStringLiteral("%1 %2").arg(
+                prefix,
+                i18n::t("hotkey.group.register.failed", m_resolvedLanguage)
+            ),
+            QSystemTrayIcon::Warning,
+            3000
+        );
+    }
+}
+
+void AppController::teardownGroupHotkeys() {
+    for (QHotkey* hk : m_groupHotkeys) {
+        if (hk) {
+            hk->setRegistered(false);
+            hk->deleteLater();
+        }
+    }
+    m_groupHotkeys.clear();
+}
+
+#endif
+
+void AppController::applyActiveGroup(int groupIndex) {
+    if (groupIndex < 0 || groupIndex > m_groups.size()) {
+        return;
+    }
+    if (groupIndex == m_activeGroupIndex) {
+        return;
+    }
+    m_activeGroupIndex = groupIndex;
+    // Set index count before resetting the model so adjustWindowSize sees the right value
+    if (m_window) {
+        m_window->setIndexCount(m_indexes.size());
+    }
+    m_model->setStocks(mergedWatchItemsForGroup());
+    if (m_window) {
+        const int allPos = qBound(0, m_cfg.groupAllPosition, m_groups.size());
+        m_window->setActiveGroupIndex(logicalToVisualGroup(groupIndex, allPos));
+    }
+    refreshQuotes(true);
+}
+
+void AppController::applyGroupsToWindow() {
+    if (!m_window) {
+        return;
+    }
+    const int allPos = qBound(0, m_cfg.groupAllPosition, m_groups.size());
+    const int visualActive = logicalToVisualGroup(m_activeGroupIndex, allPos);
+    m_window->setIndexCount(m_indexes.size());
+    m_window->setGroups(m_groups, visualActive, allPos);
+}
 
 void AppController::rebuildProvider() {
     if (m_provider) {

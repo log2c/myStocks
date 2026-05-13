@@ -4,6 +4,7 @@
 #include "types.h"
 
 #include <QFrame>
+#include <QHBoxLayout>
 #include <QPoint>
 #include <QTableView>
 #include <QTimer>
@@ -31,8 +32,18 @@ public:
         std::function<void()> reloadCallback
     );
 
+    // Update displayed groups; allGroups includes "所有" at index 0.
+    void setGroups(const QVector<StockGroup>& customGroups, int activeGroupIndex, int allGroupPosition = 0);
+    void setActiveGroupIndex(int index);
+    // Set the number of leading model rows that are "index" rows (displayed in top table).
+    void setIndexCount(int count);
+    // Release the locked column widths so they are recomputed on the next layout pass.
+    void unlockWidth();
+
 signals:
     void forceRefreshRequested();
+    // Emitted when user clicks a group tab (0 = "所有", 1+ = custom group).
+    void groupSwitchRequested(int index);
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -57,8 +68,8 @@ private:
     void refreshMousePassthroughState(bool force = false);
     bool setMousePassthroughActive(bool active);
     bool canShowTimelinePopup() const;
-    void updateHoverPopupsForViewport(const QPoint& viewportPos);
-    void updateTimelinePopupForHover(const QPoint& viewportPos);
+    void updateHoverPopupsForViewport(const QPoint& viewportPos, QTableView* sourceView = nullptr);
+    void updateTimelinePopupForHover(const QPoint& viewportPos, QTableView* sourceView = nullptr);
     void hideTimelinePopup();
     void refreshMarketBreadthDetailPopup();
     void hideMarketBreadthDetailPopup();
@@ -70,11 +81,15 @@ private:
     void applyColumns();
     void adjustWindowSize();
     int autoColumnWidthFromContent(int column) const;
+    void rebuildGroupBar();
+    void applyGroupBarStyle();
+    void applyRowVisibility();
 
 private:
     QuoteModel* m_model = nullptr;
     QFrame* m_panel = nullptr;
-    QTableView* m_table = nullptr;
+    QTableView* m_table = nullptr;       // top section: index rows + header
+    QTableView* m_stockTable = nullptr;  // bottom section: stock rows (group-filtered)
     TimelineChartPopup* m_timelinePopup = nullptr;
     MarketBreadthDetailWindow* m_marketBreadthDetailPopup = nullptr;
     QString m_timelineHoverCode;
@@ -92,4 +107,13 @@ private:
     bool m_hoverReadingActive = false;
     qreal m_hoverReadingProgress = 0.0;
     bool m_mousePassthroughActive = false;
+
+    // Group bar
+    QWidget* m_groupBar = nullptr;
+    QHBoxLayout* m_groupBarLayout = nullptr;
+    QVector<StockGroup> m_customGroups;
+    int m_activeGroupIndex = 0; // 0 = "所有"
+    int m_indexCount = 0;       // number of leading model rows that are index rows
+    int m_allGroupPosition = 0; // visual position of "所有" button in the group bar
+    QHash<int, int> m_maxColumnWidths; // logical col → max pixel width seen; empty = no history yet
 };

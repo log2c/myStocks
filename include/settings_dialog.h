@@ -34,11 +34,13 @@ public:
         const QVector<StockItem>& indexes,
         const QHash<QString, QString>& apiNamesByCode,
         const QString& dataYamlPath,
+        const QVector<StockGroup>& groups,
         QWidget* parent = nullptr
     );
 
     AppConfig config() const;
     QVector<StockItem> selectedIndexes() const;
+    QVector<StockGroup> groups() const;
 
 private:
     QString trText(const QString& key) const;
@@ -57,6 +59,7 @@ private:
     QWidget* buildOtherTab();
     QWidget* buildStocksTab();
     QWidget* buildIndexSectorTab();
+    QWidget* buildGroupsTab();
     QWidget* buildAboutTab();
 
     void updateHotkeyIndicator(QLabel* indicator, const QKeySequence& seq);
@@ -68,6 +71,7 @@ private:
     AppConfig m_cfg;
     QVector<StockItem> m_stocks;
     QVector<StockItem> m_indexes;
+    QVector<StockGroup> m_groups;
     QHash<QString, QString> m_apiNamesByCode;
     QString m_dataYamlPath;
     QString m_uiLanguage;
@@ -162,6 +166,14 @@ private:
 
     // Common indexes tab
     QListWidget* m_indexList = nullptr;
+
+    // Groups tab
+    QListWidget* m_groupList = nullptr;       // left panel: list of groups (incl. "所有" sentinel)
+    QListWidget* m_groupMemberList = nullptr; // right-top panel: ordered group members
+    QListWidget* m_groupStockList = nullptr;  // right-bottom panel: all stocks with checkboxes
+    QComboBox* m_groupMod1Combo = nullptr;    // modifier 1 dropdown for group switch hotkey
+    QComboBox* m_groupMod2Combo = nullptr;    // modifier 2 dropdown for group switch hotkey
+    QLabel* m_groupHotkeyPreviewLabel = nullptr;
 
     // About tab – update checker
     Updater* m_updater = nullptr;
