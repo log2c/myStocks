@@ -140,13 +140,22 @@ jobs:
           SAFE_REF="${SAFE_REF//\//-}"
           echo "SAFE_REF=${SAFE_REF}" >> "$GITHUB_ENV"
 
+      - name: Detect prerelease
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" == *beta* || "$TAG" == *alpha* || "$TAG" == *rc* ]]; then
+            echo "IS_PRERELEASE=true" >> "$GITHUB_ENV"
+          else
+            echo "IS_PRERELEASE=false" >> "$GITHUB_ENV"
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: myStocks ${{ github.ref_name }}
           draft: false
-          prerelease: false
+          prerelease: ${{ env.IS_PRERELEASE }}
           files: |
             MyStocks-macos-release-${{ env.SAFE_REF }}.zip
             MyStocks-windows-release-${{ env.SAFE_REF }}.zip

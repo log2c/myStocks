@@ -176,6 +176,8 @@ struct AppConfig {
 
     bool debugIgnoreTradingTime = false;
 
+    bool acceptBetaUpdates = false;
+
     bool simpleModeEnabled = false;
     bool blinkReminderEnabled = false;
     bool trayTooltipEnabled = false;

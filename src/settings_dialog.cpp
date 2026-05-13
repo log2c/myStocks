@@ -464,6 +464,7 @@ AppConfig SettingsDialog::config() const {
     out.proxyPort = m_proxyPortSpin->value();
     out.proxyUser = m_proxyUserEdit->text().trimmed();
     out.debugIgnoreTradingTime = m_debugIgnoreTradingTimeCheck->isChecked();
+    out.acceptBetaUpdates = m_acceptBetaUpdatesCheck->isChecked();
     out.logEnabled = m_logEnabledCheck ? m_logEnabledCheck->isChecked() : out.logEnabled;
     out.logLevel = app_logging::normalizeLogLevel(m_logLevelCombo->currentData().toString());
     out.transparentBackgroundEnabled = m_transparentBackgroundCheck->isChecked();
@@ -1553,10 +1554,10 @@ QWidget* SettingsDialog::buildOtherTab() {
     QFormLayout* form = new QFormLayout(debugWidget);
     applyCompactFormLayout(form);
 
-    m_debugIgnoreTradingTimeCheck = new QCheckBox(
-        trText("settings.general.debugIgnoreTradingTime"),
-        debugWidget
-    );
+    m_acceptBetaUpdatesCheck = new QCheckBox(debugWidget);
+    m_acceptBetaUpdatesCheck->setChecked(m_cfg.acceptBetaUpdates);
+
+    m_debugIgnoreTradingTimeCheck = new QCheckBox(debugWidget);
     m_debugIgnoreTradingTimeCheck->setChecked(m_cfg.debugIgnoreTradingTime);
 
     m_logLevelCombo = new QComboBox(debugWidget);
@@ -1573,7 +1574,8 @@ QWidget* SettingsDialog::buildOtherTab() {
         m_logLevelCombo->setCurrentIndex(logLevelIndex);
     }
 
-    addCompactFormRow(form, m_debugIgnoreTradingTimeCheck);
+    form->addRow(trText("settings.other.acceptBetaUpdates"), m_acceptBetaUpdatesCheck);
+    form->addRow(trText("settings.other.debugMode"), m_debugIgnoreTradingTimeCheck);
     form->addRow(trText("settings.other.logLevel"), m_logLevelCombo);
     root->addWidget(debugWidget);
 

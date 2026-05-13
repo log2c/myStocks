@@ -29,6 +29,7 @@
 #if defined(Q_OS_MACOS)
 #include <Carbon/Carbon.h>
 #endif
+#include <QAction>
 #include <QMenu>
 #include <QMessageBox>
 #include <QNetworkReply>
@@ -1162,20 +1163,20 @@ void AppController::setupTray() {
     m_trayBaseIcon = icon;
     m_tray = new QSystemTrayIcon(icon, this);
     QMenu* menu = new QMenu;
-    QAction* toggleAction = menu->addAction(QString(), this, [this]() { toggleWindow(); });
-    const auto updateToggleActionText = [this, toggleAction]() {
-        if (!toggleAction) {
+    m_trayToggleAction = menu->addAction(QString(), this, [this]() { toggleWindow(); });
+    const auto updateToggleActionText = [this]() {
+        if (!m_trayToggleAction) {
             return;
         }
 
         const bool isWindowVisible = m_window && m_window->isVisible();
-        toggleAction->setText(
+        m_trayToggleAction->setText(
             i18n::t(isWindowVisible ? "tray.hideWindow" : "tray.showWindow", m_resolvedLanguage)
         );
     };
     updateToggleActionText();
 
-    menu->addAction(i18n::t("tray.marketBreadth", m_resolvedLanguage), this, [this]() {
+    m_trayMarketBreadthAction = menu->addAction(i18n::t("tray.marketBreadth", m_resolvedLanguage), this, [this]() {
         toggleMarketBreadthDetailWindow();
     });
 
@@ -1220,14 +1221,6 @@ void AppController::setupTray() {
     m_tray->show();
 
     connect(menu, &QMenu::aboutToShow, this, updateToggleActionText);
-
-    connect(m_tray, &QSystemTrayIcon::activated, this,
-        [this](QSystemTrayIcon::ActivationReason reason) {
-            if (reason == QSystemTrayIcon::Trigger) {
-                toggleWindow();
-            }
-        }
-    );
 }
 
 void AppController::updateTrayTooltip() {
@@ -1254,9 +1247,13 @@ void AppController::setupHotkey() {
         m_marketBreadthHotkey = nullptr;
     }
 
-    if (!m_cfg.hotkey.trimmed().isEmpty()) {
+    const QString hotkey1 = m_cfg.hotkey.trimmed();
+    const QString hotkey2 = m_cfg.marketBreadthHotkey.trimmed();
+    const bool sameHotkey = !hotkey1.isEmpty() && hotkey1 == hotkey2;
+
+    if (!hotkey1.isEmpty()) {
         const QKeySequence hotkeySequence =
-            QKeySequence::fromString(m_cfg.hotkey, QKeySequence::PortableText);
+            QKeySequence::fromString(hotkey1, QKeySequence::PortableText);
 
 #if defined(Q_OS_MACOS)
         if (addMacHotkeyMapping(hotkeySequence)) {
@@ -1270,6 +1267,11 @@ void AppController::setupHotkey() {
             true, this
         );
         connect(m_hotkey, &QHotkey::activated, this, [this]() { toggleWindow(); });
+        if (sameHotkey) {
+            connect(m_hotkey, &QHotkey::activated, this, [this]() {
+                toggleMarketBreadthDetailWindow();
+            });
+        }
 
         if (!m_hotkey->isRegistered() && m_tray) {
             m_tray->showMessage(
@@ -1281,9 +1283,9 @@ void AppController::setupHotkey() {
         }
     }
 
-    if (!m_cfg.marketBreadthHotkey.trimmed().isEmpty()) {
+    if (!sameHotkey && !hotkey2.isEmpty()) {
         const QKeySequence marketBreadthHotkeySequence =
-            QKeySequence::fromString(m_cfg.marketBreadthHotkey, QKeySequence::PortableText);
+            QKeySequence::fromString(hotkey2, QKeySequence::PortableText);
 
 #if defined(Q_OS_MACOS)
         if (addMacHotkeyMapping(marketBreadthHotkeySequence)) {
@@ -1309,6 +1311,19 @@ void AppController::setupHotkey() {
             );
         }
     }
+
+    // Update tray menu shortcut display.
+    auto applyTrayShortcut = [](QAction* action, const QString& keyStr) {
+        if (!action) return;
+        const QKeySequence seq = keyStr.isEmpty()
+            ? QKeySequence()
+            : QKeySequence::fromString(keyStr, QKeySequence::PortableText);
+        action->setShortcut(seq);
+        action->setShortcutContext(Qt::WidgetShortcut); // display only, never fires
+        action->setShortcutVisibleInContextMenu(true);
+    };
+    applyTrayShortcut(m_trayToggleAction, hotkey1);
+    applyTrayShortcut(m_trayMarketBreadthAction, sameHotkey ? QString() : hotkey2);
 }
 
 void AppController::setupGroupHotkeys() {

@@ -20,6 +20,7 @@ class IQuoteProvider;
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
 class QHotkey;
 #endif
+class QAction;
 class QuoteModel;
 class QSystemTrayIcon;
 class QTimer;
@@ -100,6 +101,8 @@ private:
     QTimer* m_hotRankTimer = nullptr;
     QTimer* m_marketBreadthTimer = nullptr;
     QSystemTrayIcon* m_tray = nullptr;
+    QAction* m_trayToggleAction = nullptr;
+    QAction* m_trayMarketBreadthAction = nullptr;
     QIcon m_trayBaseIcon;
     QTimer* m_trayErrorBadgeTimer = nullptr;
 

@@ -1969,7 +1969,14 @@ void  MarketBreadthDetailWindow::showCenteredForSnapshot(
 
     QRect targetRect;
     if (m_hasStoredGeometry && geometry().isValid()) {
-        targetRect = adjustedPopupRectForScreen(geometry(), screenRect);
+        // Use the screen where the window was previously positioned, not the
+        // floating window's screen; fall back to the floating window's screen
+        // only when the stored position is off all connected screens.
+        QRect storedScreenRect = screenRect;
+        if (QScreen* storedScreen = QGuiApplication::screenAt(geometry().center())) {
+            storedScreenRect = storedScreen->availableGeometry();
+        }
+        targetRect = adjustedPopupRectForScreen(geometry(), storedScreenRect);
     } else {
         targetRect = QRect(QPoint(0, 0), minimumSize());
         if (screenRect.isValid()) {

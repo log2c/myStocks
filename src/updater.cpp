@@ -21,6 +21,10 @@ namespace {
 constexpr auto kGitHubApiLatestRelease =
     "https://api.github.com/repos/log2c/myStocks/releases/latest";
 
+// GitHub API endpoint for all releases (includes pre-releases).
+constexpr auto kGitHubApiAllReleases =
+    "https://api.github.com/repos/log2c/myStocks/releases";
+
 constexpr int kCheckTimeoutMs = 15000;
 constexpr int kDownloadTimeoutMs = 300000; // 5 min
 
@@ -111,15 +115,20 @@ void Updater::checkForUpdates() {
         m_checkReply = nullptr;
     }
 
-    QNetworkRequest req(QUrl(QString::fromLatin1(kGitHubApiLatestRelease)));
+    const bool useBeta = m_cfg.acceptBetaUpdates;
+    const QString url = useBeta
+        ? QString::fromLatin1(kGitHubApiAllReleases)
+        : QString::fromLatin1(kGitHubApiLatestRelease);
+
+    QNetworkRequest req{QUrl(url)};
     req.setRawHeader("User-Agent", network_utils::effectiveUserAgent(m_cfg).toUtf8());
     req.setRawHeader("Accept", "application/vnd.github+json");
     req.setTransferTimeout(kCheckTimeoutMs);
 
-    qInfo() << "[Updater] checking" << kGitHubApiLatestRelease;
+    qInfo() << "[Updater] checking" << url;
     m_checkReply = m_nam->get(req);
 
-    connect(m_checkReply, &QNetworkReply::finished, this, [this]() {
+    connect(m_checkReply, &QNetworkReply::finished, this, [this, useBeta]() {
         if (!m_checkReply) {
             return;
         }
@@ -137,13 +146,35 @@ void Updater::checkForUpdates() {
 
         QJsonParseError parseErr;
         const QJsonDocument doc = QJsonDocument::fromJson(data, &parseErr);
-        if (parseErr.error != QJsonParseError::NoError || !doc.isObject()) {
+        if (parseErr.error != QJsonParseError::NoError) {
             qWarning() << "[Updater] json parse error:" << parseErr.errorString();
             emit checkFailed(parseErr.errorString());
             return;
         }
 
-        const QJsonObject root = doc.object();
+        // When using beta endpoint the response is an array; pick the first (newest) element.
+        QJsonObject root;
+        if (useBeta) {
+            if (!doc.isArray() || doc.array().isEmpty()) {
+                qInfo() << "[Updater] no releases found";
+                emit noUpdateAvailable();
+                return;
+            }
+            const QJsonValue first = doc.array().first();
+            if (!first.isObject()) {
+                qWarning() << "[Updater] unexpected releases response format";
+                emit checkFailed(QStringLiteral("unexpected format"));
+                return;
+            }
+            root = first.toObject();
+        } else {
+            if (!doc.isObject()) {
+                qWarning() << "[Updater] json parse error: not an object";
+                emit checkFailed(QStringLiteral("unexpected format"));
+                return;
+            }
+            root = doc.object();
+        }
         const QString tagName = root.value(QStringLiteral("tag_name")).toString().trimmed();
         if (tagName.isEmpty()) {
             qInfo() << "[Updater] no release found (empty tag_name)";
