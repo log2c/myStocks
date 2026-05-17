@@ -2589,8 +2589,20 @@ void FloatingWindow::applyRowVisibility() {
         return;
     }
     const int total = m_model->rowCount();
+    int quotesSeen = 0;
     for (int r = 0; r < total; ++r) {
-        const bool isIndex = (r < m_indexCount);
+        const QuoteModel::RowKind kind = m_model->rowKind(r);
+        bool isIndex;
+        if (kind == QuoteModel::RowKindMarketBreadth) {
+            // Market breadth row precedes quotes and always belongs to the top table.
+            isIndex = true;
+        } else if (kind == QuoteModel::RowKindQuote) {
+            isIndex = (quotesSeen < m_indexCount);
+            ++quotesSeen;
+        } else {
+            // Hot sector / hot concept rows trail the quotes — treat as stock rows.
+            isIndex = false;
+        }
         m_table->setRowHidden(r, !isIndex);
         m_stockTable->setRowHidden(r, isIndex);
     }
@@ -3838,7 +3850,22 @@ void FloatingWindow::adjustWindowSize() {
         : 0;
 
     const int totalModelRows = m_model ? m_model->rowCount() : 0;
-    const int indexRows = qMin(m_indexCount, totalModelRows);
+    // Count special rows that precede quotes (e.g. market breadth) separately so that
+    // m_indexCount is applied only to quote rows, keeping all pre-quote special rows in
+    // the top table.
+    int specialBeforeQuotes = 0;
+    int quoteRowCount = 0;
+    bool anyQuoteSeen = false;
+    for (int r = 0; r < totalModelRows; ++r) {
+        if (m_model->rowKind(r) == QuoteModel::RowKindQuote) {
+            anyQuoteSeen = true;
+            ++quoteRowCount;
+        } else if (!anyQuoteSeen) {
+            ++specialBeforeQuotes;
+        }
+    }
+    const int indexQuoteRows = qMin(m_indexCount, quoteRowCount);
+    const int indexRows = specialBeforeQuotes + indexQuoteRows;
     const int stockRows = qMax(0, totalModelRows - indexRows);
 
     const int indexTableHeight = headerHeight + indexRows * rowHeight;
