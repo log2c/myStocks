@@ -63,6 +63,9 @@ private:
     QWidget* buildAboutTab();
 
     void updateHotkeyIndicator(QLabel* indicator, const QKeySequence& seq);
+    QString groupMemberDisplayName(const QString& code) const;
+    void refreshGroupStockChoices();
+    void refreshCurrentGroupSelection();
 
     void parseSearchResult(const QByteArray& data);
     void doStockSearch(bool forceSearch = false);

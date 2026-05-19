@@ -1168,6 +1168,28 @@ protected:
             return plot.right();
         };
 
+        bool hasHongKongAfternoonMarker = false;
+        int hongKongAfternoonMarkerX = 0;
+        if (hasTradePeriodAxis && market == TimelineMarket::HongKong) {
+            QDate tradeDate;
+            for (auto it = m_points.crbegin(); it != m_points.crend(); ++it) {
+                if (it->time.isValid()) {
+                    tradeDate = it->time.date();
+                    break;
+                }
+            }
+            if (tradeDate.isValid()) {
+                const QDateTime markerTime(tradeDate, QTime(15, 0));
+                for (const TradePeriod& p : m_tradePeriods) {
+                    if (p.begin <= markerTime && markerTime < p.end) {
+                        hasHongKongAfternoonMarker = true;
+                        hongKongAfternoonMarkerX = xOfTradePeriodTime(markerTime);
+                        break;
+                    }
+                }
+            }
+        }
+
         const QPen gridPen(m_cfg.timelineChartGridColor, 0.3, Qt::SolidLine);
         QPen periodEndPen(m_cfg.timelineChartGridColor, 1.0, Qt::CustomDashLine);
         periodEndPen.setDashPattern({3.0, 2.0});
@@ -1187,6 +1209,15 @@ protected:
                 painter.setPen(periodEndPen);
                 const int xE = xOfTradePeriodTime(p.end);
                 painter.drawLine(xE, plot.top(), xE, plot.bottom());
+            }
+            if (hasHongKongAfternoonMarker) {
+                painter.setPen(periodEndPen);
+                painter.drawLine(
+                    hongKongAfternoonMarkerX,
+                    plot.top(),
+                    hongKongAfternoonMarkerX,
+                    plot.bottom()
+                );
             }
         } else if (hasSessionAxis) {
             painter.setPen(gridPen);
@@ -1260,6 +1291,16 @@ protected:
                     .arg(tradePeriodTimeLabel(cur.end))
                     .arg(tradePeriodTimeLabel(next.begin));
                 painter.drawText(xBreak - 54, xLabelY, 108, 18, Qt::AlignHCenter | Qt::AlignTop, breakLabel);
+            }
+            if (hasHongKongAfternoonMarker) {
+                painter.drawText(
+                    hongKongAfternoonMarkerX - 30,
+                    xLabelY,
+                    60,
+                    18,
+                    Qt::AlignHCenter | Qt::AlignTop,
+                    QStringLiteral("15:00")
+                );
             }
         } else if (hasSessionAxis) {
             const int xOpen  = xOfSessionTime(session.morningStart);

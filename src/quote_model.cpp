@@ -239,7 +239,7 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
             return indicatorSymbol(q.code, q.pct);
         case ColCost: {
             if (std::isnan(q.cost) || q.cost <= 0.0) return QString();
-            return QString::number(q.cost, 'f', 2);
+            return QString::number(q.cost, 'f', 3);
         }
         case ColCostPct: {
             if (std::isnan(q.cost) || q.cost <= 0.0 || std::isnan(q.price)) return QString();

@@ -30,6 +30,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPalette>
 #include <QPixmap>
 #include <QProgressBar>
 #include <QRadioButton>
@@ -313,10 +314,10 @@ private:
         const bool costEditable = watchlist_utils::isCostEditableCode(code);
         if (costEditable) {
             QLineEdit* costEdit = new QLineEdit();
-            costEdit->setValidator(new QDoubleValidator(0.0, 1e9, 6, costEdit));
+            costEdit->setValidator(new QDoubleValidator(0.0, 1e9, 3, costEdit));
             costEdit->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
             if (std::isfinite(cost) && cost > 0.0) {
-                costEdit->setText(QString::number(cost, 'f', 2));
+                costEdit->setText(QString::number(cost, 'f', 3));
             }
             costEdit->setPlaceholderText(QStringLiteral("--"));
             setCellWidget(row, 3, costEdit);
@@ -500,6 +501,19 @@ SettingsDialog::SettingsDialog(
     connect(box, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(box, &QDialogButtonBox::rejected, this, &QDialog::reject);
     root->addWidget(box);
+
+#ifdef WIN32
+    setStyleSheet(
+        QStringLiteral(
+            "QLineEdit, QAbstractSpinBox {"
+            "background-color: palette(base);"
+            "color: palette(text);"
+            "selection-background-color: palette(highlight);"
+            "selection-color: palette(highlighted-text);"
+            "}"
+        )
+    );
+#endif
 
 }
 
@@ -1693,6 +1707,10 @@ QWidget* SettingsDialog::buildOtherTab() {
         m_trayIconPaths.append(resourcePath);
 
         QWidget* cell = new QWidget(trayGrid);
+#ifdef WIN32
+        cell->setObjectName(QStringLiteral("trayIconCell"));
+        cell->setAttribute(Qt::WA_StyledBackground, true);
+#endif
         QVBoxLayout* cl = new QVBoxLayout(cell);
         cl->setContentsMargins(2, 2, 2, 2);
         cl->setSpacing(2);
@@ -1709,6 +1727,57 @@ QWidget* SettingsDialog::buildOtherTab() {
 
         QRadioButton* rb = new QRadioButton(cell); // no text
         rb->setToolTip(tooltip);
+#ifdef WIN32
+        rb->setObjectName(QStringLiteral("trayIconRadio"));
+
+        const auto updateTrayIconSelectionStyle = [this, cell, rb]() {
+            const QPalette pal = this->palette();
+            QColor cellBorder = pal.color(QPalette::Mid);
+            QColor cellBackground(0, 0, 0, 0);
+            if (rb->isChecked()) {
+                cellBorder = pal.color(QPalette::Highlight);
+                cellBackground = pal.color(QPalette::Highlight);
+                cellBackground.setAlpha(56);
+            }
+
+            cell->setStyleSheet(
+                QStringLiteral(
+                    "#trayIconCell {"
+                    "border: %1px solid %2;"
+                    "border-radius: 8px;"
+                    "background-color: %3;"
+                    "}"
+                )
+                    .arg(rb->isChecked() ? 2 : 1)
+                    .arg(cellBorder.name(QColor::HexArgb))
+                    .arg(cellBackground.name(QColor::HexArgb))
+            );
+
+            rb->setStyleSheet(
+                QStringLiteral(
+                    "QRadioButton::indicator {"
+                    "width: 15px;"
+                    "height: 15px;"
+                    "border-radius: 7px;"
+                    "border: 2px solid %1;"
+                    "background-color: %2;"
+                    "}"
+                    "QRadioButton::indicator:checked {"
+                    "border: 2px solid %3;"
+                    "background-color: %3;"
+                    "}"
+                )
+                    .arg(pal.color(QPalette::Mid).name(QColor::HexArgb))
+                    .arg(pal.color(QPalette::Base).name(QColor::HexArgb))
+                    .arg(pal.color(QPalette::Highlight).name(QColor::HexArgb))
+            );
+        };
+
+        connect(rb, &QRadioButton::toggled, cell, [updateTrayIconSelectionStyle](bool) {
+            updateTrayIconSelectionStyle();
+        });
+        updateTrayIconSelectionStyle();
+#endif
 
         cl->addWidget(iconLabel, 0, Qt::AlignCenter);
         cl->addWidget(rb, 0, Qt::AlignCenter);
@@ -1848,12 +1917,9 @@ QWidget* SettingsDialog::buildStocksTab() {
     btnLayout->setContentsMargins(0, 0, 0, 0);
     btnLayout->setSpacing(6);
     QPushButton* saveBtn = new QPushButton(trText("settings.stocks.save"), btnRow);
-    QPushButton* resetBtn = new QPushButton(trText("settings.stocks.reset"), btnRow);
     saveBtn->setMinimumWidth(82);
-    resetBtn->setMinimumWidth(82);
     btnLayout->addStretch();
     btnLayout->addWidget(saveBtn);
-    btnLayout->addWidget(resetBtn);
     vbox->addWidget(btnRow);
 
     // --- Network setup ---
@@ -1958,6 +2024,32 @@ QWidget* SettingsDialog::buildStocksTab() {
             static_cast<StockTableWidget*>(m_stockTable)->stocks();
         qInfo() << "[StocksTab] save requested path=" << m_dataYamlPath << "count=" << stocks.size();
         if (ConfigManager::saveStocksToYaml(m_dataYamlPath, stocks)) {
+            const QVector<StockItem> reloadedStocks = ConfigManager::loadStocksFromYaml(m_dataYamlPath);
+            QVector<StockItem> filteredStocks;
+            filteredStocks.reserve(reloadedStocks.size());
+            for (const StockItem& stock : reloadedStocks) {
+                if (!isPredefinedIndexCode(stock.code)) {
+                    filteredStocks.push_back(stock);
+                }
+            }
+            m_stocks = std::move(filteredStocks);
+
+            QSet<QString> stockKeys;
+            for (const StockItem& stock : m_stocks) {
+                stockKeys.insert(watchCodeKey(stock.code));
+            }
+            for (StockGroup& group : m_groups) {
+                QStringList prunedCodes;
+                for (const QString& code : group.stockCodes) {
+                    if (stockKeys.contains(watchCodeKey(code))) {
+                        prunedCodes.append(code);
+                    }
+                }
+                group.stockCodes = std::move(prunedCodes);
+            }
+            refreshGroupStockChoices();
+            refreshCurrentGroupSelection();
+
             qInfo() << "[StocksTab] save success path=" << m_dataYamlPath;
             showIconMessageBox(
                 this,
@@ -1972,56 +2064,6 @@ QWidget* SettingsDialog::buildStocksTab() {
                 QMessageBox::Warning,
                 trText("app.name"),
                 trText("settings.stocks.saveFail")
-            );
-        }
-    });
-
-    // Reset button: reload from data.yaml and repopulate
-    connect(resetBtn, &QPushButton::clicked, this, [this]() {
-        qInfo() << "[StocksTab] reset requested path=" << m_dataYamlPath;
-
-        // Clear search state
-        m_stockSearchEdit->clear();
-        m_stockSuggestList->clear();
-        m_stockSuggestList->hide();
-        if (m_stockSearchDebounce) {
-            m_stockSearchDebounce->stop();
-        }
-        if (m_stockSearchReply) {
-            m_stockSearchReply->abort();
-            m_stockSearchReply->deleteLater();
-            m_stockSearchReply = nullptr;
-        }
-
-        // Reload stocks from yaml
-        QVector<StockItem> loaded;
-        if (!m_dataYamlPath.isEmpty()) {
-            loaded = ConfigManager::loadStocksFromYaml(m_dataYamlPath);
-        }
-
-        qInfo() << "[StocksTab] reset loaded count=" << loaded.size();
-
-        QStringList ignoredIndexes;
-
-        // Rebuild table
-        StockTableWidget* tbl = static_cast<StockTableWidget*>(m_stockTable);
-        tbl->setRowCount(0);
-        for (const StockItem& s : loaded) {
-            if (isPredefinedIndexCode(s.code)) {
-                ignoredIndexes.push_back(s.code);
-                continue;
-            }
-            tbl->addStockRow(s.code, s.name);
-        }
-
-        ignoredIndexes.removeDuplicates();
-        if (!ignoredIndexes.isEmpty()) {
-            showIconMessageBox(
-                this,
-                QMessageBox::Information,
-                trText("app.name"),
-                trText("settings.indexSector.ignoreYamlIndexFmt")
-                    .arg(ignoredIndexes.join(QStringLiteral(", ")))
             );
         }
     });
@@ -2266,6 +2308,108 @@ void SettingsDialog::doStockSearch(bool forceSearch) {
     });
 }
 
+QString SettingsDialog::groupMemberDisplayName(const QString& code) const {
+    const QString key = watchCodeKey(code);
+    for (const StockItem& stock : m_stocks) {
+        if (watchCodeKey(stock.code) != key) {
+            continue;
+        }
+        const QString name = stock.name.trimmed();
+        return name.isEmpty()
+            ? stock.code
+            : QStringLiteral("%1 %2").arg(stock.code, name);
+    }
+    return code;
+}
+
+void SettingsDialog::refreshGroupStockChoices() {
+    if (!m_groupStockList) {
+        return;
+    }
+
+    QSignalBlocker blocker(m_groupStockList);
+    m_groupStockList->clear();
+    for (const StockItem& stock : m_stocks) {
+        if (stock.code.isEmpty()) {
+            continue;
+        }
+        const QString name = stock.name.trimmed();
+        QListWidgetItem* item = new QListWidgetItem(
+            name.isEmpty()
+                ? stock.code
+                : QStringLiteral("%1 %2").arg(stock.code, name),
+            m_groupStockList
+        );
+        item->setData(Qt::UserRole, stock.code);
+        item->setCheckState(Qt::Unchecked);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+    }
+}
+
+void SettingsDialog::refreshCurrentGroupSelection() {
+    if (!m_groupList || !m_groupStockList || !m_groupMemberList) {
+        return;
+    }
+
+    const QListWidgetItem* current = m_groupList->currentItem();
+    if (!current) {
+        m_groupMemberList->setEnabled(false);
+        m_groupMemberList->clear();
+        m_groupStockList->setEnabled(false);
+        QSignalBlocker blocker(m_groupStockList);
+        for (int index = 0; index < m_groupStockList->count(); ++index) {
+            m_groupStockList->item(index)->setCheckState(Qt::Unchecked);
+        }
+        return;
+    }
+
+    const int groupIndex = current->data(Qt::UserRole).toInt();
+    if (groupIndex < 0) {
+        m_groupMemberList->setEnabled(false);
+        m_groupMemberList->clear();
+        m_groupStockList->setEnabled(false);
+        QSignalBlocker blocker(m_groupStockList);
+        for (int index = 0; index < m_groupStockList->count(); ++index) {
+            m_groupStockList->item(index)->setCheckState(Qt::Unchecked);
+        }
+        return;
+    }
+    if (groupIndex >= m_groups.size()) {
+        return;
+    }
+
+    const StockGroup& group = m_groups.at(groupIndex);
+    {
+        QSignalBlocker blocker(m_groupMemberList);
+        m_groupMemberList->clear();
+        m_groupMemberList->setEnabled(true);
+        for (const QString& code : group.stockCodes) {
+            QListWidgetItem* item = new QListWidgetItem(
+                groupMemberDisplayName(code),
+                m_groupMemberList
+            );
+            item->setData(Qt::UserRole, code);
+        }
+    }
+
+    {
+        QSet<QString> keys;
+        for (const QString& code : group.stockCodes) {
+            keys.insert(watchCodeKey(code));
+        }
+        QSignalBlocker blocker(m_groupStockList);
+        m_groupStockList->setEnabled(true);
+        for (int index = 0; index < m_groupStockList->count(); ++index) {
+            QListWidgetItem* item = m_groupStockList->item(index);
+            item->setCheckState(
+                keys.contains(watchCodeKey(item->data(Qt::UserRole).toString()))
+                    ? Qt::Checked
+                    : Qt::Unchecked
+            );
+        }
+    }
+}
+
 QWidget* SettingsDialog::buildGroupsTab() {
     QWidget* w = new QWidget(this);
     QVBoxLayout* vbox = new QVBoxLayout(w);
@@ -2465,76 +2609,20 @@ QWidget* SettingsDialog::buildGroupsTab() {
             m_groupStockList = new QListWidget(w);
             m_groupStockList->setEnabled(false);
             rightVbox->addWidget(m_groupStockList, 1);
-
-            for (const StockItem& stock : m_stocks) {
-                if (stock.code.isEmpty()) continue;
-                QListWidgetItem* it = new QListWidgetItem(
-                    QStringLiteral("%1 %2").arg(stock.code, stock.name), m_groupStockList);
-                it->setData(Qt::UserRole, stock.code);
-                it->setCheckState(Qt::Unchecked);
-                it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
-            }
+            refreshGroupStockChoices();
         }
     }
 
     // ── Group selection → populate right panels ───────────────────────────
-    const auto memberDisplayName = [this](const QString& code) -> QString {
-        for (const StockItem& s : m_stocks) {
-            if (watchCodeKey(s.code) == watchCodeKey(code))
-                return QStringLiteral("%1 %2").arg(s.code, s.name);
-        }
-        return code;
-    };
-
     connect(m_groupList, &QListWidget::currentRowChanged, this,
-        [this, memberDisplayName](int) {
-            if (!m_groupStockList || !m_groupMemberList) return;
-            const QListWidgetItem* cur = m_groupList->currentItem();
-            if (!cur) return;
-            const int gi = cur->data(Qt::UserRole).toInt();
-
-            if (gi < 0) { // "所有"
-                m_groupMemberList->setEnabled(false);
-                m_groupMemberList->clear();
-                m_groupStockList->setEnabled(false);
-                QSignalBlocker b(m_groupStockList);
-                for (int i = 0; i < m_groupStockList->count(); ++i)
-                    m_groupStockList->item(i)->setCheckState(Qt::Unchecked);
-                return;
-            }
-            if (gi >= m_groups.size()) return;
-            const StockGroup& g = m_groups.at(gi);
-
-            // Populate ordered members
-            {
-                QSignalBlocker bl(m_groupMemberList);
-                m_groupMemberList->clear();
-                m_groupMemberList->setEnabled(true);
-                for (const QString& code : g.stockCodes) {
-                    QListWidgetItem* it = new QListWidgetItem(
-                        memberDisplayName(code), m_groupMemberList);
-                    it->setData(Qt::UserRole, code);
-                }
-            }
-
-            // Update checkboxes
-            {
-                QSet<QString> keys;
-                for (const QString& c : g.stockCodes) keys.insert(watchCodeKey(c));
-                QSignalBlocker bl(m_groupStockList);
-                m_groupStockList->setEnabled(true);
-                for (int i = 0; i < m_groupStockList->count(); ++i) {
-                    QListWidgetItem* it = m_groupStockList->item(i);
-                    it->setCheckState(keys.contains(watchCodeKey(it->data(Qt::UserRole).toString()))
-                        ? Qt::Checked : Qt::Unchecked);
-                }
-            }
+        [this](int) {
+            refreshCurrentGroupSelection();
         }
     );
 
     // ── Stock checkbox → update group members ─────────────────────────────
     connect(m_groupStockList, &QListWidget::itemChanged, this,
-        [this, memberDisplayName](QListWidgetItem* it) {
+        [this](QListWidgetItem* it) {
             if (!m_groupList || !m_groupStockList->isEnabled()) return;
             const QListWidgetItem* cur = m_groupList->currentItem();
             if (!cur) return;
@@ -2549,7 +2637,7 @@ QWidget* SettingsDialog::buildGroupsTab() {
                 if (!codes.contains(code)) {
                     codes.append(code);
                     QListWidgetItem* mi = new QListWidgetItem(
-                        memberDisplayName(code), m_groupMemberList);
+                        groupMemberDisplayName(code), m_groupMemberList);
                     mi->setData(Qt::UserRole, code);
                 }
             } else {
