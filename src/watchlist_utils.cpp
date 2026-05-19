@@ -359,4 +359,37 @@ QString defaultDataYamlTemplate() {
     return content;
 }
 
+bool isCostEditableCode(const QString& rawCode) {
+    const QString code = watchCodeKey(rawCode);
+    if (code.isEmpty()) {
+        return false;
+    }
+
+    // A-share stocks: market 0 or 1, 6-digit symbol, not a predefined A-share index
+    const int dot = code.indexOf(QLatin1Char('.'));
+    if (dot > 0 && dot < code.size() - 1) {
+        const QString market = code.left(dot);
+        const QString symbol = code.mid(dot + 1);
+        if ((market == QLatin1String("0") || market == QLatin1String("1"))
+            && symbol.size() == 6
+            && isDigitsOnly(symbol)
+            && !isPredefinedAshareIndexCode(rawCode)) {
+            return true;
+        }
+        // HK stocks (market 116, 128), not HK indexes
+        if ((market == QLatin1String("116") || market == QLatin1String("128"))
+            && isDigitsOnly(symbol)) {
+            return true;
+        }
+    }
+
+    // BJ exchange stocks (prefix "bj")
+    if (code.startsWith(QLatin1String("bj"))) {
+        const QString symbol = code.mid(2);
+        return symbol.size() == 6 && isDigitsOnly(symbol);
+    }
+
+    return false;
+}
+
 } // namespace watchlist_utils

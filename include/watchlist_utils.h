@@ -19,5 +19,6 @@ bool isPredefinedIndexCode(const QString& rawCode);
 bool isHongKongCode(const QString& rawCode);
 QVector<StockItem> defaultWatchStocks();
 QString defaultDataYamlTemplate();
+bool isCostEditableCode(const QString& code);
 
 } // namespace watchlist_utils

@@ -142,6 +142,7 @@ const TranslationMap& translations() {
                 {"settings.display.timelineUp", "Rise color"},
                 {"settings.display.timelineDown", "Fall color"},
                 {"settings.display.timelineResetColors", "Reset timeline colors"},
+                {"settings.display.costLineColor", "Cost line"},
                 {"settings.display.mousePassthrough", "Mouse passthrough"},
                 {"settings.display.doubleClickCloseWindow", "Double-click to hide window"},
                 {"settings.display.mousePassthroughTrigger", "Activation key"},
@@ -190,6 +191,7 @@ const TranslationMap& translations() {
                 {"settings.stocks.colCode", "Code"},
                 {"settings.stocks.colName", "Name"},
                 {"settings.stocks.colDel", "Del"},
+                {"settings.stocks.colCost", "Cost"},
                 {"settings.stocks.save", "Save"},
                 {"settings.stocks.reset", "Reset"},
                 {"settings.stocks.saveOk", "Stock list saved."},
@@ -390,6 +392,7 @@ const TranslationMap& translations() {
                 {"settings.display.timelineUp", "上涨颜色"},
                 {"settings.display.timelineDown", "下跌颜色"},
                 {"settings.display.timelineResetColors", "恢复分时图默认配色"},
+                {"settings.display.costLineColor", "成本线颜色"},
                 {"settings.display.mousePassthrough", "鼠标穿透"},
                 {"settings.display.doubleClickCloseWindow", "双击关闭窗口"},
                 {"settings.display.mousePassthroughTrigger", "激活按键"},
@@ -438,6 +441,7 @@ const TranslationMap& translations() {
                 {"settings.stocks.colCode", "股票代码"},
                 {"settings.stocks.colName", "股票名称"},
                 {"settings.stocks.colDel", "删除"},
+                {"settings.stocks.colCost", "成本"},
                 {"settings.stocks.save", "保存"},
                 {"settings.stocks.reset", "重置"},
                 {"settings.stocks.saveOk", "股票列表已保存。"},
@@ -580,9 +584,9 @@ QString t(const QString& key, const QString& language) {
 
 QStringList columnNames(const QString& language) {
     if (resolvedLanguageCode(language) == "zh_CN") {
-        return {"代码", "名称", "最新价", "涨跌幅", "涨跌额", "标识"};
+        return {"代码", "名称", "最新价", "涨跌幅", "涨跌额", "标识", "成本", "收益率"};
     }
-    return {"Code", "Name", "Price", "Change%", "Change", "Signal"};
+    return {"Code", "Name", "Price", "Change%", "Change", "Signal", "Cost", "Return%"};
 }
 
 } // namespace i18n

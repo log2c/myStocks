@@ -237,6 +237,15 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
             return std::isnan(q.change) ? QString("--") : formatSigned(q.change, 3, false);
         case ColIndicator:
             return indicatorSymbol(q.code, q.pct);
+        case ColCost: {
+            if (std::isnan(q.cost) || q.cost <= 0.0) return QString();
+            return QString::number(q.cost, 'f', 2);
+        }
+        case ColCostPct: {
+            if (std::isnan(q.cost) || q.cost <= 0.0 || std::isnan(q.price)) return QString();
+            const double costPct = (q.price - q.cost) / q.cost * 100.0;
+            return formatSigned(costPct, 2, true);
+        }
         default:
             return {};
         }
@@ -284,6 +293,13 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
         if (m_cfg.simpleModeEnabled) {
             return defaultText;
         }
+        if (index.column() == ColCostPct || index.column() == ColCost) {
+            if (std::isnan(q.cost) || q.cost <= 0.0 || std::isnan(q.price)) return defaultText;
+            const double costPct = (q.price - q.cost) / q.cost * 100.0;
+            if (costPct > 0.0) return m_cfg.upColor;
+            if (costPct < 0.0) return m_cfg.downColor;
+            return m_cfg.flatColor;
+        }
         if (index.column() >= ColPrice) {
             if (std::isnan(q.pct)) {
                 return defaultText;
@@ -312,6 +328,7 @@ void QuoteModel::setStocks(const QVector<StockItem>& stocks) {
         QuoteItem q;
         q.code = stocks[i].code;
         q.name = stocks[i].name;
+        q.cost = stocks[i].cost;
         m_rows.push_back(q);
         m_rowByCode.insert(q.code, i);
     }
@@ -694,4 +711,10 @@ QString QuoteModel::formatHotRankEntry(const HotRankItem& item) const {
         : formatSigned(item.pct, 2, true);
     const QString netInflow = formatNetInflowYi(item.mainNetInflow);
     return QStringLiteral("%1 %2 %3").arg(name, pct, netInflow);
+}
+
+double QuoteModel::costForCode(const QString& code) const {
+    const int row = m_rowByCode.value(code, -1);
+    if (row < 0 || row >= m_rows.size()) return qQNaN();
+    return m_rows[row].cost;
 }

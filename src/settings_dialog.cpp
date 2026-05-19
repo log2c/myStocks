@@ -14,6 +14,7 @@
 #include <QColorDialog>
 #include <QDesktopServices>
 #include <QDialogButtonBox>
+#include <QDoubleValidator>
 #include <QDropEvent>
 #include <QFormLayout>
 #include <QGroupBox>
@@ -24,6 +25,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -40,6 +42,7 @@
 #include <QUrlQuery>
 #include <QVBoxLayout>
 
+#include <cmath>
 #include <functional>
 #include <utility>
 
@@ -127,7 +130,7 @@ QMessageBox::StandardButton showIconMessageBox(
 class StockTableWidget : public QTableWidget {
 public:
     explicit StockTableWidget(QWidget* parent = nullptr)
-        : QTableWidget(0, 4, parent) {
+        : QTableWidget(0, 5, parent) {
         setSelectionBehavior(QAbstractItemView::SelectRows);
         setSelectionMode(QAbstractItemView::SingleSelection);
         setDragDropMode(QAbstractItemView::NoDragDrop);
@@ -138,9 +141,10 @@ public:
         horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
         horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
         horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
-        horizontalHeader()->setSectionResizeMode(3, QHeaderView::Fixed);
+        horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+        horizontalHeader()->setSectionResizeMode(4, QHeaderView::Fixed);
         horizontalHeader()->setStretchLastSection(false);
-        setColumnWidth(3, 64);
+        setColumnWidth(4, 64);
     }
 
 protected:
@@ -171,10 +175,10 @@ public:
         m_confirmDelete = std::move(fn);
     }
 
-    void addStockRow(const QString& code, const QString& name) {
+    void addStockRow(const QString& code, const QString& name, double cost = qQNaN()) {
         const int row = rowCount();
         insertRow(row);
-        populateRow(row, code, name);
+        populateRow(row, code, name, cost);
         renumberRows();
     }
 
@@ -194,7 +198,17 @@ public:
             const QString code = item(r, 1) ? item(r, 1)->text() : QString();
             const QString name = item(r, 2) ? item(r, 2)->text() : QString();
             if (!code.isEmpty()) {
-                result.push_back({code, name});
+                double cost = qQNaN();
+                if (QLineEdit* le = qobject_cast<QLineEdit*>(cellWidget(r, 3))) {
+                    bool ok = false;
+                    const double v = le->text().trimmed().toDouble(&ok);
+                    if (ok && std::isfinite(v) && v > 0.0) cost = v;
+                }
+                StockItem s;
+                s.code = code;
+                s.name = name;
+                s.cost = cost;
+                result.push_back(s);
             }
         }
         return result;
@@ -215,9 +229,15 @@ public:
         if (row <= 0 || row >= rowCount()) return -1;
         const QString code = item(row, 1) ? item(row, 1)->text() : QString();
         const QString name = item(row, 2) ? item(row, 2)->text() : QString();
+        double cost = qQNaN();
+        if (QLineEdit* le = qobject_cast<QLineEdit*>(cellWidget(row, 3))) {
+            bool ok = false;
+            const double v = le->text().trimmed().toDouble(&ok);
+            if (ok && std::isfinite(v) && v > 0.0) cost = v;
+        }
         removeRow(row);
         insertRow(0);
-        populateRow(0, code, name);
+        populateRow(0, code, name, cost);
         renumberRows();
         selectRow(0);
         return 0;
@@ -227,10 +247,16 @@ public:
         if (row < 0 || row >= rowCount() - 1) return -1;
         const QString code = item(row, 1) ? item(row, 1)->text() : QString();
         const QString name = item(row, 2) ? item(row, 2)->text() : QString();
+        double cost = qQNaN();
+        if (QLineEdit* le = qobject_cast<QLineEdit*>(cellWidget(row, 3))) {
+            bool ok = false;
+            const double v = le->text().trimmed().toDouble(&ok);
+            if (ok && std::isfinite(v) && v > 0.0) cost = v;
+        }
         removeRow(row);
         const int newRow = rowCount();
         insertRow(newRow);
-        populateRow(newRow, code, name);
+        populateRow(newRow, code, name, cost);
         renumberRows();
         selectRow(newRow);
         return newRow;
@@ -243,15 +269,25 @@ private:
         const int hi = qMax(a, b);
         const QString codeA = item(lo, 1) ? item(lo, 1)->text() : QString();
         const QString nameA = item(lo, 2) ? item(lo, 2)->text() : QString();
+        double costA = qQNaN();
+        if (QLineEdit* le = qobject_cast<QLineEdit*>(cellWidget(lo, 3))) {
+            bool ok = false; const double v = le->text().trimmed().toDouble(&ok);
+            if (ok && std::isfinite(v) && v > 0.0) costA = v;
+        }
         const QString codeB = item(hi, 1) ? item(hi, 1)->text() : QString();
         const QString nameB = item(hi, 2) ? item(hi, 2)->text() : QString();
+        double costB = qQNaN();
+        if (QLineEdit* le = qobject_cast<QLineEdit*>(cellWidget(hi, 3))) {
+            bool ok = false; const double v = le->text().trimmed().toDouble(&ok);
+            if (ok && std::isfinite(v) && v > 0.0) costB = v;
+        }
 
         removeRow(hi);
         removeRow(lo);
         insertRow(lo);
-        populateRow(lo, codeB, nameB);
+        populateRow(lo, codeB, nameB, costB);
         insertRow(hi);
-        populateRow(hi, codeA, nameA);
+        populateRow(hi, codeA, nameA, costA);
 
         renumberRows();
         // a moved to: if a was the higher row (moved up), it's now at lo; if lower (moved down), at hi
@@ -260,7 +296,7 @@ private:
         return newCurrent;
     }
 
-    void populateRow(int row, const QString& code, const QString& name) {
+    void populateRow(int row, const QString& code, const QString& name, double cost = qQNaN()) {
         QTableWidgetItem* seqItem = new QTableWidgetItem(QString::number(row + 1));
         seqItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         setItem(row, 0, seqItem);
@@ -273,9 +309,27 @@ private:
         nameItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         setItem(row, 2, nameItem);
 
+        // Cost column (index 3)
+        const bool costEditable = watchlist_utils::isCostEditableCode(code);
+        if (costEditable) {
+            QLineEdit* costEdit = new QLineEdit();
+            costEdit->setValidator(new QDoubleValidator(0.0, 1e9, 6, costEdit));
+            costEdit->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            if (std::isfinite(cost) && cost > 0.0) {
+                costEdit->setText(QString::number(cost, 'f', 2));
+            }
+            costEdit->setPlaceholderText(QStringLiteral("--"));
+            setCellWidget(row, 3, costEdit);
+        } else {
+            QTableWidgetItem* costItem = new QTableWidgetItem(QStringLiteral("--"));
+            costItem->setFlags(Qt::ItemIsEnabled);
+            costItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            setItem(row, 3, costItem);
+        }
+
         QPushButton* delBtn = new QPushButton(QStringLiteral("\u2715 Del"));
         delBtn->setFlat(true);
-        setCellWidget(row, 3, delBtn);
+        setCellWidget(row, 4, delBtn);
 
         connect(delBtn, &QPushButton::clicked, this, [this]() {
             QPushButton* btn = qobject_cast<QPushButton*>(sender());
@@ -283,7 +337,7 @@ private:
                 return;
             }
             for (int r = 0; r < rowCount(); ++r) {
-                if (cellWidget(r, 3) == btn) {
+                if (cellWidget(r, 4) == btn) {
                     const QString code = item(r, 1) ? item(r, 1)->text() : QString();
                     const QString name = item(r, 2) ? item(r, 2)->text() : QString();
                     const QString display = code + (name.isEmpty() ? QString() : (QStringLiteral(" ") + name));
@@ -497,6 +551,7 @@ AppConfig SettingsDialog::config() const {
     out.upColor = buttonColor(m_upBtn);
     out.downColor = buttonColor(m_downBtn);
     out.flatColor = buttonColor(m_flatBtn);
+    out.costLineColor = buttonColor(m_costLineColorBtn);
 
     out.showHeader = m_showHeaderCheck->isChecked();
     out.showGrid = m_showGridCheck->isChecked();
@@ -1104,6 +1159,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_upBtn = createColorButton(w, m_cfg.upColor, pickColorTitle);
     m_downBtn = createColorButton(w, m_cfg.downColor, pickColorTitle);
     m_flatBtn = createColorButton(w, m_cfg.flatColor, pickColorTitle);
+    m_costLineColorBtn = createColorButton(w, m_cfg.costLineColor, pickColorTitle);
 
     const AppConfig defaultCfg;
     QPushButton* resetColorsButton = new QPushButton(
@@ -1116,12 +1172,14 @@ QWidget* SettingsDialog::buildDisplayTab() {
         m_upBtn->setProperty("pickColor", defaultCfg.upColor);
         m_downBtn->setProperty("pickColor", defaultCfg.downColor);
         m_flatBtn->setProperty("pickColor", defaultCfg.flatColor);
+        m_costLineColorBtn->setProperty("pickColor", defaultCfg.costLineColor);
 
         paintColorButton(m_bgBtn, defaultCfg.bgColor);
         paintColorButton(m_textBtn, defaultCfg.textColor);
         paintColorButton(m_upBtn, defaultCfg.upColor);
         paintColorButton(m_downBtn, defaultCfg.downColor);
         paintColorButton(m_flatBtn, defaultCfg.flatColor);
+        paintColorButton(m_costLineColorBtn, defaultCfg.costLineColor);
     });
 
     connect(m_transparentOpacitySlider, &QSlider::valueChanged, this, [this](int value) {
@@ -1152,6 +1210,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
     windowForm->addRow(trText("settings.general.up"), m_upBtn);
     windowForm->addRow(trText("settings.general.down"), m_downBtn);
     windowForm->addRow(trText("settings.general.flat"), m_flatBtn);
+    windowForm->addRow(trText("settings.display.costLineColor"), m_costLineColorBtn);
     addCompactFormRow(windowForm, resetColorsButton);
 
     m_simpleModeCheck = new QCheckBox(trText("settings.display.simpleMode"), w);
@@ -1510,7 +1569,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
         item->setCheckState(m_cfg.visibleColumns.value(logical, true) ? Qt::Checked : Qt::Unchecked);
     }
 
-    columnsForm->addRow(trText("settings.display.columns"), m_columnList);
+    columnsForm->addRow(m_columnList);
 
     QLabel* columnsHint = new QLabel(trText("settings.display.columnsHint"), w);
     columnsHint->setWordWrap(true);
@@ -1726,6 +1785,7 @@ QWidget* SettingsDialog::buildStocksTab() {
         trText("settings.stocks.colSeq"),
         trText("settings.stocks.colCode"),
         trText("settings.stocks.colName"),
+        trText("settings.stocks.colCost"),
         trText("settings.stocks.colDel")
     });
     table->setMinimumHeight(220);
@@ -1733,7 +1793,7 @@ QWidget* SettingsDialog::buildStocksTab() {
     for (const StockItem& s : m_stocks) {
         // Use API name if available, fall back to stored name
         const QString displayName = m_apiNamesByCode.value(s.code, s.name);
-        table->addStockRow(s.code, displayName);
+        table->addStockRow(s.code, displayName, s.cost);
     }
 
     m_stockTable = table;

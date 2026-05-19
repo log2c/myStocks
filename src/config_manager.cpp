@@ -14,6 +14,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 
+#include <cmath>
 #include <memory>
 
 namespace {
@@ -157,6 +158,7 @@ QVector<StockItem> ConfigManager::loadStocksFromYaml(
 
     QString curCode;
     QString curName;
+    double curCost = qQNaN();
 
     const auto flushCurrent = [&]() {
         const QString rawCode = curCode.trimmed();
@@ -175,7 +177,11 @@ QVector<StockItem> ConfigManager::loadStocksFromYaml(
             migrated = true;
         }
 
-        out.push_back({normalizedCode, curName.isEmpty() ? normalizedCode : curName});
+        StockItem s;
+        s.code = normalizedCode;
+        s.name = curName.isEmpty() ? normalizedCode : curName;
+        s.cost = curCost;
+        out.push_back(s);
     };
 
     while (!file.atEnd()) {
@@ -190,6 +196,7 @@ QVector<StockItem> ConfigManager::loadStocksFromYaml(
             flushCurrent();
             curCode = mCode.captured(1).trimmed();
             curName.clear();
+            curCost = qQNaN();
             continue;
         }
 
@@ -197,6 +204,17 @@ QVector<StockItem> ConfigManager::loadStocksFromYaml(
             QRegularExpression("^name\\s*:\\s*(.+)$").match(line);
         if (mName.hasMatch()) {
             curName = mName.captured(1).trimmed();
+            continue;
+        }
+
+        const QRegularExpressionMatch mCost =
+            QRegularExpression("^cost\\s*:\\s*(\\S+)$").match(line);
+        if (mCost.hasMatch()) {
+            bool ok = false;
+            const double costVal = mCost.captured(1).trimmed().toDouble(&ok);
+            if (ok && std::isfinite(costVal) && costVal > 0.0) {
+                curCost = costVal;
+            }
         }
     }
 
@@ -339,6 +357,9 @@ bool ConfigManager::saveDataYaml(
         content += QStringLiteral("  - code: ") + normalizedCode + QStringLiteral("\n");
         const QString normalizedName = s.name.trimmed().isEmpty() ? normalizedCode : s.name.trimmed();
         content += QStringLiteral("    name: ") + normalizedName + QStringLiteral("\n");
+        if (std::isfinite(s.cost) && s.cost > 0.0) {
+            content += QStringLiteral("    cost: ") + QString::number(s.cost, 'f', 6) + QStringLiteral("\n");
+        }
     }
 
     if (!groups.isEmpty()) {
@@ -557,6 +578,7 @@ AppConfig ConfigManager::loadConfig() {
     cfg.upColor = s.value("ui/upColor", cfg.upColor).value<QColor>();
     cfg.downColor = s.value("ui/downColor", cfg.downColor).value<QColor>();
     cfg.flatColor = s.value("ui/flatColor", cfg.flatColor).value<QColor>();
+    cfg.costLineColor = s.value("ui/costLineColor", cfg.costLineColor).value<QColor>();
     cfg.windowRect = s.value("ui/windowRect", cfg.windowRect).toRect();
     cfg.marketBreadthWindowRect = s.value(
         "ui/marketBreadthWindowRect",
@@ -722,6 +744,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue("ui/upColor", cfg.upColor);
     s.setValue("ui/downColor", cfg.downColor);
     s.setValue("ui/flatColor", cfg.flatColor);
+    s.setValue("ui/costLineColor", cfg.costLineColor);
     s.setValue("ui/transparentBackgroundEnabled", cfg.transparentBackgroundEnabled);
     s.setValue(
         "ui/transparentBackgroundOpacity",

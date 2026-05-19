@@ -934,12 +934,13 @@ public:
         update();
     }
 
-    void setSeries(const QString& title, const QString& code, const QVector<TimelinePoint>& points, double preClose, const QVector<TradePeriod>& tradePeriods = {}) {
+    void setSeries(const QString& title, const QString& code, const QVector<TimelinePoint>& points, double preClose, const QVector<TradePeriod>& tradePeriods = {}, double cost = qQNaN()) {
         m_title = title;
         m_code = code;
         m_points = points;
         m_preClose = preClose;
         m_tradePeriods = tradePeriods;
+        m_cost = cost;
         m_status.clear();
         update();
     }
@@ -1365,6 +1366,22 @@ protected:
             painter.drawPath(avgPath);
         }
 
+        // Draw cost line
+        if (std::isfinite(m_cost) && m_cost > 0.0 && std::isfinite(baseline)) {
+            const double costPct = (m_cost - baseline) / baseline * 100.0;
+            const bool withinAshareLimit = !std::isfinite(ashareLimitPct) || ashareLimitPct <= 0.0
+                || (costPct >= -ashareLimitPct && costPct <= ashareLimitPct);
+            if (withinAshareLimit) {
+                const int yCost = yOfPct(costPct);
+                if (yCost >= plot.top() && yCost <= plot.bottom()) {
+                    QPen costPen(m_cfg.costLineColor, 1.0, Qt::CustomDashLine);
+                    costPen.setDashPattern({4.0, 3.0});
+                    painter.setPen(costPen);
+                    painter.drawLine(plot.left(), yCost, plot.right(), yCost);
+                }
+            }
+        }
+
         if (std::isfinite(latestPct) && std::isfinite(latestChange)) {
             // Get last valid avg price for display
             double latestAvgPrice = qQNaN();
@@ -1421,6 +1438,7 @@ private:
     QVector<TimelinePoint> m_points;
     QVector<TradePeriod> m_tradePeriods;
     double m_preClose = qQNaN();
+    double m_cost = qQNaN();
 };
 
 class TimelineChartPopup : public QWidget {
@@ -1464,7 +1482,7 @@ public:
         }
     }
 
-    void showForStock(const QString& code, const QString& name, const QRect& anchorRect, int baseWidth) {
+    void showForStock(const QString& code, const QString& name, const QRect& anchorRect, int baseWidth, double cost = qQNaN()) {
         Q_UNUSED(baseWidth);
         if (code.trimmed().isEmpty() || !isTimelineSupportedCode(code)) {
             hidePopup();
@@ -1474,6 +1492,7 @@ public:
         const bool changed = (m_code.compare(code, Qt::CaseInsensitive) != 0);
         m_code = code.trimmed();
         m_name = name.trimmed();
+        m_cost = cost;
         if (changed) {
             m_hongKongHalfDayDate = QDate();
         }
@@ -1634,7 +1653,7 @@ private:
         const QString title = m_name.isEmpty()
             ? m_code
             : QStringLiteral("%1  %2").arg(m_name, m_code);
-        m_chart->setSeries(title, m_code, points, preClose, tradePeriods);
+        m_chart->setSeries(title, m_code, points, preClose, tradePeriods, m_cost);
     }
 
     bool tryUseCachedTimeline(const QString& cacheKey, int days, bool fallbackAllowed, int token) {
@@ -1783,6 +1802,7 @@ private:
     QNetworkReply* m_reply = nullptr;
     QString m_code;
     QString m_name;
+    double m_cost = qQNaN();
     QDate m_hongKongHalfDayDate;
     QHash<QString, TimelineCacheEntry> m_timelineCache;
     int m_requestToken = 0;
@@ -2915,7 +2935,8 @@ void FloatingWindow::updateTimelinePopupForHover(const QPoint& viewportPos, QTab
 
     m_timelineHoverCode = code;
     m_timelineHoverName = name;
-    m_timelinePopup->showForStock(code, name, globalAnchor, width());
+    const double cost = m_model ? m_model->costForCode(code) : qQNaN();
+    m_timelinePopup->showForStock(code, name, globalAnchor, width(), cost);
 }
 
 void FloatingWindow::hideTimelinePopup() {

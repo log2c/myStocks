@@ -109,6 +109,7 @@ private:
     QPushButton* m_upBtn = nullptr;
     QPushButton* m_downBtn = nullptr;
     QPushButton* m_flatBtn = nullptr;
+    QPushButton* m_costLineColorBtn = nullptr;
 
     QCheckBox* m_showHeaderCheck = nullptr;
     QCheckBox* m_showGridCheck = nullptr;

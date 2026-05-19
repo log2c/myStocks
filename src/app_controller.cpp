@@ -516,7 +516,11 @@ QVector<StockItem> AppController::filterYamlStocks(
         }
         seen.insert(key);
 
-        out.push_back({code, item.name.trimmed()});
+        StockItem s;
+        s.code = code;
+        s.name = item.name.trimmed();
+        s.cost = item.cost;
+        out.push_back(s);
     }
 
     if (ignoredCodes) {
@@ -574,7 +578,11 @@ QVector<StockItem> AppController::mergedWatchItems() const {
             return;
         }
         seen.insert(key);
-        out.push_back({code, item.name.trimmed()});
+        StockItem s;
+        s.code = code;
+        s.name = item.name.trimmed();
+        s.cost = item.cost;
+        out.push_back(s);
     };
 
     for (const StockItem& item : m_indexes) {
@@ -609,7 +617,11 @@ QVector<StockItem> AppController::mergedWatchItemsForGroup() const {
             return;
         }
         seen.insert(key);
-        out.push_back({code, item.name.trimmed()});
+        StockItem s;
+        s.code = code;
+        s.name = item.name.trimmed();
+        s.cost = item.cost;
+        out.push_back(s);
     };
 
     for (const StockItem& item : m_indexes) {
