@@ -12,10 +12,12 @@
 #include <QApplication>
 #include <QButtonGroup>
 #include <QColorDialog>
+#include <QDateTime>
 #include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QDoubleValidator>
 #include <QDropEvent>
+#include <QFile>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -36,6 +38,7 @@
 #include <QRadioButton>
 #include <QScrollArea>
 #include <QSet>
+#include <QSettings>
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTimer>
@@ -51,6 +54,21 @@ namespace {
 
 using watchlist_utils::normalizeApiWatchCode;
 using watchlist_utils::watchCodeKey;
+
+// Event filter that ignores wheel events, letting them propagate to a parent
+// scroll area. Used to avoid nested-scroll-area conflict on the Other tab.
+class IgnoreWheelFilter : public QObject {
+public:
+    using QObject::QObject;
+protected:
+    bool eventFilter(QObject*, QEvent* ev) override {
+        if (ev->type() == QEvent::Wheel) {
+            ev->ignore();
+            return true;
+        }
+        return false;
+    }
+};
 
 struct IndexPreset {
     QString code;
@@ -641,6 +659,15 @@ AppConfig SettingsDialog::config() const {
             ? m_trayIconPaths[id]
             : QString();
     }
+
+    if (m_gistTokenEdit) {
+        out.gistToken = m_gistTokenEdit->text().trimmed();
+    }
+    if (m_gistIdEdit) {
+        out.gistId = m_gistIdEdit->text().trimmed();
+    }
+    // gistLastSyncTime is updated in-place when sync succeeds; reflect via m_cfg
+    out.gistLastSyncTime = m_cfg.gistLastSyncTime;
 
     for (int i = 0; i < ColCount; ++i) {
         out.visibleColumns[i] = false;
@@ -1622,6 +1649,239 @@ QWidget* SettingsDialog::buildOtherTab() {
     root->setContentsMargins(6, 6, 6, 6);
     root->setSpacing(6);
 
+    // --- Config sync group ---
+    m_syncNam = new QNetworkAccessManager(this);
+    {
+        QGroupBox* syncGroup = new QGroupBox(trText("settings.sync.group"), w);
+        QVBoxLayout* syncLayout = new QVBoxLayout(syncGroup);
+        syncLayout->setContentsMargins(8, 10, 8, 8);
+        syncLayout->setSpacing(6);
+
+        QFormLayout* syncForm = new QFormLayout;
+        syncForm->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        syncForm->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+        syncForm->setHorizontalSpacing(8);
+        syncForm->setVerticalSpacing(4);
+
+        m_gistTokenEdit = new QLineEdit(syncGroup);
+        m_gistTokenEdit->setEchoMode(QLineEdit::Password);
+        m_gistTokenEdit->setPlaceholderText(QStringLiteral("ghp_..."));
+        m_gistTokenEdit->setText(m_cfg.gistToken);
+
+        m_gistIdEdit = new QLineEdit(syncGroup);
+        m_gistIdEdit->setPlaceholderText(QStringLiteral("e.g. a1b2c3d4e5f6..."));
+        m_gistIdEdit->setText(m_cfg.gistId);
+
+        m_gistLastSyncLabel = new QLabel(syncGroup);
+        {
+            const QString ts = m_cfg.gistLastSyncTime.trimmed();
+            if (ts.isEmpty()) {
+                m_gistLastSyncLabel->setText(trText("settings.sync.never"));
+            } else {
+                m_gistLastSyncLabel->setText(ts);
+            }
+        }
+
+        syncForm->addRow(trText("settings.sync.gistToken"), m_gistTokenEdit);
+        syncForm->addRow(trText("settings.sync.gistId"), m_gistIdEdit);
+        syncForm->addRow(trText("settings.sync.lastSync"), m_gistLastSyncLabel);
+        syncLayout->addLayout(syncForm);
+
+        QWidget* syncBtnRow = new QWidget(syncGroup);
+        QHBoxLayout* syncBtnLayout = new QHBoxLayout(syncBtnRow);
+        syncBtnLayout->setContentsMargins(0, 2, 0, 0);
+        syncBtnLayout->setSpacing(8);
+
+        QPushButton* downloadBtn = new QPushButton(trText("settings.sync.download"), syncBtnRow);
+        QPushButton* uploadBtn   = new QPushButton(trText("settings.sync.upload"),   syncBtnRow);
+        syncBtnLayout->addStretch();
+        syncBtnLayout->addWidget(downloadBtn);
+        syncBtnLayout->addWidget(uploadBtn);
+        syncLayout->addWidget(syncBtnRow);
+
+        root->addWidget(syncGroup);
+
+        auto validateFields = [this]() -> bool {
+            if (m_gistTokenEdit->text().trimmed().isEmpty()
+                || m_gistIdEdit->text().trimmed().isEmpty()) {
+                QMessageBox::warning(this,
+                    trText("settings.sync.group"),
+                    trText("settings.sync.missingFields"));
+                return false;
+            }
+            return true;
+        };
+
+        connect(uploadBtn, &QPushButton::clicked, this, [this, uploadBtn, downloadBtn, validateFields]() {
+            if (!validateFields()) return;
+            const auto reply = QMessageBox::question(this,
+                trText("settings.sync.group"),
+                trText("settings.sync.confirmUpload"),
+                QMessageBox::Yes | QMessageBox::No);
+            if (reply != QMessageBox::Yes) return;
+
+            const QString token = m_gistTokenEdit->text().trimmed();
+            const QString gistId = m_gistIdEdit->text().trimmed();
+
+            // Persist token and gist ID immediately (before network request)
+            m_cfg.gistToken = token;
+            m_cfg.gistId = gistId;
+            {
+                auto s = ConfigManager::createAppSettings();
+                s->setValue(QStringLiteral("sync/gistToken"), token);
+                s->setValue(QStringLiteral("sync/gistId"), gistId);
+            }
+
+            QFile file(m_dataYamlPath);
+            if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                QMessageBox::critical(this,
+                    trText("settings.sync.group"),
+                    trText("settings.sync.uploadFail").arg(file.errorString()));
+                return;
+            }
+            const QString yamlContent = QString::fromUtf8(file.readAll());
+            file.close();
+
+            QJsonObject filesObj;
+            QJsonObject fileEntry;
+            fileEntry[QStringLiteral("content")] = yamlContent;
+            filesObj[QStringLiteral("data.yaml")] = fileEntry;
+            QJsonObject body;
+            body[QStringLiteral("files")] = filesObj;
+
+            QNetworkRequest req(QUrl(QStringLiteral("https://api.github.com/gists/") + gistId));
+            req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+            req.setRawHeader("Authorization", ("Bearer " + token).toUtf8());
+            req.setRawHeader("Accept", "application/vnd.github.v3+json");
+            req.setRawHeader("User-Agent", "myStocks-app");
+            req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                             QNetworkRequest::NoLessSafeRedirectPolicy);
+
+            uploadBtn->setEnabled(false);
+            downloadBtn->setEnabled(false);
+
+            QNetworkReply* reply2 = m_syncNam->sendCustomRequest(req, "PATCH",
+                QJsonDocument(body).toJson(QJsonDocument::Compact));
+            connect(reply2, &QNetworkReply::finished, this,
+                [this, reply2, uploadBtn, downloadBtn]() {
+                    reply2->deleteLater();
+                    uploadBtn->setEnabled(true);
+                    downloadBtn->setEnabled(true);
+                    const int status = reply2->attribute(
+                        QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                    if (reply2->error() != QNetworkReply::NoError || status < 200 || status >= 300) {
+                        const QString err = reply2->error() != QNetworkReply::NoError
+                            ? reply2->errorString()
+                            : QStringLiteral("HTTP %1").arg(status);
+                        QMessageBox::critical(this,
+                            trText("settings.sync.group"),
+                            trText("settings.sync.uploadFail").arg(err));
+                        return;
+                    }
+                    const QString now = QDateTime::currentDateTime()
+                        .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+                    m_cfg.gistLastSyncTime = now;
+                    m_gistLastSyncLabel->setText(now);
+                    {
+                        auto s = ConfigManager::createAppSettings();
+                        s->setValue(QStringLiteral("sync/gistLastSyncTime"), now);
+                    }
+                    QMessageBox::information(this,
+                        trText("settings.sync.group"),
+                        trText("settings.sync.uploadOk"));
+                }
+            );
+        });
+
+        connect(downloadBtn, &QPushButton::clicked, this, [this, uploadBtn, downloadBtn, validateFields]() {
+            if (!validateFields()) return;
+            const auto reply = QMessageBox::question(this,
+                trText("settings.sync.group"),
+                trText("settings.sync.confirmDownload"),
+                QMessageBox::Yes | QMessageBox::No);
+            if (reply != QMessageBox::Yes) return;
+
+            const QString token = m_gistTokenEdit->text().trimmed();
+            const QString gistId = m_gistIdEdit->text().trimmed();
+
+            // Persist token and gist ID immediately (before network request)
+            m_cfg.gistToken = token;
+            m_cfg.gistId = gistId;
+            {
+                auto s = ConfigManager::createAppSettings();
+                s->setValue(QStringLiteral("sync/gistToken"), token);
+                s->setValue(QStringLiteral("sync/gistId"), gistId);
+            }
+
+            QNetworkRequest req(QUrl(QStringLiteral("https://api.github.com/gists/") + gistId));
+            req.setRawHeader("Authorization", ("Bearer " + token).toUtf8());
+            req.setRawHeader("Accept", "application/vnd.github.v3+json");
+            req.setRawHeader("User-Agent", "myStocks-app");
+            req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                             QNetworkRequest::NoLessSafeRedirectPolicy);
+
+            uploadBtn->setEnabled(false);
+            downloadBtn->setEnabled(false);
+
+            QNetworkReply* reply2 = m_syncNam->get(req);
+            connect(reply2, &QNetworkReply::finished, this,
+                [this, reply2, uploadBtn, downloadBtn]() {
+                    reply2->deleteLater();
+                    uploadBtn->setEnabled(true);
+                    downloadBtn->setEnabled(true);
+                    const int status = reply2->attribute(
+                        QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                    if (reply2->error() != QNetworkReply::NoError || status < 200 || status >= 300) {
+                        const QString err = reply2->error() != QNetworkReply::NoError
+                            ? reply2->errorString()
+                            : QStringLiteral("HTTP %1").arg(status);
+                        QMessageBox::critical(this,
+                            trText("settings.sync.group"),
+                            trText("settings.sync.downloadFail").arg(err));
+                        return;
+                    }
+                    const QJsonDocument doc = QJsonDocument::fromJson(reply2->readAll());
+                    const QJsonObject root = doc.object();
+                    const QJsonObject files = root[QStringLiteral("files")].toObject();
+                    QString yamlContent;
+                    for (const QString& key : files.keys()) {
+                        if (key.compare(QStringLiteral("data.yaml"), Qt::CaseInsensitive) == 0) {
+                            yamlContent = files[key].toObject()[QStringLiteral("content")].toString();
+                            break;
+                        }
+                    }
+                    if (yamlContent.isEmpty()) {
+                        QMessageBox::critical(this,
+                            trText("settings.sync.group"),
+                            trText("settings.sync.downloadFail").arg(
+                                QStringLiteral("data.yaml not found in gist")));
+                        return;
+                    }
+                    QFile file(m_dataYamlPath);
+                    if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+                        QMessageBox::critical(this,
+                            trText("settings.sync.group"),
+                            trText("settings.sync.downloadFail").arg(file.errorString()));
+                        return;
+                    }
+                    file.write(yamlContent.toUtf8());
+                    file.close();
+                    const QString now = QDateTime::currentDateTime()
+                        .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+                    m_cfg.gistLastSyncTime = now;
+                    m_gistLastSyncLabel->setText(now);
+                    {
+                        auto s = ConfigManager::createAppSettings();
+                        s->setValue(QStringLiteral("sync/gistLastSyncTime"), now);
+                    }
+                    QMessageBox::information(this,
+                        trText("settings.sync.group"),
+                        trText("settings.sync.downloadOk"));
+                }
+            );
+        });
+    }
+
     // --- Debug/Log group ---
     QWidget* debugWidget = new QWidget(w);
     QFormLayout* form = new QFormLayout(debugWidget);
@@ -1662,6 +1922,7 @@ QWidget* SettingsDialog::buildOtherTab() {
     trayScroll->setWidgetResizable(true);
     trayScroll->setFrameShape(QFrame::NoFrame);
     trayScroll->setFixedHeight(230);
+    trayScroll->viewport()->installEventFilter(new IgnoreWheelFilter(trayScroll));
 
     QWidget* trayGrid = new QWidget;
     const int kCols = 7;

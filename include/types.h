@@ -284,6 +284,11 @@ struct AppConfig {
     // e.g. 0 = first (default), 1 = second, etc.
     int groupAllPosition = 0;
 
+    // Config sync via GitHub Gist (syncs data.yaml content only)
+    QString gistToken;
+    QString gistId;
+    QString gistLastSyncTime; // ISO 8601 datetime string, empty if never synced
+
     QMap<int, int> columnWidths;
     QRect windowRect = QRect(120, 120, 760, 280);
     QRect marketBreadthWindowRect;

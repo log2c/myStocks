@@ -160,6 +160,12 @@ private:
     QButtonGroup* m_trayIconBtnGroup = nullptr;
     QStringList m_trayIconPaths;
 
+    // Config sync (Other tab)
+    QLineEdit* m_gistTokenEdit = nullptr;
+    QLineEdit* m_gistIdEdit = nullptr;
+    QLabel* m_gistLastSyncLabel = nullptr;
+    QNetworkAccessManager* m_syncNam = nullptr;
+
     // Stocks tab
     QLineEdit* m_stockSearchEdit = nullptr;
     QPushButton* m_stockSearchBtn = nullptr;
