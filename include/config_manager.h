@@ -23,6 +23,15 @@ public:
         const QVector<StockItem>& stocks,
         const QVector<StockGroup>& groups
     );
+    static QString loadDataYamlText(
+        const QString& filePath,
+        QString* errorMessage = nullptr
+    );
+    static bool saveDataYamlText(
+        const QString& filePath,
+        const QString& yamlText,
+        QString* errorMessage = nullptr
+    );
     static QString appSettingsFilePath();
     static AppConfig loadConfig();
     static void saveConfig(const AppConfig& cfg);

@@ -1849,15 +1849,14 @@ QWidget* SettingsDialog::buildOtherTab() {
                 s->setValue(QStringLiteral("sync/gistId"), gistId);
             }
 
-            QFile file(m_dataYamlPath);
-            if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            QString yamlError;
+            const QString yamlContent = ConfigManager::loadDataYamlText(m_dataYamlPath, &yamlError);
+            if (!yamlError.isEmpty()) {
                 QMessageBox::critical(this,
                     trText("settings.sync.group"),
-                    trText("settings.sync.uploadFail").arg(file.errorString()));
+                    trText("settings.sync.uploadFail").arg(yamlError));
                 return;
             }
-            const QString yamlContent = QString::fromUtf8(file.readAll());
-            file.close();
 
             QJsonObject filesObj;
             QJsonObject fileEntry;
@@ -1974,15 +1973,13 @@ QWidget* SettingsDialog::buildOtherTab() {
                                 QStringLiteral("data.yaml not found in gist")));
                         return;
                     }
-                    QFile file(m_dataYamlPath);
-                    if (!file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+                    QString yamlError;
+                    if (!ConfigManager::saveDataYamlText(m_dataYamlPath, yamlContent, &yamlError)) {
                         QMessageBox::critical(this,
                             trText("settings.sync.group"),
-                            trText("settings.sync.downloadFail").arg(file.errorString()));
+                            trText("settings.sync.downloadFail").arg(yamlError));
                         return;
                     }
-                    file.write(yamlContent.toUtf8());
-                    file.close();
                     const QString now = QDateTime::currentDateTime()
                         .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
                     m_cfg.gistLastSyncTime = now;

@@ -27,6 +27,36 @@ endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
 
+if(APPLE AND NOT DEFINED yaml-cpp_DIR)
+    set(_yaml_cpp_prefix_candidates
+        "/opt/homebrew/opt/yaml-cpp"
+        "/usr/local/opt/yaml-cpp"
+    )
+
+    foreach(_yaml_cpp_prefix IN LISTS _yaml_cpp_prefix_candidates)
+        if(EXISTS "${_yaml_cpp_prefix}/lib/cmake/yaml-cpp/yaml-cpp-config.cmake")
+            list(PREPEND CMAKE_PREFIX_PATH "${_yaml_cpp_prefix}")
+            message(STATUS "Using yaml-cpp from ${_yaml_cpp_prefix}")
+            break()
+        endif()
+    endforeach()
+endif()
+
+find_package(yaml-cpp CONFIG QUIET)
+
+if(NOT yaml-cpp_FOUND)
+    include(FetchContent)
+    FetchContent_Declare(
+        yaml-cpp
+        GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+        GIT_TAG yaml-cpp-0.7.0
+    )
+    set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+    set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(yaml-cpp)
+endif()
+
 if(WIN32 OR APPLE)
     include(FetchContent)
     FetchContent_Declare(
@@ -87,6 +117,7 @@ target_include_directories(MyStocks PRIVATE include)
 target_link_libraries(MyStocks PRIVATE
     Qt6::Widgets
     Qt6::Network
+    $<IF:$<TARGET_EXISTS:yaml-cpp::yaml-cpp>,yaml-cpp::yaml-cpp,yaml-cpp>
 )
 
 if(WIN32 OR APPLE)

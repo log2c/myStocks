@@ -345,19 +345,6 @@ QVector<StockItem> defaultWatchStocks() {
     };
 }
 
-QString defaultDataYamlTemplate() {
-    QString content;
-    content += QStringLiteral("ver: 1\n\n");
-    content += QStringLiteral("stocks:\n");
-
-    for (const StockItem& item : defaultWatchStocks()) {
-        content += QStringLiteral("  - code: ") + item.code + QStringLiteral("\n");
-        content += QStringLiteral("    name: ") + item.name + QStringLiteral("\n");
-    }
-
-    return content;
-}
-
 bool isCostEditableCode(const QString& rawCode) {
     const QString code = watchCodeKey(rawCode);
     if (code.isEmpty()) {

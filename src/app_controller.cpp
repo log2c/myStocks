@@ -47,7 +47,7 @@
 
 namespace {
 
-using watchlist_utils::defaultDataYamlTemplate;
+using watchlist_utils::defaultWatchStocks;
 using watchlist_utils::isHongKongCode;
 using watchlist_utils::normalizeApiWatchCode;
 using watchlist_utils::normalizeFutureCode;
@@ -396,14 +396,11 @@ bool ensureDataYamlExists(const QString& path) {
         return true;
     }
 
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    if (!QDir().mkpath(info.dir().absolutePath())) {
         return false;
     }
 
-    const QByteArray content = defaultDataYamlTemplate().toUtf8();
-    qint64 written = file.write(content);
-    return written == content.size();
+    return ConfigManager::saveDataYaml(path, defaultWatchStocks(), {});
 }
 
 bool isBenignCanceledError(const QString& message) {
