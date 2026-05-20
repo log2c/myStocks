@@ -30,7 +30,7 @@ public:
     explicit AppController(QObject* parent = nullptr);
 
 private:
-    QString findDataYaml() const;
+    QString findDataYaml(QString* errorMessage = nullptr) const;
     void toggleWindow();
     void toggleMarketBreadthDetailWindow();
     void resetFloatingWindowPosition();

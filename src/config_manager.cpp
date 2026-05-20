@@ -310,13 +310,14 @@ QString emitDataYamlText(
             continue;
         }
 
-        const QString normalizedName = stock.name.trimmed().isEmpty()
-            ? normalizedCode
-            : stock.name.trimmed();
+        const QString normalizedName = stock.name.trimmed();
 
         emitter << YAML::BeginMap;
         emitter << YAML::Key << "code" << YAML::Value << toUtf8StdString(normalizedCode);
-        emitter << YAML::Key << "name" << YAML::Value << toUtf8StdString(normalizedName);
+        if (!normalizedName.isEmpty()
+            && normalizedName.compare(normalizedCode, Qt::CaseSensitive) != 0) {
+            emitter << YAML::Key << "name" << YAML::Value << toUtf8StdString(normalizedName);
+        }
         if (std::isfinite(stock.cost) && stock.cost > 0.0) {
             emitter << YAML::Key << "cost"
                     << YAML::Value << toUtf8StdString(QString::number(stock.cost, 'f', 6));

@@ -127,6 +127,18 @@ QVector<StockItem> defaultCommonIndexes() {
     };
 }
 
+QString userDataDirPath() {
+    return QDir(QDir::homePath()).filePath(QStringLiteral(".myStocks"));
+}
+
+QString userDataYamlPath() {
+    return QDir(userDataDirPath()).filePath(QStringLiteral("data.yaml"));
+}
+
+QString defaultBootstrapDataYamlText() {
+    return QStringLiteral("ver: 1\n\nstocks:\n  - code: 1.688256\n");
+}
+
 } // namespace
 
 AppController::AppController(QObject* parent)
@@ -141,7 +153,18 @@ AppController::AppController(QObject* parent)
             << "logEnabled=" << m_cfg.logEnabled
             << "logLevel=" << m_cfg.logLevel;
 
-    const QString dataYamlPath = findDataYaml();
+    QString dataYamlError;
+    const QString dataYamlPath = findDataYaml(&dataYamlError);
+    if (dataYamlPath.isEmpty() && !dataYamlError.isEmpty()) {
+        QMessageBox::critical(
+            nullptr,
+            i18n::t("app.name", m_resolvedLanguage),
+            i18n::t("dataYaml.accessFail", m_resolvedLanguage).arg(
+                QDir::toNativeSeparators(userDataYamlPath()),
+                dataYamlError
+            )
+        );
+    }
     bool migratedLegacyCodes = false;
     const QVector<StockItem> loadedYamlStocks = ConfigManager::loadStocksFromYaml(
         dataYamlPath,
@@ -390,17 +413,59 @@ bool addMacHotkeyMapping(const QKeySequence& sequence) {
 }
 #endif
 
-bool ensureDataYamlExists(const QString& path) {
+bool ensureDataYamlExists(const QString& path, QString* errorMessage = nullptr) {
+    const auto setError = [errorMessage](const QString& message) {
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+    };
+
     const QFileInfo info(path);
-    if (info.exists() && info.size() > 0) {
-        return true;
+    if (info.exists()) {
+        if (!info.isFile()) {
+            setError(QStringLiteral("path exists but is not a file"));
+            return false;
+        }
+        if (!info.isReadable()) {
+            setError(QStringLiteral("data.yaml is not readable"));
+            return false;
+        }
+        if (info.size() > 0) {
+            return true;
+        }
+        if (!info.isWritable()) {
+            setError(QStringLiteral("data.yaml is not writable"));
+            return false;
+        }
     }
 
-    if (!QDir().mkpath(info.dir().absolutePath())) {
+    const QString dirPath = info.dir().absolutePath();
+    if (!QDir().mkpath(dirPath)) {
+        setError(QStringLiteral("failed to create data directory"));
         return false;
     }
 
-    return ConfigManager::saveDataYaml(path, defaultWatchStocks(), {});
+    const QFileInfo dirInfo(dirPath);
+    if (!dirInfo.isReadable() || !dirInfo.isWritable()) {
+        setError(QStringLiteral("data directory is not readable or writable"));
+        return false;
+    }
+
+    QString yamlError;
+    if (!ConfigManager::saveDataYamlText(path, defaultBootstrapDataYamlText(), &yamlError)) {
+        setError(yamlError.isEmpty()
+            ? QStringLiteral("failed to write default data.yaml")
+            : yamlError);
+        return false;
+    }
+
+    const QFileInfo createdInfo(path);
+    if (!createdInfo.isReadable()) {
+        setError(QStringLiteral("data.yaml is not readable after creation"));
+        return false;
+    }
+
+    return true;
 }
 
 bool isBenignCanceledError(const QString& message) {
@@ -457,30 +522,15 @@ QStringList encodeWatchItems(const QVector<StockItem>& items) {
 
 } // namespace
 
-QString AppController::findDataYaml() const {
-    // First check user home directory ~/.myStocks/data.yaml
-    const QString homeDataPath = QDir(QDir::homePath()).filePath(".myStocks/data.yaml");
-    if (QFile::exists(homeDataPath)) {
-        return QDir::cleanPath(homeDataPath);
+QString AppController::findDataYaml(QString* errorMessage) const {
+    const QString path = QDir::cleanPath(userDataYamlPath());
+    if (ensureDataYamlExists(path, errorMessage)) {
+        return path;
     }
 
-#ifdef DEBUG_MODE
-    // In debug mode, read from source directory
-    const QString sourceDataPath = QString(SOURCE_DIR) + "/data.yaml";
-    if (QFile::exists(sourceDataPath)) {
-        qDebug() << "Debug mode: Reading data.yaml from:" << sourceDataPath;
-        return QDir::cleanPath(sourceDataPath);
-    }
-    qDebug() << "Debug mode: data.yaml not found in source directory:" << sourceDataPath;
-    // In debug mode, if source data.yaml doesn't exist, return empty (no fallback)
+    qWarning() << "Failed to resolve user data.yaml path" << path
+               << (errorMessage ? *errorMessage : QString());
     return {};
-#else
-    const QString appDataPath = QDir(QCoreApplication::applicationDirPath()).filePath("data.yaml");
-    if (ensureDataYamlExists(appDataPath)) {
-        return QDir::cleanPath(appDataPath);
-    }
-    return {};
-#endif
 }
 
 bool AppController::isFutureCode(const QString& code) {
@@ -1202,11 +1252,9 @@ void AppController::setupTray() {
     });
     QMenu* otherMenu = menu->addMenu(i18n::t("tray.other", m_resolvedLanguage));
     otherMenu->addAction(i18n::t("tray.openDataDir", m_resolvedLanguage), this, [this]() {
-        const QString dataPath = findDataYaml();
-        const QString dataDir =
-            dataPath.isEmpty() ? QString() : QFileInfo(dataPath).absoluteDir().absolutePath();
+        const QString dataDir = userDataDirPath();
         if (!openDirectoryPath(dataDir)) {
-            qWarning() << "Failed to open data directory for path" << dataPath;
+            qWarning() << "Failed to open data directory" << dataDir;
         }
     });
     otherMenu->addAction(i18n::t("tray.openLogDir", m_resolvedLanguage), this, [this]() {
