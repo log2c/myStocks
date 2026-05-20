@@ -348,7 +348,6 @@ QVector<StockItem> defaultWatchStocks() {
 QString defaultDataYamlTemplate() {
     QString content;
     content += QStringLiteral("ver: 1\n\n");
-    content += QStringLiteral("# stocks\n");
     content += QStringLiteral("stocks:\n");
 
     for (const StockItem& item : defaultWatchStocks()) {

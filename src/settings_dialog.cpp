@@ -734,6 +734,123 @@ QVector<StockGroup> SettingsDialog::groups() const {
     return m_groups;
 }
 
+void SettingsDialog::rebuildGroupList() {
+    if (!m_groupList) {
+        return;
+    }
+
+    const QListWidgetItem* currentItem = m_groupList->currentItem();
+    const bool keepAllGroupSelected = currentItem
+        && currentItem->data(Qt::UserRole).toInt() == -1;
+    const QString currentGroupName = (!keepAllGroupSelected && currentItem)
+        ? currentItem->text().trimmed()
+        : QString();
+
+    int selectedRow = -1;
+    {
+        QSignalBlocker blocker(m_groupList);
+        m_groupList->clear();
+
+        const int allPos = qBound(0, m_cfg.groupAllPosition, m_groups.size());
+        m_cfg.groupAllPosition = allPos;
+        for (int visualIndex = 0; visualIndex <= m_groups.size(); ++visualIndex) {
+            if (visualIndex == allPos) {
+                QListWidgetItem* item = new QListWidgetItem(
+                    trText("settings.group.allGroup"),
+                    m_groupList
+                );
+                item->setData(Qt::UserRole, -1);
+                item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+                QFont font = item->font();
+                font.setItalic(true);
+                item->setFont(font);
+                if (keepAllGroupSelected) {
+                    selectedRow = visualIndex;
+                }
+                continue;
+            }
+
+            const int groupIndex = visualIndex < allPos ? visualIndex : visualIndex - 1;
+            QListWidgetItem* item = new QListWidgetItem(m_groups.at(groupIndex).name, m_groupList);
+            item->setData(Qt::UserRole, groupIndex);
+            item->setFlags(item->flags() | Qt::ItemIsEditable);
+            if (!currentGroupName.isEmpty() && item->text().trimmed() == currentGroupName) {
+                selectedRow = visualIndex;
+            }
+        }
+
+        if (selectedRow < 0 && m_groupList->count() > 0) {
+            if (m_groups.isEmpty()) {
+                selectedRow = qBound(0, allPos, m_groupList->count() - 1);
+            } else {
+                selectedRow = (allPos == 0) ? 1 : 0;
+            }
+        }
+        if (selectedRow >= 0) {
+            m_groupList->setCurrentRow(selectedRow);
+        }
+    }
+
+    refreshCurrentGroupSelection();
+}
+
+void SettingsDialog::reloadDialogDataFromYaml() {
+    if (m_dataYamlPath.trimmed().isEmpty()) {
+        return;
+    }
+
+    const QVector<StockItem> reloadedStocks = ConfigManager::loadStocksFromYaml(m_dataYamlPath);
+    QVector<StockItem> filteredStocks;
+    filteredStocks.reserve(reloadedStocks.size());
+    for (const StockItem& stock : reloadedStocks) {
+        if (!isPredefinedIndexCode(stock.code)) {
+            filteredStocks.push_back(stock);
+        }
+    }
+    m_stocks = std::move(filteredStocks);
+
+    QSet<QString> stockKeys;
+    for (const StockItem& stock : m_stocks) {
+        stockKeys.insert(watchCodeKey(stock.code));
+    }
+
+    m_groups = ConfigManager::loadGroupsFromYaml(m_dataYamlPath);
+    for (StockGroup& group : m_groups) {
+        QStringList reloadedCodes;
+        for (const QString& code : group.stockCodes) {
+            if (stockKeys.contains(watchCodeKey(code))) {
+                reloadedCodes.append(code);
+            }
+        }
+        group.stockCodes = std::move(reloadedCodes);
+    }
+
+    if (m_stockTable) {
+        QSignalBlocker blocker(m_stockTable);
+        m_stockTable->setRowCount(0);
+
+        StockTableWidget* table = static_cast<StockTableWidget*>(m_stockTable);
+        for (const StockItem& stock : m_stocks) {
+            const QString displayName = m_apiNamesByCode.value(stock.code, stock.name);
+            table->addStockRow(stock.code, displayName, stock.cost);
+        }
+        if (m_stockTable->rowCount() > 0) {
+            m_stockTable->setCurrentCell(0, 0);
+        }
+    }
+
+    if (m_stockSuggestList) {
+        m_stockSuggestList->clear();
+        m_stockSuggestList->hide();
+    }
+    if (m_stockSearchEdit) {
+        m_stockSearchEdit->clear();
+    }
+
+    refreshGroupStockChoices();
+    rebuildGroupList();
+}
+
 QString SettingsDialog::trText(const QString& key) const {
     return i18n::t(key, m_uiLanguage);
 }
@@ -1874,6 +1991,7 @@ QWidget* SettingsDialog::buildOtherTab() {
                         auto s = ConfigManager::createAppSettings();
                         s->setValue(QStringLiteral("sync/gistLastSyncTime"), now);
                     }
+                    reloadDialogDataFromYaml();
                     QMessageBox::information(this,
                         trText("settings.sync.group"),
                         trText("settings.sync.downloadOk"));

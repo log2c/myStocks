@@ -66,6 +66,8 @@ private:
     QString groupMemberDisplayName(const QString& code) const;
     void refreshGroupStockChoices();
     void refreshCurrentGroupSelection();
+    void rebuildGroupList();
+    void reloadDialogDataFromYaml();
 
     void parseSearchResult(const QByteArray& data);
     void doStockSearch(bool forceSearch = false);

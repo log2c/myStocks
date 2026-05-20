@@ -347,7 +347,6 @@ bool ConfigManager::saveDataYaml(
 
     QString content;
     content += QStringLiteral("ver: 1\n\n");
-    content += QStringLiteral("# stocks\n");
     content += QStringLiteral("stocks:\n");
     for (const StockItem& s : stocks) {
         const QString normalizedCode = watchlist_utils::normalizeApiWatchCode(s.code);
@@ -363,7 +362,6 @@ bool ConfigManager::saveDataYaml(
     }
 
     if (!groups.isEmpty()) {
-        content += QStringLiteral("\n# groups\n");
         content += QStringLiteral("groups:\n");
         for (const StockGroup& g : groups) {
             const QString gname = g.name.trimmed();
