@@ -312,10 +312,12 @@ AppController::AppController(QObject* parent)
             }
         }
     );
-    QTimer::singleShot(10000, this, [this]() {
-        m_updater->setConfig(m_cfg);
-        m_updater->checkForUpdates();
-    });
+    if (m_cfg.autoCheckUpdates) {
+        QTimer::singleShot(10000, this, [this]() {
+            m_updater->setConfig(m_cfg);
+            m_updater->checkForUpdates();
+        });
+    }
 }
 
 namespace {

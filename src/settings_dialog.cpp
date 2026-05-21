@@ -551,6 +551,7 @@ AppConfig SettingsDialog::config() const {
     out.proxyUser = m_proxyUserEdit->text().trimmed();
     out.debugIgnoreTradingTime = m_debugIgnoreTradingTimeCheck->isChecked();
     out.acceptBetaUpdates = m_acceptBetaUpdatesCheck->isChecked();
+    out.autoCheckUpdates = m_autoCheckUpdatesCheck->isChecked();
     out.logEnabled = m_logEnabledCheck ? m_logEnabledCheck->isChecked() : out.logEnabled;
     out.logLevel = app_logging::normalizeLogLevel(m_logLevelCombo->currentData().toString());
     out.transparentBackgroundEnabled = m_transparentBackgroundCheck->isChecked();
@@ -2005,6 +2006,9 @@ QWidget* SettingsDialog::buildOtherTab() {
     m_acceptBetaUpdatesCheck = new QCheckBox(debugWidget);
     m_acceptBetaUpdatesCheck->setChecked(m_cfg.acceptBetaUpdates);
 
+    m_autoCheckUpdatesCheck = new QCheckBox(debugWidget);
+    m_autoCheckUpdatesCheck->setChecked(m_cfg.autoCheckUpdates);
+
     m_debugIgnoreTradingTimeCheck = new QCheckBox(debugWidget);
     m_debugIgnoreTradingTimeCheck->setChecked(m_cfg.debugIgnoreTradingTime);
 
@@ -2023,6 +2027,7 @@ QWidget* SettingsDialog::buildOtherTab() {
     }
 
     form->addRow(trText("settings.other.acceptBetaUpdates"), m_acceptBetaUpdatesCheck);
+    form->addRow(trText("settings.other.autoCheckUpdates"), m_autoCheckUpdatesCheck);
     form->addRow(trText("settings.other.debugMode"), m_debugIgnoreTradingTimeCheck);
     form->addRow(trText("settings.other.logLevel"), m_logLevelCombo);
     root->addWidget(debugWidget);

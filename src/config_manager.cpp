@@ -601,6 +601,11 @@ AppConfig ConfigManager::loadConfig() {
         QStringLiteral("acceptBetaUpdates"),
         cfg.acceptBetaUpdates
     ).toBool();
+    cfg.autoCheckUpdates = readConfigValue(
+        s,
+        QStringLiteral("autoCheckUpdates"),
+        cfg.autoCheckUpdates
+    ).toBool();
     cfg.simpleModeEnabled = s.value("ui/simpleModeEnabled", cfg.simpleModeEnabled).toBool();
     cfg.blinkReminderEnabled = s.value("ui/blinkReminderEnabled", cfg.blinkReminderEnabled).toBool();
     cfg.trayTooltipEnabled = s.value("ui/trayTooltipEnabled", cfg.trayTooltipEnabled).toBool();
@@ -886,6 +891,11 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         s,
         QStringLiteral("acceptBetaUpdates"),
         cfg.acceptBetaUpdates
+    );
+    writeConfigValue(
+        s,
+        QStringLiteral("autoCheckUpdates"),
+        cfg.autoCheckUpdates
     );
 
     // Remove legacy keys that map to [%General] in INI and can shadow values across runs.

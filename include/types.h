@@ -181,6 +181,7 @@ struct AppConfig {
     bool debugIgnoreTradingTime = false;
 
     bool acceptBetaUpdates = false;
+    bool autoCheckUpdates = true;
 
     bool simpleModeEnabled = false;
     bool blinkReminderEnabled = false;

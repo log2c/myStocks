@@ -96,6 +96,7 @@ private:
     QLineEdit* m_proxyUserEdit = nullptr;
     QCheckBox* m_debugIgnoreTradingTimeCheck = nullptr;
     QCheckBox* m_acceptBetaUpdatesCheck = nullptr;
+    QCheckBox* m_autoCheckUpdatesCheck = nullptr;
     QCheckBox* m_logEnabledCheck = nullptr;
     QComboBox* m_logLevelCombo = nullptr;
     QPushButton* m_openLogDirButton = nullptr;
