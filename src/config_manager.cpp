@@ -757,6 +757,7 @@ AppConfig ConfigManager::loadConfig() {
     cfg.gistToken = s.value("sync/gistToken", cfg.gistToken).toString();
     cfg.gistId = s.value("sync/gistId", cfg.gistId).toString();
     cfg.gistLastSyncTime = s.value("sync/gistLastSyncTime", cfg.gistLastSyncTime).toString();
+    cfg.gistRemoteUpdatedAt = s.value("sync/gistRemoteUpdatedAt", cfg.gistRemoteUpdatedAt).toString();
 
     for (int i = 0; i < ColCount; ++i) {
         cfg.visibleColumns[i] = s.value(
@@ -988,6 +989,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue("sync/gistToken", cfg.gistToken);
     s.setValue("sync/gistId", cfg.gistId);
     s.setValue("sync/gistLastSyncTime", cfg.gistLastSyncTime);
+    s.setValue("sync/gistRemoteUpdatedAt", cfg.gistRemoteUpdatedAt);
 
     for (int i = 0; i < ColCount; ++i) {
         s.setValue(QString("ui/columns/%1").arg(i), cfg.visibleColumns.value(i, true));

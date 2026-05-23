@@ -288,7 +288,8 @@ struct AppConfig {
     // Config sync via GitHub Gist (syncs data.yaml content only)
     QString gistToken;
     QString gistId;
-    QString gistLastSyncTime; // ISO 8601 datetime string, empty if never synced
+    QString gistLastSyncTime;      // local clock ISO string of last successful sync
+    QString gistRemoteUpdatedAt;   // GitHub API updated_at at last sync (for conflict detection)
 
     QMap<int, int> columnWidths;
     QRect windowRect = QRect(120, 120, 760, 280);

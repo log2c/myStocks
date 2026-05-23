@@ -30,6 +30,9 @@
 #include <Carbon/Carbon.h>
 #endif
 #include <QAction>
+#include <QFileSystemWatcher>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMenu>
 #include <QMessageBox>
 #include <QNetworkReply>
@@ -318,6 +321,12 @@ AppController::AppController(QObject* parent)
             m_updater->checkForUpdates();
         });
     }
+
+    // Gist auto-sync: watch data.yaml for local changes, and pull on startup.
+    m_gistNam = new QNetworkAccessManager(this);
+    setupDataYamlWatcher();
+    // Startup pull: delay slightly so the tray is ready for notifications.
+    QTimer::singleShot(5000, this, [this]() { checkAndPullGistOnStartup(); });
 }
 
 namespace {
@@ -1817,4 +1826,261 @@ QString AppController::probeTradingDateText(const QByteArray& body) const {
     }
 
     return {};
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gist auto-sync helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+void AppController::setupDataYamlWatcher() {
+    const QString dataPath = findDataYaml();
+    if (dataPath.isEmpty()) {
+        return;
+    }
+
+    if (m_dataYamlWatcher) {
+        m_dataYamlWatcher->deleteLater();
+        m_dataYamlWatcher = nullptr;
+    }
+
+    m_dataYamlWatcher = new QFileSystemWatcher(this);
+    m_dataYamlWatcher->addPath(dataPath);
+
+    m_gistAutoUploadDebounce = new QTimer(this);
+    m_gistAutoUploadDebounce->setSingleShot(true);
+    m_gistAutoUploadDebounce->setInterval(3000); // 3 s debounce
+
+    connect(m_gistAutoUploadDebounce, &QTimer::timeout, this, [this]() {
+        doGistAutoUpload();
+    });
+
+    connect(m_dataYamlWatcher, &QFileSystemWatcher::fileChanged, this,
+        [this](const QString& path) {
+            // Re-add the path: on macOS the watcher may stop after an inode replace.
+            if (m_dataYamlWatcher && !m_dataYamlWatcher->files().contains(path)) {
+                m_dataYamlWatcher->addPath(path);
+            }
+
+            if (m_suppressGistAutoUpload) {
+                return;
+            }
+            if (m_cfg.gistToken.isEmpty() || m_cfg.gistId.isEmpty()) {
+                return;
+            }
+
+            if (m_gistAutoUploadDebounce) {
+                m_gistAutoUploadDebounce->start();
+            }
+        }
+    );
+
+    qInfo() << "[Gist] data.yaml watcher set up for:" << dataPath;
+}
+
+void AppController::scheduleGistAutoUpload() {
+    if (m_gistAutoUploadDebounce) {
+        m_gistAutoUploadDebounce->start();
+    }
+}
+
+void AppController::doGistAutoUpload() {
+    if (m_cfg.gistToken.isEmpty() || m_cfg.gistId.isEmpty()) {
+        return;
+    }
+
+    const QString dataPath = findDataYaml();
+    if (dataPath.isEmpty()) {
+        return;
+    }
+
+    QString yamlError;
+    const QString yamlContent = ConfigManager::loadDataYamlText(dataPath, &yamlError);
+    if (!yamlError.isEmpty() || yamlContent.trimmed().isEmpty()) {
+        qWarning() << "[Gist] auto-upload: failed to read data.yaml:" << yamlError;
+        return;
+    }
+
+    QJsonObject filesObj;
+    QJsonObject fileEntry;
+    fileEntry[QStringLiteral("content")] = yamlContent;
+    filesObj[QStringLiteral("data.yaml")] = fileEntry;
+    QJsonObject body;
+    body[QStringLiteral("files")] = filesObj;
+
+    const QString token = m_cfg.gistToken;
+    const QString gistId = m_cfg.gistId;
+
+    QNetworkRequest req(QUrl(QStringLiteral("https://api.github.com/gists/") + gistId));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    req.setRawHeader("Authorization", ("Bearer " + token).toUtf8());
+    req.setRawHeader("Accept", "application/vnd.github.v3+json");
+    req.setRawHeader("User-Agent", "myStocks-app");
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
+
+    qInfo() << "[Gist] auto-uploading data.yaml to gist" << gistId;
+    QNetworkReply* reply = m_gistNam->sendCustomRequest(
+        req, "PATCH", QJsonDocument(body).toJson(QJsonDocument::Compact));
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        const int httpStatus = reply->attribute(
+            QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (reply->error() != QNetworkReply::NoError || httpStatus < 200 || httpStatus >= 300) {
+            const QString err = reply->error() != QNetworkReply::NoError
+                ? reply->errorString()
+                : QStringLiteral("HTTP %1").arg(httpStatus);
+            qWarning() << "[Gist] auto-upload failed:" << err;
+            if (m_tray) {
+                m_tray->showMessage(
+                    i18n::t("app.name", m_resolvedLanguage),
+                    i18n::t("settings.sync.autoUploadFail", m_resolvedLanguage).arg(err),
+                    QSystemTrayIcon::Warning,
+                    4000
+                );
+            }
+            return;
+        }
+
+        // Parse updated_at from response to update conflict-detection baseline.
+        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        const QString remoteUpdatedAt =
+            doc.object()[QStringLiteral("updated_at")].toString();
+
+        const QString now = QDateTime::currentDateTime()
+            .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+        m_cfg.gistLastSyncTime = now;
+        if (!remoteUpdatedAt.isEmpty()) {
+            m_cfg.gistRemoteUpdatedAt = remoteUpdatedAt;
+        }
+        {
+            auto s = ConfigManager::createAppSettings();
+            s->setValue(QStringLiteral("sync/gistLastSyncTime"), now);
+            s->setValue(QStringLiteral("sync/gistRemoteUpdatedAt"), m_cfg.gistRemoteUpdatedAt);
+        }
+
+        qInfo() << "[Gist] auto-upload succeeded. remoteUpdatedAt=" << remoteUpdatedAt;
+        if (m_tray) {
+            m_tray->showMessage(
+                i18n::t("app.name", m_resolvedLanguage),
+                i18n::t("settings.sync.autoUploadOk", m_resolvedLanguage),
+                QSystemTrayIcon::Information,
+                2500
+            );
+        }
+    });
+}
+
+void AppController::checkAndPullGistOnStartup() {
+    if (m_cfg.gistToken.isEmpty() || m_cfg.gistId.isEmpty()) {
+        return;
+    }
+
+    const QString dataPath = findDataYaml();
+    if (dataPath.isEmpty()) {
+        qInfo() << "[Gist] startup pull skipped: data.yaml not found.";
+        return;
+    }
+
+    const QString token = m_cfg.gistToken;
+    const QString gistId = m_cfg.gistId;
+    const QString knownRemoteUpdatedAt = m_cfg.gistRemoteUpdatedAt;
+
+    QNetworkRequest req(QUrl(QStringLiteral("https://api.github.com/gists/") + gistId));
+    req.setRawHeader("Authorization", ("Bearer " + token).toUtf8());
+    req.setRawHeader("Accept", "application/vnd.github.v3+json");
+    req.setRawHeader("User-Agent", "myStocks-app");
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
+
+    qInfo() << "[Gist] startup: checking remote version. knownUpdatedAt=" << knownRemoteUpdatedAt;
+    QNetworkReply* reply = m_gistNam->get(req);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, dataPath, knownRemoteUpdatedAt]() {
+        reply->deleteLater();
+        const int httpStatus = reply->attribute(
+            QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (reply->error() != QNetworkReply::NoError || httpStatus < 200 || httpStatus >= 300) {
+            const QString err = reply->error() != QNetworkReply::NoError
+                ? reply->errorString()
+                : QStringLiteral("HTTP %1").arg(httpStatus);
+            qWarning() << "[Gist] startup pull check failed:" << err;
+            return; // silent fail on startup
+        }
+
+        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        const QJsonObject root = doc.object();
+        const QString remoteUpdatedAt = root[QStringLiteral("updated_at")].toString();
+
+        // If the remote updated_at matches what we last synced, nothing to do.
+        if (!remoteUpdatedAt.isEmpty()
+            && !knownRemoteUpdatedAt.isEmpty()
+            && remoteUpdatedAt == knownRemoteUpdatedAt) {
+            qInfo() << "[Gist] startup: remote is in sync, no pull needed.";
+            return;
+        }
+
+        qInfo() << "[Gist] startup: remote is newer ("
+                << remoteUpdatedAt << " vs known " << knownRemoteUpdatedAt
+                << "), pulling...";
+
+        // Extract data.yaml content from the gist.
+        const QJsonObject files = root[QStringLiteral("files")].toObject();
+        QString yamlContent;
+        for (const QString& key : files.keys()) {
+            if (key.compare(QStringLiteral("data.yaml"), Qt::CaseInsensitive) == 0) {
+                yamlContent = files[key].toObject()[QStringLiteral("content")].toString();
+                break;
+            }
+        }
+        if (yamlContent.isEmpty()) {
+            qWarning() << "[Gist] startup pull: data.yaml not found in gist.";
+            return;
+        }
+
+        // Suppress auto-upload while we write the downloaded content.
+        m_suppressGistAutoUpload = true;
+        QString yamlError;
+        const bool saved = ConfigManager::saveDataYamlText(dataPath, yamlContent, &yamlError);
+        // Allow a brief settle time before re-enabling the watcher.
+        QTimer::singleShot(1500, this, [this]() { m_suppressGistAutoUpload = false; });
+
+        if (!saved) {
+            qWarning() << "[Gist] startup pull: failed to write data.yaml:" << yamlError;
+            if (m_tray) {
+                m_tray->showMessage(
+                    i18n::t("app.name", m_resolvedLanguage),
+                    i18n::t("settings.sync.startupPullFail", m_resolvedLanguage).arg(yamlError),
+                    QSystemTrayIcon::Warning,
+                    4000
+                );
+            }
+            return;
+        }
+
+        // Update the stored baseline.
+        const QString now = QDateTime::currentDateTime()
+            .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+        m_cfg.gistLastSyncTime = now;
+        m_cfg.gistRemoteUpdatedAt = remoteUpdatedAt;
+        {
+            auto s = ConfigManager::createAppSettings();
+            s->setValue(QStringLiteral("sync/gistLastSyncTime"), now);
+            s->setValue(QStringLiteral("sync/gistRemoteUpdatedAt"), remoteUpdatedAt);
+        }
+
+        // Reload stocks/groups from the newly written data.yaml.
+        reloadStocksFromYaml();
+
+        qInfo() << "[Gist] startup pull succeeded. stocks=" << m_stocks.size();
+        if (m_tray) {
+            m_tray->showMessage(
+                i18n::t("app.name", m_resolvedLanguage),
+                i18n::t("settings.sync.startupPullOk", m_resolvedLanguage)
+                    .arg(m_stocks.size()),
+                QSystemTrayIcon::Information,
+                4000
+            );
+        }
+    });
 }
