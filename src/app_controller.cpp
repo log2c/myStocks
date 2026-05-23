@@ -686,14 +686,21 @@ QVector<StockItem> AppController::mergedWatchItemsForGroup() const {
         appendUnique(item);
     }
 
-    QSet<QString> groupCodes;
-    groupCodes.reserve(group.stockCodes.size());
-    for (const QString& c : group.stockCodes) {
-        groupCodes.insert(watchCodeKey(c));
-    }
+    // Build a lookup map from normalized key -> StockItem, then iterate
+    // group.stockCodes in config order to preserve the user-defined sequence.
+    QHash<QString, StockItem> stockMap;
+    stockMap.reserve(m_stocks.size());
     for (const StockItem& item : m_stocks) {
-        if (groupCodes.contains(watchCodeKey(item.code.trimmed()))) {
-            appendUnique(item);
+        const QString key = watchCodeKey(item.code.trimmed());
+        if (!key.isEmpty() && !stockMap.contains(key)) {
+            stockMap.insert(key, item);
+        }
+    }
+    for (const QString& c : group.stockCodes) {
+        const QString key = watchCodeKey(c);
+        const auto it = stockMap.find(key);
+        if (it != stockMap.end()) {
+            appendUnique(it.value());
         }
     }
 
