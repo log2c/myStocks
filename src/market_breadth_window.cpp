@@ -1987,9 +1987,10 @@ void  MarketBreadthDetailWindow::showCenteredForSnapshot(
 
     setGeometry(targetRect);
     m_hasStoredGeometry = true;
-    if (!isVisible()) {
-        show();
-    }
+    setAttribute(Qt::WA_ShowWithoutActivating, false);
+    show();
+    raise();
+    activateWindow();
 #if defined(Q_OS_MACOS)
     // Switch to Regular policy so the window appears in the Dock.
     setMacAppActivationPolicy(true);
@@ -2106,6 +2107,7 @@ void  MarketBreadthDetailWindow::hidePopup() {
     }
     flushPendingHotStockWatchlistReloadIfNeeded();
     stopAutoRefreshTimer();
+    setAttribute(Qt::WA_ShowWithoutActivating, true);
     hide();
     if (s_visiblePopup == this) {
         s_visiblePopup = nullptr;
