@@ -1830,14 +1830,9 @@ QWidget* SettingsDialog::buildOtherTab() {
             return true;
         };
 
-        connect(uploadBtn, &QPushButton::clicked, this, [this, uploadBtn, downloadBtn, validateFields]() {
+        // Unified sync handler: fetch remote info first, then present a choice dialog.
+        auto doSync = [this, uploadBtn, downloadBtn, validateFields]() {
             if (!validateFields()) return;
-            const auto reply = QMessageBox::question(this,
-                trText("settings.sync.group"),
-                trText("settings.sync.confirmUpload"),
-                QMessageBox::Yes | QMessageBox::No);
-            if (reply != QMessageBox::Yes) return;
-
             const QString token = m_gistTokenEdit->text().trimmed();
             const QString gistId = m_gistIdEdit->text().trimmed();
 
@@ -1853,144 +1848,7 @@ QWidget* SettingsDialog::buildOtherTab() {
             uploadBtn->setEnabled(false);
             downloadBtn->setEnabled(false);
 
-            // Step 1: GET gist to check for remote version conflict.
-            QNetworkRequest checkReq(QUrl(QStringLiteral("https://api.github.com/gists/") + gistId));
-            checkReq.setRawHeader("Authorization", ("Bearer " + token).toUtf8());
-            checkReq.setRawHeader("Accept", "application/vnd.github.v3+json");
-            checkReq.setRawHeader("User-Agent", "myStocks-app");
-            checkReq.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                                   QNetworkRequest::NoLessSafeRedirectPolicy);
-
-            QNetworkReply* checkReply = m_syncNam->get(checkReq);
-            connect(checkReply, &QNetworkReply::finished, this,
-                [this, checkReply, uploadBtn, downloadBtn, token, gistId]() {
-                    checkReply->deleteLater();
-
-                    const int checkStatus = checkReply->attribute(
-                        QNetworkRequest::HttpStatusCodeAttribute).toInt();
-                    bool conflictDetected = false;
-                    if (checkReply->error() == QNetworkReply::NoError
-                        && checkStatus >= 200 && checkStatus < 300) {
-                        const QJsonDocument checkDoc = QJsonDocument::fromJson(checkReply->readAll());
-                        const QString remoteUpdatedAt =
-                            checkDoc.object()[QStringLiteral("updated_at")].toString();
-                        // Conflict: remote was updated by another device since our last sync.
-                        if (!remoteUpdatedAt.isEmpty()
-                            && !m_cfg.gistRemoteUpdatedAt.isEmpty()
-                            && remoteUpdatedAt != m_cfg.gistRemoteUpdatedAt) {
-                            conflictDetected = true;
-                        }
-                    }
-
-                    if (conflictDetected) {
-                        const auto choice = QMessageBox::warning(this,
-                            trText("settings.sync.group"),
-                            trText("settings.sync.conflictWarning"),
-                            QMessageBox::Yes | QMessageBox::Cancel,
-                            QMessageBox::Cancel);
-                        if (choice != QMessageBox::Yes) {
-                            uploadBtn->setEnabled(true);
-                            downloadBtn->setEnabled(true);
-                            return;
-                        }
-                    }
-
-                    // Step 2: PATCH upload.
-                    QString yamlError;
-                    const QString yamlContent = ConfigManager::loadDataYamlText(
-                        m_dataYamlPath, &yamlError);
-                    if (!yamlError.isEmpty()) {
-                        uploadBtn->setEnabled(true);
-                        downloadBtn->setEnabled(true);
-                        QMessageBox::critical(this,
-                            trText("settings.sync.group"),
-                            trText("settings.sync.uploadFail").arg(yamlError));
-                        return;
-                    }
-
-                    QJsonObject filesObj;
-                    QJsonObject fileEntry;
-                    fileEntry[QStringLiteral("content")] = yamlContent;
-                    filesObj[QStringLiteral("data.yaml")] = fileEntry;
-                    QJsonObject body;
-                    body[QStringLiteral("files")] = filesObj;
-
-                    QNetworkRequest req(QUrl(QStringLiteral("https://api.github.com/gists/") + gistId));
-                    req.setHeader(QNetworkRequest::ContentTypeHeader,
-                                  QStringLiteral("application/json"));
-                    req.setRawHeader("Authorization", ("Bearer " + token).toUtf8());
-                    req.setRawHeader("Accept", "application/vnd.github.v3+json");
-                    req.setRawHeader("User-Agent", "myStocks-app");
-                    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                                     QNetworkRequest::NoLessSafeRedirectPolicy);
-
-                    QNetworkReply* patchReply = m_syncNam->sendCustomRequest(
-                        req, "PATCH", QJsonDocument(body).toJson(QJsonDocument::Compact));
-                    connect(patchReply, &QNetworkReply::finished, this,
-                        [this, patchReply, uploadBtn, downloadBtn]() {
-                            patchReply->deleteLater();
-                            uploadBtn->setEnabled(true);
-                            downloadBtn->setEnabled(true);
-                            const int status = patchReply->attribute(
-                                QNetworkRequest::HttpStatusCodeAttribute).toInt();
-                            if (patchReply->error() != QNetworkReply::NoError
-                                || status < 200 || status >= 300) {
-                                const QString err = patchReply->error() != QNetworkReply::NoError
-                                    ? patchReply->errorString()
-                                    : QStringLiteral("HTTP %1").arg(status);
-                                QMessageBox::critical(this,
-                                    trText("settings.sync.group"),
-                                    trText("settings.sync.uploadFail").arg(err));
-                                return;
-                            }
-                            // Parse updated_at from response for conflict-detection baseline.
-                            const QJsonDocument doc =
-                                QJsonDocument::fromJson(patchReply->readAll());
-                            const QString remoteUpdatedAt =
-                                doc.object()[QStringLiteral("updated_at")].toString();
-
-                            const QString now = QDateTime::currentDateTime()
-                                .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
-                            m_cfg.gistLastSyncTime = now;
-                            if (!remoteUpdatedAt.isEmpty()) {
-                                m_cfg.gistRemoteUpdatedAt = remoteUpdatedAt;
-                            }
-                            m_gistLastSyncLabel->setText(now);
-                            {
-                                auto s = ConfigManager::createAppSettings();
-                                s->setValue(QStringLiteral("sync/gistLastSyncTime"), now);
-                                s->setValue(QStringLiteral("sync/gistRemoteUpdatedAt"),
-                                            m_cfg.gistRemoteUpdatedAt);
-                            }
-                            QMessageBox::information(this,
-                                trText("settings.sync.group"),
-                                trText("settings.sync.uploadOk"));
-                        }
-                    );
-                }
-            );
-        });
-
-        connect(downloadBtn, &QPushButton::clicked, this, [this, uploadBtn, downloadBtn, validateFields]() {
-            if (!validateFields()) return;
-            const auto reply = QMessageBox::question(this,
-                trText("settings.sync.group"),
-                trText("settings.sync.confirmDownload"),
-                QMessageBox::Yes | QMessageBox::No);
-            if (reply != QMessageBox::Yes) return;
-
-            const QString token = m_gistTokenEdit->text().trimmed();
-            const QString gistId = m_gistIdEdit->text().trimmed();
-
-            // Persist token and gist ID immediately (before network request)
-            m_cfg.gistToken = token;
-            m_cfg.gistId = gistId;
-            {
-                auto s = ConfigManager::createAppSettings();
-                s->setValue(QStringLiteral("sync/gistToken"), token);
-                s->setValue(QStringLiteral("sync/gistId"), gistId);
-            }
-
+            // GET gist to obtain remote updated_at before showing the choice dialog.
             QNetworkRequest req(QUrl(QStringLiteral("https://api.github.com/gists/") + gistId));
             req.setRawHeader("Authorization", ("Bearer " + token).toUtf8());
             req.setRawHeader("Accept", "application/vnd.github.v3+json");
@@ -1998,72 +1856,218 @@ QWidget* SettingsDialog::buildOtherTab() {
             req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                              QNetworkRequest::NoLessSafeRedirectPolicy);
 
-            uploadBtn->setEnabled(false);
-            downloadBtn->setEnabled(false);
-
-            QNetworkReply* reply2 = m_syncNam->get(req);
-            connect(reply2, &QNetworkReply::finished, this,
-                [this, reply2, uploadBtn, downloadBtn]() {
-                    reply2->deleteLater();
+            QNetworkReply* fetchReply = m_syncNam->get(req);
+            connect(fetchReply, &QNetworkReply::finished, this,
+                [this, fetchReply, uploadBtn, downloadBtn, token, gistId]() {
+                    fetchReply->deleteLater();
                     uploadBtn->setEnabled(true);
                     downloadBtn->setEnabled(true);
-                    const int status = reply2->attribute(
+
+                    const int httpStatus = fetchReply->attribute(
                         QNetworkRequest::HttpStatusCodeAttribute).toInt();
-                    if (reply2->error() != QNetworkReply::NoError || status < 200 || status >= 300) {
-                        const QString err = reply2->error() != QNetworkReply::NoError
-                            ? reply2->errorString()
-                            : QStringLiteral("HTTP %1").arg(status);
+                    if (fetchReply->error() != QNetworkReply::NoError
+                        || httpStatus < 200 || httpStatus >= 300) {
+                        const QString err = fetchReply->error() != QNetworkReply::NoError
+                            ? fetchReply->errorString()
+                            : QStringLiteral("HTTP %1").arg(httpStatus);
                         QMessageBox::critical(this,
                             trText("settings.sync.group"),
-                            trText("settings.sync.downloadFail").arg(err));
+                            trText("settings.sync.fetchFail").arg(err));
                         return;
                     }
-                    const QJsonDocument doc = QJsonDocument::fromJson(reply2->readAll());
-                    const QJsonObject root = doc.object();
-                    const QJsonObject files = root[QStringLiteral("files")].toObject();
-                    QString yamlContent;
-                    for (const QString& key : files.keys()) {
-                        if (key.compare(QStringLiteral("data.yaml"), Qt::CaseInsensitive) == 0) {
-                            yamlContent = files[key].toObject()[QStringLiteral("content")].toString();
-                            break;
-                        }
-                    }
-                    if (yamlContent.isEmpty()) {
-                        QMessageBox::critical(this,
-                            trText("settings.sync.group"),
-                            trText("settings.sync.downloadFail").arg(
-                                QStringLiteral("data.yaml not found in gist")));
-                        return;
-                    }
-                    QString yamlError;
-                    if (!ConfigManager::saveDataYamlText(m_dataYamlPath, yamlContent, &yamlError)) {
-                        QMessageBox::critical(this,
-                            trText("settings.sync.group"),
-                            trText("settings.sync.downloadFail").arg(yamlError));
-                        return;
-                    }
-                    const QString remoteUpdatedAt =
-                        root[QStringLiteral("updated_at")].toString();
-                    const QString now = QDateTime::currentDateTime()
-                        .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
-                    m_cfg.gistLastSyncTime = now;
+
+                    const QJsonDocument fetchDoc = QJsonDocument::fromJson(fetchReply->readAll());
+                    const QJsonObject root = fetchDoc.object();
+                    const QString remoteUpdatedAt = root[QStringLiteral("updated_at")].toString();
+
+                    // Format remote timestamp (ISO 8601 → local time string)
+                    QString remoteDisplay;
                     if (!remoteUpdatedAt.isEmpty()) {
-                        m_cfg.gistRemoteUpdatedAt = remoteUpdatedAt;
+                        const QDateTime dt =
+                            QDateTime::fromString(remoteUpdatedAt, Qt::ISODate).toLocalTime();
+                        remoteDisplay = dt.isValid()
+                            ? dt.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))
+                            : remoteUpdatedAt;
+                    } else {
+                        remoteDisplay = trText("settings.sync.never");
                     }
-                    m_gistLastSyncLabel->setText(now);
-                    {
-                        auto s = ConfigManager::createAppSettings();
-                        s->setValue(QStringLiteral("sync/gistLastSyncTime"), now);
-                        s->setValue(QStringLiteral("sync/gistRemoteUpdatedAt"),
-                                    m_cfg.gistRemoteUpdatedAt);
+
+                    const QString localDisplay = m_cfg.gistLastSyncTime.trimmed().isEmpty()
+                        ? trText("settings.sync.never")
+                        : m_cfg.gistLastSyncTime.trimmed();
+
+                    // Build the choice dialog.
+                    QDialog dlg(this);
+                    dlg.setWindowTitle(trText("settings.sync.group"));
+                    dlg.setWindowModality(Qt::WindowModal);
+                    QVBoxLayout* vlay = new QVBoxLayout(&dlg);
+                    vlay->setSpacing(12);
+                    vlay->setContentsMargins(20, 16, 20, 16);
+
+                    QLabel* infoLabel = new QLabel(&dlg);
+                    infoLabel->setText(trText("settings.sync.syncDialog.info")
+                        .arg(remoteDisplay, localDisplay));
+                    infoLabel->setWordWrap(true);
+                    vlay->addWidget(infoLabel);
+
+                    QHBoxLayout* btnLay = new QHBoxLayout;
+                    btnLay->setSpacing(8);
+                    QPushButton* useRemoteBtn =
+                        new QPushButton(trText("settings.sync.syncDialog.useRemote"), &dlg);
+                    QPushButton* useLocalBtn =
+                        new QPushButton(trText("settings.sync.syncDialog.useLocal"), &dlg);
+                    QPushButton* ignoreBtn =
+                        new QPushButton(trText("settings.sync.syncDialog.ignore"), &dlg);
+                    ignoreBtn->setDefault(true);
+                    btnLay->addStretch();
+                    btnLay->addWidget(useRemoteBtn);
+                    btnLay->addWidget(useLocalBtn);
+                    btnLay->addWidget(ignoreBtn);
+                    vlay->addLayout(btnLay);
+
+                    enum SyncChoice { ChooseRemote, ChooseLocal, ChooseIgnore };
+                    SyncChoice syncChoice = ChooseIgnore;
+                    connect(useRemoteBtn, &QPushButton::clicked, &dlg,
+                        [&syncChoice, &dlg]() { syncChoice = ChooseRemote; dlg.accept(); });
+                    connect(useLocalBtn, &QPushButton::clicked, &dlg,
+                        [&syncChoice, &dlg]() { syncChoice = ChooseLocal; dlg.accept(); });
+                    connect(ignoreBtn, &QPushButton::clicked, &dlg,
+                        [&dlg]() { dlg.reject(); });
+
+                    ignoreBtn->setFocus();
+                    dlg.exec();
+
+                    if (syncChoice == ChooseIgnore) return;
+
+                    uploadBtn->setEnabled(false);
+                    downloadBtn->setEnabled(false);
+
+                    if (syncChoice == ChooseRemote) {
+                        // Use remote: write already-fetched gist content to local data.yaml.
+                        const QJsonObject files = root[QStringLiteral("files")].toObject();
+                        QString yamlContent;
+                        for (const QString& key : files.keys()) {
+                            if (key.compare(QStringLiteral("data.yaml"),
+                                            Qt::CaseInsensitive) == 0) {
+                                yamlContent =
+                                    files[key].toObject()[QStringLiteral("content")].toString();
+                                break;
+                            }
+                        }
+                        uploadBtn->setEnabled(true);
+                        downloadBtn->setEnabled(true);
+                        if (yamlContent.isEmpty()) {
+                            QMessageBox::critical(this,
+                                trText("settings.sync.group"),
+                                trText("settings.sync.downloadFail").arg(
+                                    QStringLiteral("data.yaml not found in gist")));
+                            return;
+                        }
+                        QString yamlError;
+                        if (!ConfigManager::saveDataYamlText(
+                                m_dataYamlPath, yamlContent, &yamlError)) {
+                            QMessageBox::critical(this,
+                                trText("settings.sync.group"),
+                                trText("settings.sync.downloadFail").arg(yamlError));
+                            return;
+                        }
+                        const QString now = QDateTime::currentDateTime()
+                            .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+                        m_cfg.gistLastSyncTime = now;
+                        if (!remoteUpdatedAt.isEmpty()) {
+                            m_cfg.gistRemoteUpdatedAt = remoteUpdatedAt;
+                        }
+                        m_gistLastSyncLabel->setText(now);
+                        {
+                            auto s = ConfigManager::createAppSettings();
+                            s->setValue(QStringLiteral("sync/gistLastSyncTime"), now);
+                            s->setValue(QStringLiteral("sync/gistRemoteUpdatedAt"),
+                                        m_cfg.gistRemoteUpdatedAt);
+                        }
+                        reloadDialogDataFromYaml();
+                        QMessageBox::information(this,
+                            trText("settings.sync.group"),
+                            trText("settings.sync.downloadOk"));
+                    } else {
+                        // Use local: PATCH upload local data.yaml to remote.
+                        QString yamlError;
+                        const QString yamlContent = ConfigManager::loadDataYamlText(
+                            m_dataYamlPath, &yamlError);
+                        if (!yamlError.isEmpty()) {
+                            uploadBtn->setEnabled(true);
+                            downloadBtn->setEnabled(true);
+                            QMessageBox::critical(this,
+                                trText("settings.sync.group"),
+                                trText("settings.sync.uploadFail").arg(yamlError));
+                            return;
+                        }
+
+                        QJsonObject filesObj;
+                        QJsonObject fileEntry;
+                        fileEntry[QStringLiteral("content")] = yamlContent;
+                        filesObj[QStringLiteral("data.yaml")] = fileEntry;
+                        QJsonObject body;
+                        body[QStringLiteral("files")] = filesObj;
+
+                        QNetworkRequest patchReq(
+                            QUrl(QStringLiteral("https://api.github.com/gists/") + gistId));
+                        patchReq.setHeader(QNetworkRequest::ContentTypeHeader,
+                                           QStringLiteral("application/json"));
+                        patchReq.setRawHeader("Authorization", ("Bearer " + token).toUtf8());
+                        patchReq.setRawHeader("Accept", "application/vnd.github.v3+json");
+                        patchReq.setRawHeader("User-Agent", "myStocks-app");
+                        patchReq.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                                              QNetworkRequest::NoLessSafeRedirectPolicy);
+
+                        QNetworkReply* patchReply = m_syncNam->sendCustomRequest(
+                            patchReq, "PATCH",
+                            QJsonDocument(body).toJson(QJsonDocument::Compact));
+                        connect(patchReply, &QNetworkReply::finished, this,
+                            [this, patchReply, uploadBtn, downloadBtn]() {
+                                patchReply->deleteLater();
+                                uploadBtn->setEnabled(true);
+                                downloadBtn->setEnabled(true);
+                                const int status = patchReply->attribute(
+                                    QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                                if (patchReply->error() != QNetworkReply::NoError
+                                    || status < 200 || status >= 300) {
+                                    const QString err =
+                                        patchReply->error() != QNetworkReply::NoError
+                                        ? patchReply->errorString()
+                                        : QStringLiteral("HTTP %1").arg(status);
+                                    QMessageBox::critical(this,
+                                        trText("settings.sync.group"),
+                                        trText("settings.sync.uploadFail").arg(err));
+                                    return;
+                                }
+                                const QJsonDocument doc2 =
+                                    QJsonDocument::fromJson(patchReply->readAll());
+                                const QString newRemoteUpdatedAt =
+                                    doc2.object()[QStringLiteral("updated_at")].toString();
+                                const QString now = QDateTime::currentDateTime()
+                                    .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+                                m_cfg.gistLastSyncTime = now;
+                                if (!newRemoteUpdatedAt.isEmpty()) {
+                                    m_cfg.gistRemoteUpdatedAt = newRemoteUpdatedAt;
+                                }
+                                m_gistLastSyncLabel->setText(now);
+                                {
+                                    auto s = ConfigManager::createAppSettings();
+                                    s->setValue(QStringLiteral("sync/gistLastSyncTime"), now);
+                                    s->setValue(QStringLiteral("sync/gistRemoteUpdatedAt"),
+                                                m_cfg.gistRemoteUpdatedAt);
+                                }
+                                QMessageBox::information(this,
+                                    trText("settings.sync.group"),
+                                    trText("settings.sync.uploadOk"));
+                            }
+                        );
                     }
-                    reloadDialogDataFromYaml();
-                    QMessageBox::information(this,
-                        trText("settings.sync.group"),
-                        trText("settings.sync.downloadOk"));
                 }
             );
-        });
+        };
+        connect(uploadBtn,   &QPushButton::clicked, this, doSync);
+        connect(downloadBtn, &QPushButton::clicked, this, doSync);
     }
 
     // --- Debug/Log group ---
@@ -2999,6 +3003,15 @@ QWidget* SettingsDialog::buildGroupsTab() {
                 m_groups[ur].name = it->text().trimmed();
             }
         );
+
+        // Checkbox: "所有" group shows only ungrouped members
+        QCheckBox* ungroupedOnlyCheck = new QCheckBox(
+            trText("settings.group.allGroupUngroupedOnly"), w);
+        ungroupedOnlyCheck->setChecked(m_cfg.allGroupShowUngroupedOnly);
+        leftVbox->addWidget(ungroupedOnlyCheck);
+        connect(ungroupedOnlyCheck, &QCheckBox::toggled, this, [this](bool checked) {
+            m_cfg.allGroupShowUngroupedOnly = checked;
+        });
     }
 
     // ── Right: ordered members + stock checkboxes ─────────────────────────

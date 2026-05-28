@@ -285,6 +285,9 @@ struct AppConfig {
     // e.g. 0 = first (default), 1 = second, etc.
     int groupAllPosition = 0;
 
+    // When true, the "所有" group shows only stocks not present in any other group.
+    bool allGroupShowUngroupedOnly = true;
+
     // Config sync via GitHub Gist (syncs data.yaml content only)
     QString gistToken;
     QString gistId;

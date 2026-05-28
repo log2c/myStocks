@@ -97,6 +97,7 @@ struct DataYamlDocument {
     QVector<StockItem> stocks;
     QVector<StockGroup> groups;
     bool migratedLegacyCodes = false;
+    int groupAllPosition = -1; // -1 means absent from YAML (old format)
 };
 
 void assignYamlError(QString* errorMessage, const QString& message) {
@@ -201,6 +202,16 @@ bool parseDataYamlContent(
             }
         }
 
+        const YAML::Node allPosNode = root["group_all_position"];
+        if (allPosNode && allPosNode.IsScalar()) {
+            try {
+                const int v = allPosNode.as<int>();
+                if (v >= 0) {
+                    document->groupAllPosition = v;
+                }
+            } catch (const YAML::Exception&) {}
+        }
+
         const YAML::Node groupsNode = root["groups"];
         if (groupsNode && groupsNode.IsSequence()) {
             for (const auto& groupNode : groupsNode) {
@@ -296,6 +307,7 @@ bool loadDataYamlDocumentForUpdate(
 QString emitDataYamlText(
     const QVector<StockItem>& stocks,
     const QVector<StockGroup>& groups,
+    int groupAllPosition = -1,
     QString* errorMessage = nullptr
 ) {
     YAML::Emitter emitter;
@@ -303,6 +315,9 @@ QString emitDataYamlText(
 
     emitter << YAML::BeginMap;
     emitter << YAML::Key << "ver" << YAML::Value << 1;
+    if (groupAllPosition > 0) {
+        emitter << YAML::Key << "group_all_position" << YAML::Value << groupAllPosition;
+    }
     emitter << YAML::Key << "stocks" << YAML::Value << YAML::BeginSeq;
     for (const StockItem& stock : stocks) {
         const QString normalizedCode = watchlist_utils::normalizeApiWatchCode(stock.code);
@@ -474,10 +489,13 @@ bool ConfigManager::saveStocksToYaml(const QString& filePath, const QVector<Stoc
         return false;
     }
 
-    return saveDataYaml(filePath, stocks, document.groups);
+    return saveDataYaml(filePath, stocks, document.groups, qMax(0, document.groupAllPosition));
 }
 
-QVector<StockGroup> ConfigManager::loadGroupsFromYaml(const QString& filePath) {
+QVector<StockGroup> ConfigManager::loadGroupsFromYaml(
+    const QString& filePath,
+    int* outGroupAllPosition
+) {
     DataYamlDocument document;
     QString errorMessage;
     if (!loadDataYamlDocument(filePath, &document, &errorMessage)) {
@@ -485,11 +503,19 @@ QVector<StockGroup> ConfigManager::loadGroupsFromYaml(const QString& filePath) {
     }
 
     qInfo() << "ConfigManager::loadGroupsFromYaml loaded"
-            << document.groups.size() << "groups from" << filePath;
+            << document.groups.size() << "groups from" << filePath
+            << "groupAllPosition=" << document.groupAllPosition;
+    if (outGroupAllPosition) {
+        *outGroupAllPosition = document.groupAllPosition;
+    }
     return document.groups;
 }
 
-bool ConfigManager::saveGroupsToYaml(const QString& filePath, const QVector<StockGroup>& groups) {
+bool ConfigManager::saveGroupsToYaml(
+    const QString& filePath,
+    const QVector<StockGroup>& groups,
+    int groupAllPosition
+) {
     DataYamlDocument document;
     QString errorMessage;
     if (!loadDataYamlDocumentForUpdate(filePath, &document, &errorMessage)) {
@@ -498,13 +524,14 @@ bool ConfigManager::saveGroupsToYaml(const QString& filePath, const QVector<Stoc
         return false;
     }
 
-    return saveDataYaml(filePath, document.stocks, groups);
+    return saveDataYaml(filePath, document.stocks, groups, groupAllPosition);
 }
 
 bool ConfigManager::saveDataYaml(
     const QString& filePath,
     const QVector<StockItem>& stocks,
-    const QVector<StockGroup>& groups
+    const QVector<StockGroup>& groups,
+    int groupAllPosition
 ) {
     if (filePath.isEmpty()) {
         qWarning() << "ConfigManager::saveDataYaml path is empty.";
@@ -513,10 +540,11 @@ bool ConfigManager::saveDataYaml(
 
     qInfo() << "ConfigManager::saveDataYaml begin path=" << filePath
             << "stocks=" << stocks.size()
-            << "groups=" << groups.size();
+            << "groups=" << groups.size()
+            << "groupAllPosition=" << groupAllPosition;
 
     QString errorMessage;
-    const QString yamlText = emitDataYamlText(stocks, groups, &errorMessage);
+    const QString yamlText = emitDataYamlText(stocks, groups, groupAllPosition, &errorMessage);
     if (!errorMessage.isEmpty()) {
         return false;
     }
@@ -535,7 +563,7 @@ QString ConfigManager::loadDataYamlText(const QString& filePath, QString* errorM
         return {};
     }
 
-    return emitDataYamlText(document.stocks, document.groups, errorMessage);
+    return emitDataYamlText(document.stocks, document.groups, document.groupAllPosition, errorMessage);
 }
 
 bool ConfigManager::saveDataYamlText(
@@ -555,7 +583,7 @@ bool ConfigManager::saveDataYamlText(
         return false;
     }
 
-    const QString canonicalText = emitDataYamlText(document.stocks, document.groups, errorMessage);
+    const QString canonicalText = emitDataYamlText(document.stocks, document.groups, document.groupAllPosition, errorMessage);
     if (canonicalText.isNull()) {
         return false;
     }
@@ -753,6 +781,7 @@ AppConfig ConfigManager::loadConfig() {
         cfg.groupSwitchHotkeyPrefix
     ).toString();
     cfg.groupAllPosition = s.value("ui/groupAllPosition", 0).toInt();
+    cfg.allGroupShowUngroupedOnly = s.value("ui/allGroupShowUngroupedOnly", true).toBool();
 
     cfg.gistToken = s.value("sync/gistToken", cfg.gistToken).toString();
     cfg.gistId = s.value("sync/gistId", cfg.gistId).toString();
@@ -985,6 +1014,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue("ui/marketBreadthWindowRect", cfg.marketBreadthWindowRect);
     s.setValue("ui/groupSwitchHotkeyPrefix", cfg.groupSwitchHotkeyPrefix);
     s.setValue("ui/groupAllPosition", cfg.groupAllPosition);
+    s.setValue("ui/allGroupShowUngroupedOnly", cfg.allGroupShowUngroupedOnly);
 
     s.setValue("sync/gistToken", cfg.gistToken);
     s.setValue("sync/gistId", cfg.gistId);

@@ -201,7 +201,13 @@ AppController::AppController(QObject* parent)
 
     // Load custom groups
     if (!dataYamlPath.isEmpty()) {
-        m_groups = ConfigManager::loadGroupsFromYaml(dataYamlPath);
+        int yamlGroupAllPos = -1;
+        m_groups = ConfigManager::loadGroupsFromYaml(dataYamlPath, &yamlGroupAllPos);
+        // If data.yaml contains group_all_position, it takes precedence over QSettings
+        // (enables Gist sync to propagate group order across devices).
+        if (yamlGroupAllPos >= 0) {
+            m_cfg.groupAllPosition = yamlGroupAllPos;
+        }
         pruneGroupsForDeletedStocks(dataYamlPath);
     }
     // Default to first custom group on startup (logical index 1), fall back to "所有" (0)
@@ -614,7 +620,7 @@ bool AppController::pruneGroupsForDeletedStocks(const QString& dataPath) {
     }
 
     if (anyChanged && !dataPath.isEmpty()) {
-        ConfigManager::saveGroupsToYaml(dataPath, m_groups);
+        ConfigManager::saveGroupsToYaml(dataPath, m_groups, m_cfg.groupAllPosition);
         qInfo() << "pruneGroupsForDeletedStocks: saved updated groups to" << dataPath;
     }
 
@@ -656,6 +662,41 @@ QVector<StockItem> AppController::mergedWatchItems() const {
 
 QVector<StockItem> AppController::mergedWatchItemsForGroup() const {
     if (m_activeGroupIndex == 0 || m_activeGroupIndex > m_groups.size()) {
+        // "所有" group
+        if (m_cfg.allGroupShowUngroupedOnly && !m_groups.isEmpty()) {
+            // Build set of all codes that belong to at least one custom group.
+            QSet<QString> groupedKeys;
+            for (const StockGroup& g : m_groups) {
+                for (const QString& code : g.stockCodes) {
+                    groupedKeys.insert(watchCodeKey(code));
+                }
+            }
+            // Return indexes + only stocks NOT in any group.
+            QVector<StockItem> out;
+            out.reserve(m_indexes.size() + m_stocks.size());
+            QSet<QString> seen;
+            const auto appendUnique = [&out, &seen](const StockItem& item) {
+                const QString code = item.code.trimmed();
+                if (code.isEmpty()) return;
+                const QString key = watchCodeKey(code);
+                if (seen.contains(key)) return;
+                seen.insert(key);
+                StockItem s;
+                s.code = code;
+                s.name = item.name.trimmed();
+                s.cost = item.cost;
+                out.push_back(s);
+            };
+            for (const StockItem& item : m_indexes) {
+                appendUnique(item);
+            }
+            for (const StockItem& item : m_stocks) {
+                if (!groupedKeys.contains(watchCodeKey(item.code.trimmed()))) {
+                    appendUnique(item);
+                }
+            }
+            return out;
+        }
         return mergedWatchItems();
     }
     const StockGroup& group = m_groups.at(m_activeGroupIndex - 1);
@@ -838,7 +879,8 @@ void AppController::openSettings() {
             const QVector<StockGroup> newGroups = dlg.groups();
             const QString dataPath = findDataYaml();
             if (!dataPath.isEmpty()) {
-                ConfigManager::saveGroupsToYaml(dataPath, newGroups);
+                ConfigManager::saveGroupsToYaml(
+                    dataPath, newGroups, updatedCfg.groupAllPosition);
             }
             m_groups = newGroups;
         }
