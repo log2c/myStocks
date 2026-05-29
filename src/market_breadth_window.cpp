@@ -4083,7 +4083,7 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
                 }
 
                 if (maxValue > 0) {
-                    constexpr int distributionYTickStep = 1000;
+                    constexpr int distributionYTickStep = 300;
                     const int distributionYAxisMax = qMax(
                         distributionYTickStep,
                         ((maxValue + distributionYTickStep - 1) / distributionYTickStep) * distributionYTickStep
@@ -4099,11 +4099,24 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
                     popupPainter.drawLine(distributionPlotRect.bottomLeft(), distributionPlotRect.bottomRight());
                     popupPainter.drawLine(distributionPlotRect.bottomLeft(), distributionPlotRect.topLeft());
 
+                    // Draw horizontal grid lines and y-axis labels at each tick
+                    QPen gridPen(QColor(axisColor.red(), axisColor.green(), axisColor.blue(), 55));
+                    gridPen.setWidthF(0.7);
+                    gridPen.setCosmetic(true);
+                    gridPen.setDashPattern({8.0, 5.0});
                     popupPainter.setFont(bodyFont);
-                    popupPainter.setPen(axisColor);
                     for (int tickValue = 0; tickValue <= distributionYAxisMax; tickValue += distributionYTickStep) {
+                        const int ty = distributionYAt(tickValue);
+                        if (tickValue > 0) {
+                            popupPainter.setPen(gridPen);
+                            popupPainter.drawLine(
+                                distributionPlotRect.left(), ty,
+                                distributionPlotRect.right(), ty
+                            );
+                        }
+                        popupPainter.setPen(axisColor);
                         popupPainter.drawText(
-                            QRect(distributionInner.left(), distributionYAt(tickValue) - 6, 30, 12),
+                            QRect(distributionInner.left(), ty - 6, 30, 12),
                             Qt::AlignRight | Qt::AlignVCenter,
                             QString::number(tickValue)
                         );
@@ -4124,7 +4137,7 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
                     barValues.reserve(barCount);
                     int x = distributionPlotRect.left();
                     for (int i = 0; i < barCount; ++i) {
-                        const int value = qMax(0, m_snapshot.distribution.at(i).value);
+                        const int value = qMax(0, m_snapshot.distribution.at(barCount - 1 - i).value);
                         const int barHeight = qMax(
                             1,
                             qRound(
@@ -4185,7 +4198,7 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
                         popupPainter.drawText(
                             QRect(centerX - 24, labelY, 48, 12),
                             Qt::AlignHCenter | Qt::AlignVCenter,
-                            m_snapshot.distribution.at(bucketIndex).bucket
+                            m_snapshot.distribution.at(barCount - 1 - bucketIndex).bucket
                         );
                     }
 
@@ -4780,7 +4793,7 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
                 const int remainingWidth = distributionChartRect.right() - x + 1 - remainingGap;
                 const int barWidth = qMax(1, remainingWidth / remainingBars);
 
-                const int value = qMax(0, m_snapshot.distribution.at(i).value);
+                const int value = qMax(0, m_snapshot.distribution.at(barCount - 1 - i).value);
                 const int barHeight = qMax(
                     1,
                     qRound(static_cast<double>(value) / static_cast<double>(maxValue) * distributionChartRect.height())
@@ -4817,9 +4830,9 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
             painter.setPen(QColor(textColor.red(), textColor.green(), textColor.blue(), 180));
 
             const int middleIndex = m_snapshot.distribution.size() / 2;
-            const QString leftLabel = m_snapshot.distribution.first().bucket;
-            const QString middleLabel = m_snapshot.distribution.at(middleIndex).bucket;
-            const QString rightLabel = m_snapshot.distribution.last().bucket;
+            const QString leftLabel = m_snapshot.distribution.last().bucket;
+            const QString middleLabel = m_snapshot.distribution.at(barCount - 1 - middleIndex).bucket;
+            const QString rightLabel = m_snapshot.distribution.first().bucket;
             const int labelY = distributionChartRect.bottom() + 2;
 
             painter.drawText(
