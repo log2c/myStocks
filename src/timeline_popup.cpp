@@ -847,6 +847,8 @@ protected:
 
         bool hasHongKongAfternoonMarker = false;
         int hongKongAfternoonMarkerX = 0;
+        bool hasHongKongMorningMarker = false;
+        int hongKongMorningMarkerX = 0;
         if (hasTradePeriodAxis && market == TimelineMarket::HongKong) {
             QDate tradeDate;
             for (auto it = m_points.crbegin(); it != m_points.crend(); ++it) {
@@ -856,11 +858,19 @@ protected:
                 }
             }
             if (tradeDate.isValid()) {
-                const QDateTime markerTime(tradeDate, QTime(15, 0));
+                const QDateTime afternoonMarkerTime(tradeDate, QTime(15, 0));
                 for (const TradePeriod& p : m_tradePeriods) {
-                    if (p.begin <= markerTime && markerTime < p.end) {
+                    if (p.begin <= afternoonMarkerTime && afternoonMarkerTime < p.end) {
                         hasHongKongAfternoonMarker = true;
-                        hongKongAfternoonMarkerX = xOfTradePeriodTime(markerTime);
+                        hongKongAfternoonMarkerX = xOfTradePeriodTime(afternoonMarkerTime);
+                        break;
+                    }
+                }
+                const QDateTime morningMarkerTime(tradeDate, QTime(11, 30));
+                for (const TradePeriod& p : m_tradePeriods) {
+                    if (p.begin <= morningMarkerTime && morningMarkerTime < p.end) {
+                        hasHongKongMorningMarker = true;
+                        hongKongMorningMarkerX = xOfTradePeriodTime(morningMarkerTime);
                         break;
                     }
                 }
@@ -893,6 +903,15 @@ protected:
                     hongKongAfternoonMarkerX,
                     plot.top(),
                     hongKongAfternoonMarkerX,
+                    plot.bottom()
+                );
+            }
+            if (hasHongKongMorningMarker) {
+                painter.setPen(periodEndPen);
+                painter.drawLine(
+                    hongKongMorningMarkerX,
+                    plot.top(),
+                    hongKongMorningMarkerX,
                     plot.bottom()
                 );
             }
@@ -956,6 +975,16 @@ protected:
                     18,
                     Qt::AlignHCenter | Qt::AlignTop,
                     QStringLiteral("15:00")
+                );
+            }
+            if (hasHongKongMorningMarker) {
+                painter.drawText(
+                    hongKongMorningMarkerX - 30,
+                    xLabelY,
+                    60,
+                    18,
+                    Qt::AlignHCenter | Qt::AlignTop,
+                    QStringLiteral("11:30")
                 );
             }
         } else if (hasSessionAxis) {

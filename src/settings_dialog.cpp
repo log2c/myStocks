@@ -653,6 +653,8 @@ AppConfig SettingsDialog::config() const {
     out.floatingWindowDoubleClickToHide = m_doubleClickCloseWindowCheck
         && m_doubleClickCloseWindowCheck->isChecked()
         && !out.mousePassthroughEnabled;
+    out.floatingWindowDoubleClickStockDetail = m_doubleClickStockDetailCheck
+        && m_doubleClickStockDetailCheck->isChecked();
 
     if (m_trayIconBtnGroup) {
         const int id = m_trayIconBtnGroup->checkedId();
@@ -1269,6 +1271,13 @@ QWidget* SettingsDialog::buildDisplayTab() {
     );
     m_doubleClickCloseWindowCheck->setEnabled(!m_cfg.mousePassthroughEnabled);
     addCompactFormRow(windowForm, m_doubleClickCloseWindowCheck);
+
+    m_doubleClickStockDetailCheck = new QCheckBox(
+        trText("settings.display.doubleClickStockDetail"),
+        w
+    );
+    m_doubleClickStockDetailCheck->setChecked(m_cfg.floatingWindowDoubleClickStockDetail);
+    addCompactFormRow(windowForm, m_doubleClickStockDetailCheck);
 
     m_showHeaderCheck = new QCheckBox(trText("settings.display.showHeader"), w);
     m_showHeaderCheck->setChecked(m_cfg.showHeader);

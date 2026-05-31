@@ -6,6 +6,7 @@
 #include "quote_provider.h"
 #include "watchlist_utils.h"
 
+#include <QDesktopServices>
 #include <QDateTime>
 #include <QCursor>
 #include <QEasingCurve>
@@ -364,6 +365,41 @@ QString extractSixDigitsSymbol(const QString& rawCode) {
         }
     }
     return (code.size() == 6 && watchlist_utils::isDigitsOnly(code)) ? code : QString();
+}
+
+QString buildEastmoneyDetailUrl(const QString& rawCode) {
+    const QString code = rawCode.trimmed().toLower();
+    if (code.isEmpty()) {
+        return {};
+    }
+
+    QString prefix;
+    QString symbol;
+
+    if (code.startsWith(QStringLiteral("sh"))
+        || code.startsWith(QStringLiteral("sz"))
+        || code.startsWith(QStringLiteral("bj"))) {
+        prefix = code.left(2);
+        symbol = code.mid(2);
+    } else {
+        symbol = extractSixDigitsSymbol(rawCode);
+        if (symbol.isEmpty()) {
+            return {};
+        }
+        const QChar head = symbol[0];
+        if (head == QLatin1Char('6') || head == QLatin1Char('5') || head == QLatin1Char('9')) {
+            prefix = QStringLiteral("sh");
+        } else {
+            prefix = QStringLiteral("sz");
+        }
+    }
+
+    if (symbol.size() != 6 || !watchlist_utils::isDigitsOnly(symbol)) {
+        return {};
+    }
+
+    return QStringLiteral("https://quote.eastmoney.com/concept/")
+        + prefix + symbol + QStringLiteral(".html");
 }
 
 bool isAshareStockCode(const QString& rawCode) {
@@ -1170,6 +1206,8 @@ protected:
 
         bool hasHongKongAfternoonMarker = false;
         int hongKongAfternoonMarkerX = 0;
+        bool hasHongKongMorningMarker = false;
+        int hongKongMorningMarkerX = 0;
         if (hasTradePeriodAxis && market == TimelineMarket::HongKong) {
             QDate tradeDate;
             for (auto it = m_points.crbegin(); it != m_points.crend(); ++it) {
@@ -1179,11 +1217,19 @@ protected:
                 }
             }
             if (tradeDate.isValid()) {
-                const QDateTime markerTime(tradeDate, QTime(15, 0));
+                const QDateTime afternoonMarkerTime(tradeDate, QTime(15, 0));
                 for (const TradePeriod& p : m_tradePeriods) {
-                    if (p.begin <= markerTime && markerTime < p.end) {
+                    if (p.begin <= afternoonMarkerTime && afternoonMarkerTime < p.end) {
                         hasHongKongAfternoonMarker = true;
-                        hongKongAfternoonMarkerX = xOfTradePeriodTime(markerTime);
+                        hongKongAfternoonMarkerX = xOfTradePeriodTime(afternoonMarkerTime);
+                        break;
+                    }
+                }
+                const QDateTime morningMarkerTime(tradeDate, QTime(11, 30));
+                for (const TradePeriod& p : m_tradePeriods) {
+                    if (p.begin <= morningMarkerTime && morningMarkerTime < p.end) {
+                        hasHongKongMorningMarker = true;
+                        hongKongMorningMarkerX = xOfTradePeriodTime(morningMarkerTime);
                         break;
                     }
                 }
@@ -1216,6 +1262,15 @@ protected:
                     hongKongAfternoonMarkerX,
                     plot.top(),
                     hongKongAfternoonMarkerX,
+                    plot.bottom()
+                );
+            }
+            if (hasHongKongMorningMarker) {
+                painter.setPen(periodEndPen);
+                painter.drawLine(
+                    hongKongMorningMarkerX,
+                    plot.top(),
+                    hongKongMorningMarkerX,
                     plot.bottom()
                 );
             }
@@ -1300,6 +1355,16 @@ protected:
                     18,
                     Qt::AlignHCenter | Qt::AlignTop,
                     QStringLiteral("15:00")
+                );
+            }
+            if (hasHongKongMorningMarker) {
+                painter.drawText(
+                    hongKongMorningMarkerX - 30,
+                    xLabelY,
+                    60,
+                    18,
+                    Qt::AlignHCenter | Qt::AlignTop,
+                    QStringLiteral("11:30")
                 );
             }
         } else if (hasSessionAxis) {
@@ -3226,17 +3291,45 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
     }
     case QEvent::MouseButtonDblClick: {
         auto* mouseEvent = static_cast<QMouseEvent*>(event);
-        if (mouseEvent->button() == Qt::LeftButton
-            && m_cfg.floatingWindowDoubleClickToHide
-            && !m_cfg.mousePassthroughEnabled
-            && shouldAllowMouseInteraction()) {
-            if (m_dragging) {
-                m_dragging = false;
-                m_dragButton = Qt::NoButton;
-                releaseMouse();
+        if (mouseEvent->button() == Qt::LeftButton && shouldAllowMouseInteraction()) {
+            // Double-click on stock name column: open eastmoney detail page
+            if (m_cfg.floatingWindowDoubleClickStockDetail && m_model) {
+                QTableView* srcView = nullptr;
+                if (watched == m_table->viewport()) {
+                    srcView = m_table;
+                } else if (m_stockTable && watched == m_stockTable->viewport()) {
+                    srcView = m_stockTable;
+                }
+                if (srcView) {
+                    const QModelIndex idx = srcView->indexAt(mouseEvent->position().toPoint());
+                    if (idx.isValid()
+                        && idx.column() == ColName
+                        && m_model->rowKind(idx.row()) == QuoteModel::RowKindQuote) {
+                        const QString rawCode = m_model->data(
+                            m_model->index(idx.row(), ColCode), Qt::DisplayRole
+                        ).toString().trimmed();
+                        const QString url = buildEastmoneyDetailUrl(rawCode);
+                        if (!url.isEmpty()) {
+                            QDesktopServices::openUrl(QUrl(url));
+                            hideTimelinePopup();
+                            hideMarketBreadthDetailPopup();
+                            hide();
+                            return true;
+                        }
+                    }
+                }
             }
-            hide();
-            return true;
+            // Fall through to close-window behavior
+            if (m_cfg.floatingWindowDoubleClickToHide
+                && !m_cfg.mousePassthroughEnabled) {
+                if (m_dragging) {
+                    m_dragging = false;
+                    m_dragButton = Qt::NoButton;
+                    releaseMouse();
+                }
+                hide();
+                return true;
+            }
         }
         break;
     }

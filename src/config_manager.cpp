@@ -756,6 +756,10 @@ AppConfig ConfigManager::loadConfig() {
         "ui/floatingWindowDoubleClickToHide",
         cfg.floatingWindowDoubleClickToHide
     ).toBool();
+    cfg.floatingWindowDoubleClickStockDetail = s.value(
+        "ui/floatingWindowDoubleClickStockDetail",
+        cfg.floatingWindowDoubleClickStockDetail
+    ).toBool();
     cfg.floatingWindowPaddingPx = s.value(
         "ui/floatingWindowPaddingPx",
         cfg.floatingWindowPaddingPx
@@ -1008,6 +1012,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         "ui/floatingWindowDoubleClickToHide",
         cfg.floatingWindowDoubleClickToHide && !cfg.mousePassthroughEnabled
     );
+    s.setValue("ui/floatingWindowDoubleClickStockDetail", cfg.floatingWindowDoubleClickStockDetail);
     s.setValue("ui/floatingWindowPaddingPx", qMax(0.0, cfg.floatingWindowPaddingPx));
     s.setValue("ui/trayIconPath", cfg.trayIconPath);
     s.setValue("ui/windowRect", cfg.windowRect);

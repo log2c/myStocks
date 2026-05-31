@@ -271,6 +271,7 @@ struct AppConfig {
     bool mousePassthroughEnabled = false;
     QString mousePassthroughActivationKey = "ctrl";
     bool floatingWindowDoubleClickToHide = true;
+    bool floatingWindowDoubleClickStockDetail = true;
     double floatingWindowPaddingPx = static_cast<double>(kFloatingWindowPaddingPx);
 
     // Empty string means use the default app icon (:/icon.png).
