@@ -8,12 +8,15 @@
 #include <QDebug>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QFont>
-#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSettings>
 #include <QStandardPaths>
 
+#include <yaml-cpp/yaml.h>
+
+#include <cmath>
 #include <memory>
 
 namespace {
@@ -90,6 +93,334 @@ QString resolvedSettingsCacheDirPath() {
     return QDir::cleanPath(cacheDir);
 }
 
+struct DataYamlDocument {
+    QVector<StockItem> stocks;
+    QVector<StockGroup> groups;
+    bool migratedLegacyCodes = false;
+    int groupAllPosition = -1; // -1 means absent from YAML (old format)
+};
+
+void assignYamlError(QString* errorMessage, const QString& message) {
+    if (errorMessage) {
+        *errorMessage = message;
+    }
+}
+
+std::string toUtf8StdString(const QString& text) {
+    const QByteArray utf8 = text.toUtf8();
+    return std::string(utf8.constData(), static_cast<size_t>(utf8.size()));
+}
+
+QString yamlScalarText(const YAML::Node& node) {
+    if (!node || !node.IsScalar()) {
+        return {};
+    }
+
+    return QString::fromUtf8(node.Scalar().c_str()).trimmed();
+}
+
+bool parsePositiveYamlDouble(const YAML::Node& node, double* value) {
+    if (!node || !node.IsScalar() || !value) {
+        return false;
+    }
+
+    try {
+        const double parsed = node.as<double>();
+        if (std::isfinite(parsed) && parsed > 0.0) {
+            *value = parsed;
+            return true;
+        }
+    } catch (const YAML::Exception&) {
+    }
+
+    return false;
+}
+
+bool parseDataYamlContent(
+    const QByteArray& yamlContent,
+    const QString& sourceName,
+    DataYamlDocument* document,
+    QString* errorMessage = nullptr
+) {
+    if (!document) {
+        assignYamlError(errorMessage, QStringLiteral("internal error"));
+        return false;
+    }
+
+    document->stocks.clear();
+    document->groups.clear();
+    document->migratedLegacyCodes = false;
+
+    if (yamlContent.trimmed().isEmpty()) {
+        return true;
+    }
+
+    try {
+        const YAML::Node root = YAML::Load(
+            std::string(yamlContent.constData(), static_cast<size_t>(yamlContent.size()))
+        );
+        if (!root || root.IsNull()) {
+            return true;
+        }
+        if (!root.IsMap()) {
+            const QString message = QStringLiteral("YAML root must be a map");
+            qWarning() << "ConfigManager::parseDataYamlContent invalid root" << sourceName << message;
+            assignYamlError(errorMessage, message);
+            return false;
+        }
+
+        const YAML::Node stocksNode = root["stocks"];
+        if (stocksNode && stocksNode.IsSequence()) {
+            for (const auto& itemNode : stocksNode) {
+                if (!itemNode.IsMap()) {
+                    continue;
+                }
+
+                const QString rawCode = yamlScalarText(itemNode["code"]);
+                if (rawCode.isEmpty()) {
+                    continue;
+                }
+
+                const QString normalizedCode = watchlist_utils::normalizeApiWatchCode(rawCode);
+                if (normalizedCode.isEmpty()) {
+                    qWarning() << "ConfigManager::parseDataYamlContent skip invalid stock code"
+                               << rawCode << "in" << sourceName;
+                    continue;
+                }
+                if (normalizedCode.compare(rawCode, Qt::CaseSensitive) != 0) {
+                    document->migratedLegacyCodes = true;
+                }
+
+                StockItem stock;
+                stock.code = normalizedCode;
+                stock.name = yamlScalarText(itemNode["name"]);
+                if (stock.name.isEmpty()) {
+                    stock.name = normalizedCode;
+                }
+                parsePositiveYamlDouble(itemNode["cost"], &stock.cost);
+                document->stocks.push_back(stock);
+            }
+        }
+
+        const YAML::Node allPosNode = root["group_all_position"];
+        if (allPosNode && allPosNode.IsScalar()) {
+            try {
+                const int v = allPosNode.as<int>();
+                if (v >= 0) {
+                    document->groupAllPosition = v;
+                }
+            } catch (const YAML::Exception&) {}
+        }
+
+        const YAML::Node groupsNode = root["groups"];
+        if (groupsNode && groupsNode.IsSequence()) {
+            for (const auto& groupNode : groupsNode) {
+                if (!groupNode.IsMap()) {
+                    continue;
+                }
+
+                const QString groupName = yamlScalarText(groupNode["name"]);
+                if (groupName.isEmpty()) {
+                    continue;
+                }
+
+                StockGroup group;
+                group.name = groupName;
+
+                const YAML::Node groupStocksNode = groupNode["stocks"];
+                if (groupStocksNode && groupStocksNode.IsSequence()) {
+                    for (const auto& stockCodeNode : groupStocksNode) {
+                        const QString rawCode = yamlScalarText(stockCodeNode);
+                        if (rawCode.isEmpty()) {
+                            continue;
+                        }
+
+                        const QString normalizedCode = watchlist_utils::normalizeApiWatchCode(rawCode);
+                        if (normalizedCode.isEmpty()) {
+                            qWarning() << "ConfigManager::parseDataYamlContent skip invalid group stock code"
+                                       << rawCode << "in" << sourceName;
+                            continue;
+                        }
+                        if (normalizedCode.compare(rawCode, Qt::CaseSensitive) != 0) {
+                            document->migratedLegacyCodes = true;
+                        }
+                        group.stockCodes.push_back(normalizedCode);
+                    }
+                }
+
+                document->groups.push_back(group);
+            }
+        }
+    } catch (const YAML::Exception& exception) {
+        const QString message = QStringLiteral("YAML parse error: %1")
+            .arg(QString::fromUtf8(exception.what()).trimmed());
+        qWarning() << "ConfigManager::parseDataYamlContent failed" << sourceName << message;
+        assignYamlError(errorMessage, message);
+        return false;
+    }
+
+    return true;
+}
+
+bool loadDataYamlDocument(
+    const QString& filePath,
+    DataYamlDocument* document,
+    QString* errorMessage = nullptr
+) {
+    if (filePath.trimmed().isEmpty()) {
+        const QString message = QStringLiteral("path is empty");
+        qWarning() << "ConfigManager::loadDataYamlDocument" << message;
+        assignYamlError(errorMessage, message);
+        return false;
+    }
+
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        const QString message = file.errorString();
+        qWarning() << "ConfigManager::loadDataYamlDocument failed to open"
+                   << filePath << message;
+        assignYamlError(errorMessage, message);
+        return false;
+    }
+
+    return parseDataYamlContent(file.readAll(), filePath, document, errorMessage);
+}
+
+bool loadDataYamlDocumentForUpdate(
+    const QString& filePath,
+    DataYamlDocument* document,
+    QString* errorMessage = nullptr
+) {
+    const QFileInfo info(filePath);
+    if (!info.exists() || info.size() <= 0) {
+        if (document) {
+            document->stocks.clear();
+            document->groups.clear();
+            document->migratedLegacyCodes = false;
+        }
+        return true;
+    }
+
+    return loadDataYamlDocument(filePath, document, errorMessage);
+}
+
+QString emitDataYamlText(
+    const QVector<StockItem>& stocks,
+    const QVector<StockGroup>& groups,
+    int groupAllPosition = -1,
+    QString* errorMessage = nullptr
+) {
+    YAML::Emitter emitter;
+    emitter.SetIndent(2);
+
+    emitter << YAML::BeginMap;
+    emitter << YAML::Key << "ver" << YAML::Value << 1;
+    if (groupAllPosition > 0) {
+        emitter << YAML::Key << "group_all_position" << YAML::Value << groupAllPosition;
+    }
+    emitter << YAML::Key << "stocks" << YAML::Value << YAML::BeginSeq;
+    for (const StockItem& stock : stocks) {
+        const QString normalizedCode = watchlist_utils::normalizeApiWatchCode(stock.code);
+        if (normalizedCode.isEmpty()) {
+            continue;
+        }
+
+        const QString normalizedName = stock.name.trimmed();
+
+        emitter << YAML::BeginMap;
+        emitter << YAML::Key << "code" << YAML::Value << toUtf8StdString(normalizedCode);
+        if (!normalizedName.isEmpty()
+            && normalizedName.compare(normalizedCode, Qt::CaseSensitive) != 0) {
+            emitter << YAML::Key << "name" << YAML::Value << toUtf8StdString(normalizedName);
+        }
+        if (std::isfinite(stock.cost) && stock.cost > 0.0) {
+            emitter << YAML::Key << "cost"
+                    << YAML::Value << toUtf8StdString(QString::number(stock.cost, 'f', 6));
+        }
+        emitter << YAML::EndMap;
+    }
+    emitter << YAML::EndSeq;
+
+    if (!groups.isEmpty()) {
+        emitter << YAML::Key << "groups" << YAML::Value << YAML::BeginSeq;
+        for (const StockGroup& group : groups) {
+            const QString groupName = group.name.trimmed();
+            if (groupName.isEmpty()) {
+                continue;
+            }
+
+            emitter << YAML::BeginMap;
+            emitter << YAML::Key << "name" << YAML::Value << toUtf8StdString(groupName);
+            emitter << YAML::Key << "stocks" << YAML::Value << YAML::BeginSeq;
+            for (const QString& code : group.stockCodes) {
+                const QString normalizedCode = watchlist_utils::normalizeApiWatchCode(code);
+                if (!normalizedCode.isEmpty()) {
+                    emitter << toUtf8StdString(normalizedCode);
+                }
+            }
+            emitter << YAML::EndSeq;
+            emitter << YAML::EndMap;
+        }
+        emitter << YAML::EndSeq;
+    }
+
+    emitter << YAML::EndMap;
+
+    if (!emitter.good()) {
+        const QString message = QStringLiteral("YAML emit error: %1")
+            .arg(QString::fromUtf8(emitter.GetLastError().c_str()).trimmed());
+        qWarning() << "ConfigManager::emitDataYamlText failed" << message;
+        assignYamlError(errorMessage, message);
+        return {};
+    }
+
+    QString text = QString::fromUtf8(emitter.c_str());
+    if (!text.endsWith(QLatin1Char('\n'))) {
+        text += QLatin1Char('\n');
+    }
+    return text;
+}
+
+bool writeDataYamlText(
+    const QString& filePath,
+    const QString& yamlText,
+    QString* errorMessage = nullptr
+) {
+    const QFileInfo info(filePath);
+    if (!QDir().mkpath(info.dir().absolutePath())) {
+        const QString message = QStringLiteral("failed to create parent directory");
+        qWarning() << "ConfigManager::writeDataYamlText" << filePath << message;
+        assignYamlError(errorMessage, message);
+        return false;
+    }
+
+    QSaveFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        const QString message = file.errorString();
+        qWarning() << "ConfigManager::writeDataYamlText open failed" << filePath << message;
+        assignYamlError(errorMessage, message);
+        return false;
+    }
+
+    const QByteArray bytes = yamlText.toUtf8();
+    if (file.write(bytes) != bytes.size()) {
+        const QString message = file.errorString();
+        qWarning() << "ConfigManager::writeDataYamlText write failed" << filePath << message;
+        assignYamlError(errorMessage, message);
+        file.cancelWriting();
+        return false;
+    }
+
+    if (!file.commit()) {
+        const QString message = file.errorString();
+        qWarning() << "ConfigManager::writeDataYamlText commit failed" << filePath << message;
+        assignYamlError(errorMessage, message);
+        return false;
+    }
+
+    return true;
+}
+
 } // namespace
 
 std::unique_ptr<QSettings> ConfigManager::createAppSettings() {
@@ -129,194 +460,78 @@ QVector<StockItem> ConfigManager::loadStocksFromYaml(
     const QString& filePath,
     bool* migratedLegacyCodes
 ) {
-    QVector<StockItem> out;
-    bool migrated = false;
-    if (filePath.trimmed().isEmpty()) {
-        qWarning() << "ConfigManager::loadStocksFromYaml path is empty.";
+    DataYamlDocument document;
+    QString errorMessage;
+    if (!loadDataYamlDocument(filePath, &document, &errorMessage)) {
         if (migratedLegacyCodes) {
             *migratedLegacyCodes = false;
         }
-        return out;
+        return {};
     }
-
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        qWarning() << "ConfigManager::loadStocksFromYaml failed to open"
-                   << filePath << file.errorString();
-        if (migratedLegacyCodes) {
-            *migratedLegacyCodes = false;
-        }
-        return out;
-    }
-
-// #ifdef DEBUG_MODE
-//     const QByteArray content = file.readAll();
-//     file.seek(0); // Reset to beginning for parsing
-//     qDebug() << "Debug mode: data.yaml content:\n" << QString::fromUtf8(content);
-// #endif
-
-    QString curCode;
-    QString curName;
-
-    const auto flushCurrent = [&]() {
-        const QString rawCode = curCode.trimmed();
-        if (rawCode.isEmpty()) {
-            return;
-        }
-
-        const QString normalizedCode = watchlist_utils::normalizeApiWatchCode(rawCode);
-        if (normalizedCode.isEmpty()) {
-            qWarning() << "ConfigManager::loadStocksFromYaml skip invalid code"
-                       << rawCode << "in" << filePath;
-            return;
-        }
-
-        if (normalizedCode.compare(rawCode, Qt::CaseSensitive) != 0) {
-            migrated = true;
-        }
-
-        out.push_back({normalizedCode, curName.isEmpty() ? normalizedCode : curName});
-    };
-
-    while (!file.atEnd()) {
-        const QString line = QString::fromUtf8(file.readLine()).trimmed();
-        if (line.isEmpty() || line.startsWith('#')) {
-            continue;
-        }
-
-        const QRegularExpressionMatch mCode =
-            QRegularExpression("^-\\s*code\\s*:\\s*(\\S+)").match(line);
-        if (mCode.hasMatch()) {
-            flushCurrent();
-            curCode = mCode.captured(1).trimmed();
-            curName.clear();
-            continue;
-        }
-
-        const QRegularExpressionMatch mName =
-            QRegularExpression("^name\\s*:\\s*(.+)$").match(line);
-        if (mName.hasMatch()) {
-            curName = mName.captured(1).trimmed();
-        }
-    }
-
-    flushCurrent();
 
     if (migratedLegacyCodes) {
-        *migratedLegacyCodes = migrated;
+        *migratedLegacyCodes = document.migratedLegacyCodes;
     }
 
     qInfo() << "ConfigManager::loadStocksFromYaml loaded"
-            << out.size() << "stocks from" << filePath
-            << "migratedLegacyCodes=" << migrated;
+            << document.stocks.size() << "stocks from" << filePath
+            << "migratedLegacyCodes=" << document.migratedLegacyCodes;
 
-    return out;
+    return document.stocks;
 }
 
 bool ConfigManager::saveStocksToYaml(const QString& filePath, const QVector<StockItem>& stocks) {
-    // Preserve any existing groups when only updating stocks.
-    const QVector<StockGroup> currentGroups = loadGroupsFromYaml(filePath);
-    return saveDataYaml(filePath, stocks, currentGroups);
+    DataYamlDocument document;
+    QString errorMessage;
+    if (!loadDataYamlDocumentForUpdate(filePath, &document, &errorMessage)) {
+        qWarning() << "ConfigManager::saveStocksToYaml failed to preserve existing groups"
+                   << filePath << errorMessage;
+        return false;
+    }
+
+    return saveDataYaml(filePath, stocks, document.groups, qMax(0, document.groupAllPosition));
 }
 
-QVector<StockGroup> ConfigManager::loadGroupsFromYaml(const QString& filePath) {
-    QVector<StockGroup> out;
-    if (filePath.trimmed().isEmpty()) {
-        return out;
+QVector<StockGroup> ConfigManager::loadGroupsFromYaml(
+    const QString& filePath,
+    int* outGroupAllPosition
+) {
+    DataYamlDocument document;
+    QString errorMessage;
+    if (!loadDataYamlDocument(filePath, &document, &errorMessage)) {
+        return {};
     }
 
-    QFile file(filePath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        return out;
+    qInfo() << "ConfigManager::loadGroupsFromYaml loaded"
+            << document.groups.size() << "groups from" << filePath
+            << "groupAllPosition=" << document.groupAllPosition;
+    if (outGroupAllPosition) {
+        *outGroupAllPosition = document.groupAllPosition;
     }
-
-    // Parse state machine
-    enum class Sec { None, Stocks, Groups, GroupStocks };
-    Sec section = Sec::None;
-
-    StockGroup curGroup;
-    bool inGroup = false;
-
-    const auto flushGroup = [&]() {
-        if (inGroup && !curGroup.name.trimmed().isEmpty()) {
-            out.push_back(curGroup);
-        }
-        curGroup = StockGroup{};
-        inGroup = false;
-    };
-
-    while (!file.atEnd()) {
-        const QString rawLine = QString::fromUtf8(file.readLine());
-        const QString line = rawLine.trimmed();
-        if (line.isEmpty() || line.startsWith('#')) {
-            continue;
-        }
-
-        // Root-level section headers (no leading spaces)
-        if (!rawLine.isEmpty() && rawLine[0] != ' ' && rawLine[0] != '\t') {
-            if (line == QStringLiteral("stocks:")) {
-                flushGroup();
-                section = Sec::Stocks;
-                continue;
-            }
-            if (line == QStringLiteral("groups:")) {
-                flushGroup();
-                section = Sec::Groups;
-                continue;
-            }
-        }
-
-        if (section == Sec::Groups || section == Sec::GroupStocks) {
-            // "  - name: GroupName" — new group list item (2-space indent)
-            static const QRegularExpression rGroupName("^\\s{2}-\\s+name\\s*:\\s*(.+)$");
-            const QRegularExpressionMatch mGroupName = rGroupName.match(rawLine.trimmed().isEmpty() ? rawLine : rawLine);
-            {
-                const QRegularExpressionMatch m = QRegularExpression("^\\s{1,3}-\\s+name\\s*:\\s*(.+)$").match(rawLine);
-                if (m.hasMatch()) {
-                    flushGroup();
-                    curGroup.name = m.captured(1).trimmed();
-                    inGroup = true;
-                    section = Sec::Groups;
-                    continue;
-                }
-            }
-            // "    stocks:" — stock list inside a group (4-space indent)
-            {
-                const QRegularExpressionMatch m = QRegularExpression("^\\s{2,5}stocks\\s*:\\s*$").match(rawLine);
-                if (m.hasMatch() && inGroup) {
-                    section = Sec::GroupStocks;
-                    continue;
-                }
-            }
-            // "      - code" — stock code inside group stocks (6-space indent)
-            if (section == Sec::GroupStocks) {
-                const QRegularExpressionMatch m = QRegularExpression("^\\s+-\\s+(\\S+)").match(rawLine);
-                if (m.hasMatch()) {
-                    const QString code = watchlist_utils::normalizeApiWatchCode(m.captured(1).trimmed());
-                    if (!code.isEmpty()) {
-                        curGroup.stockCodes.append(code);
-                    }
-                }
-            }
-        }
-    }
-
-    flushGroup();
-
-    qInfo() << "ConfigManager::loadGroupsFromYaml loaded" << out.size() << "groups from" << filePath;
-    return out;
+    return document.groups;
 }
 
-bool ConfigManager::saveGroupsToYaml(const QString& filePath, const QVector<StockGroup>& groups) {
-    // Preserve existing stocks when only updating groups.
-    const QVector<StockItem> currentStocks = loadStocksFromYaml(filePath);
-    return saveDataYaml(filePath, currentStocks, groups);
+bool ConfigManager::saveGroupsToYaml(
+    const QString& filePath,
+    const QVector<StockGroup>& groups,
+    int groupAllPosition
+) {
+    DataYamlDocument document;
+    QString errorMessage;
+    if (!loadDataYamlDocumentForUpdate(filePath, &document, &errorMessage)) {
+        qWarning() << "ConfigManager::saveGroupsToYaml failed to preserve existing stocks"
+                   << filePath << errorMessage;
+        return false;
+    }
+
+    return saveDataYaml(filePath, document.stocks, groups, groupAllPosition);
 }
 
 bool ConfigManager::saveDataYaml(
     const QString& filePath,
     const QVector<StockItem>& stocks,
-    const QVector<StockGroup>& groups
+    const QVector<StockGroup>& groups,
+    int groupAllPosition
 ) {
     if (filePath.isEmpty()) {
         qWarning() << "ConfigManager::saveDataYaml path is empty.";
@@ -325,62 +540,55 @@ bool ConfigManager::saveDataYaml(
 
     qInfo() << "ConfigManager::saveDataYaml begin path=" << filePath
             << "stocks=" << stocks.size()
-            << "groups=" << groups.size();
+            << "groups=" << groups.size()
+            << "groupAllPosition=" << groupAllPosition;
 
-    QString content;
-    content += QStringLiteral("ver: 1\n\n");
-    content += QStringLiteral("# stocks\n");
-    content += QStringLiteral("stocks:\n");
-    for (const StockItem& s : stocks) {
-        const QString normalizedCode = watchlist_utils::normalizeApiWatchCode(s.code);
-        if (normalizedCode.isEmpty()) {
-            continue;
-        }
-        content += QStringLiteral("  - code: ") + normalizedCode + QStringLiteral("\n");
-        const QString normalizedName = s.name.trimmed().isEmpty() ? normalizedCode : s.name.trimmed();
-        content += QStringLiteral("    name: ") + normalizedName + QStringLiteral("\n");
-    }
-
-    if (!groups.isEmpty()) {
-        content += QStringLiteral("\n# groups\n");
-        content += QStringLiteral("groups:\n");
-        for (const StockGroup& g : groups) {
-            const QString gname = g.name.trimmed();
-            if (gname.isEmpty()) {
-                continue;
-            }
-            content += QStringLiteral("  - name: ") + gname + QStringLiteral("\n");
-            content += QStringLiteral("    stocks:\n");
-            for (const QString& code : g.stockCodes) {
-                if (!code.trimmed().isEmpty()) {
-                    content += QStringLiteral("      - ") + code.trimmed() + QStringLiteral("\n");
-                }
-            }
-        }
-    }
-
-    QSaveFile file(filePath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        qWarning() << "ConfigManager::saveDataYaml open failed"
-                   << filePath << file.errorString();
+    QString errorMessage;
+    const QString yamlText = emitDataYamlText(stocks, groups, groupAllPosition, &errorMessage);
+    if (!errorMessage.isEmpty()) {
         return false;
     }
-    const QByteArray bytes = content.toUtf8();
-    if (file.write(bytes) != bytes.size()) {
-        qWarning() << "ConfigManager::saveDataYaml write failed"
-                   << filePath << file.errorString();
-        file.cancelWriting();
-        return false;
-    }
-    const bool committed = file.commit();
-    if (!committed) {
-        qWarning() << "ConfigManager::saveDataYaml commit failed"
-                   << filePath << file.errorString();
+
+    if (!writeDataYamlText(filePath, yamlText, &errorMessage)) {
         return false;
     }
 
     qInfo() << "ConfigManager::saveDataYaml success path=" << filePath;
     return true;
+}
+
+QString ConfigManager::loadDataYamlText(const QString& filePath, QString* errorMessage) {
+    DataYamlDocument document;
+    if (!loadDataYamlDocument(filePath, &document, errorMessage)) {
+        return {};
+    }
+
+    return emitDataYamlText(document.stocks, document.groups, document.groupAllPosition, errorMessage);
+}
+
+bool ConfigManager::saveDataYamlText(
+    const QString& filePath,
+    const QString& yamlText,
+    QString* errorMessage
+) {
+    if (filePath.trimmed().isEmpty()) {
+        const QString message = QStringLiteral("path is empty");
+        qWarning() << "ConfigManager::saveDataYamlText" << message;
+        assignYamlError(errorMessage, message);
+        return false;
+    }
+
+    DataYamlDocument document;
+    if (!parseDataYamlContent(yamlText.toUtf8(), filePath, &document, errorMessage)) {
+        return false;
+    }
+
+    const QString canonicalText = emitDataYamlText(document.stocks, document.groups, document.groupAllPosition, errorMessage);
+    if (canonicalText.isNull()) {
+        return false;
+    }
+
+    return writeDataYamlText(filePath, canonicalText, errorMessage);
 }
 
 
@@ -415,6 +623,16 @@ AppConfig ConfigManager::loadConfig() {
         s,
         QStringLiteral("debugIgnoreTradingTime"),
         cfg.debugIgnoreTradingTime
+    ).toBool();
+    cfg.acceptBetaUpdates = readConfigValue(
+        s,
+        QStringLiteral("acceptBetaUpdates"),
+        cfg.acceptBetaUpdates
+    ).toBool();
+    cfg.autoCheckUpdates = readConfigValue(
+        s,
+        QStringLiteral("autoCheckUpdates"),
+        cfg.autoCheckUpdates
     ).toBool();
     cfg.simpleModeEnabled = s.value("ui/simpleModeEnabled", cfg.simpleModeEnabled).toBool();
     cfg.blinkReminderEnabled = s.value("ui/blinkReminderEnabled", cfg.blinkReminderEnabled).toBool();
@@ -538,6 +756,10 @@ AppConfig ConfigManager::loadConfig() {
         "ui/floatingWindowDoubleClickToHide",
         cfg.floatingWindowDoubleClickToHide
     ).toBool();
+    cfg.floatingWindowDoubleClickStockDetail = s.value(
+        "ui/floatingWindowDoubleClickStockDetail",
+        cfg.floatingWindowDoubleClickStockDetail
+    ).toBool();
     cfg.floatingWindowPaddingPx = s.value(
         "ui/floatingWindowPaddingPx",
         cfg.floatingWindowPaddingPx
@@ -552,6 +774,7 @@ AppConfig ConfigManager::loadConfig() {
     cfg.upColor = s.value("ui/upColor", cfg.upColor).value<QColor>();
     cfg.downColor = s.value("ui/downColor", cfg.downColor).value<QColor>();
     cfg.flatColor = s.value("ui/flatColor", cfg.flatColor).value<QColor>();
+    cfg.costLineColor = s.value("ui/costLineColor", cfg.costLineColor).value<QColor>();
     cfg.windowRect = s.value("ui/windowRect", cfg.windowRect).toRect();
     cfg.marketBreadthWindowRect = s.value(
         "ui/marketBreadthWindowRect",
@@ -562,6 +785,12 @@ AppConfig ConfigManager::loadConfig() {
         cfg.groupSwitchHotkeyPrefix
     ).toString();
     cfg.groupAllPosition = s.value("ui/groupAllPosition", 0).toInt();
+    cfg.allGroupShowUngroupedOnly = s.value("ui/allGroupShowUngroupedOnly", true).toBool();
+
+    cfg.gistToken = s.value("sync/gistToken", cfg.gistToken).toString();
+    cfg.gistId = s.value("sync/gistId", cfg.gistId).toString();
+    cfg.gistLastSyncTime = s.value("sync/gistLastSyncTime", cfg.gistLastSyncTime).toString();
+    cfg.gistRemoteUpdatedAt = s.value("sync/gistRemoteUpdatedAt", cfg.gistRemoteUpdatedAt).toString();
 
     for (int i = 0; i < ColCount; ++i) {
         cfg.visibleColumns[i] = s.value(
@@ -692,6 +921,16 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         QStringLiteral("debugIgnoreTradingTime"),
         cfg.debugIgnoreTradingTime
     );
+    writeConfigValue(
+        s,
+        QStringLiteral("acceptBetaUpdates"),
+        cfg.acceptBetaUpdates
+    );
+    writeConfigValue(
+        s,
+        QStringLiteral("autoCheckUpdates"),
+        cfg.autoCheckUpdates
+    );
 
     // Remove legacy keys that map to [%General] in INI and can shadow values across runs.
     s.remove(QStringLiteral("general"));
@@ -712,6 +951,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue("ui/upColor", cfg.upColor);
     s.setValue("ui/downColor", cfg.downColor);
     s.setValue("ui/flatColor", cfg.flatColor);
+    s.setValue("ui/costLineColor", cfg.costLineColor);
     s.setValue("ui/transparentBackgroundEnabled", cfg.transparentBackgroundEnabled);
     s.setValue(
         "ui/transparentBackgroundOpacity",
@@ -772,12 +1012,19 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         "ui/floatingWindowDoubleClickToHide",
         cfg.floatingWindowDoubleClickToHide && !cfg.mousePassthroughEnabled
     );
+    s.setValue("ui/floatingWindowDoubleClickStockDetail", cfg.floatingWindowDoubleClickStockDetail);
     s.setValue("ui/floatingWindowPaddingPx", qMax(0.0, cfg.floatingWindowPaddingPx));
     s.setValue("ui/trayIconPath", cfg.trayIconPath);
     s.setValue("ui/windowRect", cfg.windowRect);
     s.setValue("ui/marketBreadthWindowRect", cfg.marketBreadthWindowRect);
     s.setValue("ui/groupSwitchHotkeyPrefix", cfg.groupSwitchHotkeyPrefix);
     s.setValue("ui/groupAllPosition", cfg.groupAllPosition);
+    s.setValue("ui/allGroupShowUngroupedOnly", cfg.allGroupShowUngroupedOnly);
+
+    s.setValue("sync/gistToken", cfg.gistToken);
+    s.setValue("sync/gistId", cfg.gistId);
+    s.setValue("sync/gistLastSyncTime", cfg.gistLastSyncTime);
+    s.setValue("sync/gistRemoteUpdatedAt", cfg.gistRemoteUpdatedAt);
 
     for (int i = 0; i < ColCount; ++i) {
         s.setValue(QString("ui/columns/%1").arg(i), cfg.visibleColumns.value(i, true));

@@ -63,6 +63,11 @@ private:
     QWidget* buildAboutTab();
 
     void updateHotkeyIndicator(QLabel* indicator, const QKeySequence& seq);
+    QString groupMemberDisplayName(const QString& code) const;
+    void refreshGroupStockChoices();
+    void refreshCurrentGroupSelection();
+    void rebuildGroupList();
+    void reloadDialogDataFromYaml();
 
     void parseSearchResult(const QByteArray& data);
     void doStockSearch(bool forceSearch = false);
@@ -90,6 +95,8 @@ private:
     QSpinBox* m_proxyPortSpin = nullptr;
     QLineEdit* m_proxyUserEdit = nullptr;
     QCheckBox* m_debugIgnoreTradingTimeCheck = nullptr;
+    QCheckBox* m_acceptBetaUpdatesCheck = nullptr;
+    QCheckBox* m_autoCheckUpdatesCheck = nullptr;
     QCheckBox* m_logEnabledCheck = nullptr;
     QComboBox* m_logLevelCombo = nullptr;
     QPushButton* m_openLogDirButton = nullptr;
@@ -108,6 +115,7 @@ private:
     QPushButton* m_upBtn = nullptr;
     QPushButton* m_downBtn = nullptr;
     QPushButton* m_flatBtn = nullptr;
+    QPushButton* m_costLineColorBtn = nullptr;
 
     QCheckBox* m_showHeaderCheck = nullptr;
     QCheckBox* m_showGridCheck = nullptr;
@@ -146,6 +154,7 @@ private:
     QCheckBox* m_mousePassthroughCheck = nullptr;
     QComboBox* m_mousePassthroughKeyCombo = nullptr;
     QCheckBox* m_doubleClickCloseWindowCheck = nullptr;
+    QCheckBox* m_doubleClickStockDetailCheck = nullptr;
     QDoubleSpinBox* m_windowPaddingSpin = nullptr;
     QListWidget* m_columnList = nullptr;
     QVector<QSpinBox*> m_columnMaxWidthSpins;
@@ -154,6 +163,12 @@ private:
     // Tray icon selection (Other tab)
     QButtonGroup* m_trayIconBtnGroup = nullptr;
     QStringList m_trayIconPaths;
+
+    // Config sync (Other tab)
+    QLineEdit* m_gistTokenEdit = nullptr;
+    QLineEdit* m_gistIdEdit = nullptr;
+    QLabel* m_gistLastSyncLabel = nullptr;
+    QNetworkAccessManager* m_syncNam = nullptr;
 
     // Stocks tab
     QLineEdit* m_stockSearchEdit = nullptr;

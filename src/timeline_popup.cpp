@@ -633,13 +633,15 @@ public:
         const QString& code,
         const QVector<TimelinePoint>& points,
         double preClose,
-        const QVector<TradePeriod>& tradePeriods = {}
+        const QVector<TradePeriod>& tradePeriods = {},
+        double cost = qQNaN()
     ) {
         m_title = title;
         m_code = code;
         m_points = points;
         m_preClose = preClose;
         m_tradePeriods = tradePeriods;
+        m_cost = cost;
         m_status.clear();
         update();
     }
@@ -843,6 +845,38 @@ protected:
             return plot.right();
         };
 
+        bool hasHongKongAfternoonMarker = false;
+        int hongKongAfternoonMarkerX = 0;
+        bool hasHongKongMorningMarker = false;
+        int hongKongMorningMarkerX = 0;
+        if (hasTradePeriodAxis && market == TimelineMarket::HongKong) {
+            QDate tradeDate;
+            for (auto it = m_points.crbegin(); it != m_points.crend(); ++it) {
+                if (it->time.isValid()) {
+                    tradeDate = it->time.date();
+                    break;
+                }
+            }
+            if (tradeDate.isValid()) {
+                const QDateTime afternoonMarkerTime(tradeDate, QTime(15, 0));
+                for (const TradePeriod& p : m_tradePeriods) {
+                    if (p.begin <= afternoonMarkerTime && afternoonMarkerTime < p.end) {
+                        hasHongKongAfternoonMarker = true;
+                        hongKongAfternoonMarkerX = xOfTradePeriodTime(afternoonMarkerTime);
+                        break;
+                    }
+                }
+                const QDateTime morningMarkerTime(tradeDate, QTime(11, 30));
+                for (const TradePeriod& p : m_tradePeriods) {
+                    if (p.begin <= morningMarkerTime && morningMarkerTime < p.end) {
+                        hasHongKongMorningMarker = true;
+                        hongKongMorningMarkerX = xOfTradePeriodTime(morningMarkerTime);
+                        break;
+                    }
+                }
+            }
+        }
+
         const QPen gridPen(m_cfg.timelineChartGridColor, 0.3, Qt::SolidLine);
         QPen periodEndPen(m_cfg.timelineChartGridColor, 1.0, Qt::CustomDashLine);
         periodEndPen.setDashPattern({3.0, 2.0});
@@ -862,6 +896,24 @@ protected:
                 painter.setPen(periodEndPen);
                 const int xE = xOfTradePeriodTime(p.end);
                 painter.drawLine(xE, plot.top(), xE, plot.bottom());
+            }
+            if (hasHongKongAfternoonMarker) {
+                painter.setPen(periodEndPen);
+                painter.drawLine(
+                    hongKongAfternoonMarkerX,
+                    plot.top(),
+                    hongKongAfternoonMarkerX,
+                    plot.bottom()
+                );
+            }
+            if (hasHongKongMorningMarker) {
+                painter.setPen(periodEndPen);
+                painter.drawLine(
+                    hongKongMorningMarkerX,
+                    plot.top(),
+                    hongKongMorningMarkerX,
+                    plot.bottom()
+                );
             }
         } else if (hasSessionAxis) {
             painter.setPen(gridPen);
@@ -914,6 +966,26 @@ protected:
                     .arg(tradePeriodTimeLabel(cur.end))
                     .arg(tradePeriodTimeLabel(next.begin));
                 painter.drawText(xBreak - 54, xLabelY, 108, 18, Qt::AlignHCenter | Qt::AlignTop, breakLabel);
+            }
+            if (hasHongKongAfternoonMarker) {
+                painter.drawText(
+                    hongKongAfternoonMarkerX - 30,
+                    xLabelY,
+                    60,
+                    18,
+                    Qt::AlignHCenter | Qt::AlignTop,
+                    QStringLiteral("15:00")
+                );
+            }
+            if (hasHongKongMorningMarker) {
+                painter.drawText(
+                    hongKongMorningMarkerX - 30,
+                    xLabelY,
+                    60,
+                    18,
+                    Qt::AlignHCenter | Qt::AlignTop,
+                    QStringLiteral("11:30")
+                );
             }
         } else if (hasSessionAxis) {
             const int xOpen = xOfSessionTime(session.morningStart);
@@ -1007,6 +1079,22 @@ protected:
             painter.drawPath(avgPath);
         }
 
+        // Draw cost line if cost is set and within chart range
+        if (std::isfinite(m_cost) && m_cost > 0.0 && std::isfinite(baseline)) {
+            const double costPct = (m_cost - baseline) / baseline * 100.0;
+            const bool withinAshareLimit = !std::isfinite(ashareLimitPct) || ashareLimitPct <= 0.0
+                || (costPct >= -ashareLimitPct && costPct <= ashareLimitPct);
+            if (withinAshareLimit) {
+                const int yCost = yOfPct(costPct);
+                if (yCost >= plot.top() && yCost <= plot.bottom()) {
+                    QPen costPen(m_cfg.costLineColor, 1.0, Qt::CustomDashLine);
+                    costPen.setDashPattern({4.0, 3.0});
+                    painter.setPen(costPen);
+                    painter.drawLine(plot.left(), yCost, plot.right(), yCost);
+                }
+            }
+        }
+
         if (std::isfinite(latestPct) && std::isfinite(latestChange)) {
             double latestAvgPrice = qQNaN();
             for (int i = m_points.size() - 1; i >= 0; --i) {
@@ -1055,6 +1143,7 @@ private:
     QVector<TimelinePoint> m_points;
     QVector<TradePeriod> m_tradePeriods;
     double m_preClose = qQNaN();
+    double m_cost = qQNaN();
 };
 
 } // namespace
@@ -1099,7 +1188,7 @@ public:
         }
     }
 
-    void showForStock(const QString& code, const QString& name, const QRect& anchorRect, int baseWidth) {
+    void showForStock(const QString& code, const QString& name, const QRect& anchorRect, int baseWidth, double cost = qQNaN()) {
         Q_UNUSED(baseWidth);
         if (code.trimmed().isEmpty() || !isTimelinePopupSupportedCode(code)) {
             hidePopup();
@@ -1109,6 +1198,7 @@ public:
         const bool changed = (m_code.compare(code, Qt::CaseInsensitive) != 0);
         m_code = code.trimmed();
         m_name = name.trimmed();
+        m_cost = cost;
         if (changed) {
             m_hongKongHalfDayDate = QDate();
         }
@@ -1248,7 +1338,7 @@ private:
             stopRefreshTimer();
         }
         const QString title = m_name.isEmpty() ? m_code : QStringLiteral("%1  %2").arg(m_name, m_code);
-        m_chart->setSeries(title, m_code, points, preClose, tradePeriods);
+        m_chart->setSeries(title, m_code, points, preClose, tradePeriods, m_cost);
     }
 
     bool tryUseCachedTimeline(const QString& cacheKey, int days, bool fallbackAllowed, int token) {
@@ -1383,6 +1473,7 @@ private:
     QNetworkReply* m_reply = nullptr;
     QString m_code;
     QString m_name;
+    double m_cost = qQNaN();
     QDate m_hongKongHalfDayDate;
     QHash<QString, TimelineCacheEntry> m_timelineCache;
     int m_requestToken = 0;
@@ -1407,10 +1498,11 @@ void SharedTimelineChartPopup::showForStock(
     const QString& code,
     const QString& name,
     const QRect& anchorRect,
-    int baseWidth
+    int baseWidth,
+    double cost
 ) {
     if (d) {
-        d->showForStock(code, name, anchorRect, baseWidth);
+        d->showForStock(code, name, anchorRect, baseWidth, cost);
     }
 }
 

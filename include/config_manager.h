@@ -15,13 +15,30 @@ public:
         const QString& filePath,
         bool* migratedLegacyCodes = nullptr
     );
-    static QVector<StockGroup> loadGroupsFromYaml(const QString& filePath);
+    static QVector<StockGroup> loadGroupsFromYaml(
+        const QString& filePath,
+        int* outGroupAllPosition = nullptr
+    );
     static bool saveStocksToYaml(const QString& filePath, const QVector<StockItem>& stocks);
-    static bool saveGroupsToYaml(const QString& filePath, const QVector<StockGroup>& groups);
+    static bool saveGroupsToYaml(
+        const QString& filePath,
+        const QVector<StockGroup>& groups,
+        int groupAllPosition = 0
+    );
     static bool saveDataYaml(
         const QString& filePath,
         const QVector<StockItem>& stocks,
-        const QVector<StockGroup>& groups
+        const QVector<StockGroup>& groups,
+        int groupAllPosition = 0
+    );
+    static QString loadDataYamlText(
+        const QString& filePath,
+        QString* errorMessage = nullptr
+    );
+    static bool saveDataYamlText(
+        const QString& filePath,
+        const QString& yamlText,
+        QString* errorMessage = nullptr
     );
     static QString appSettingsFilePath();
     static AppConfig loadConfig();

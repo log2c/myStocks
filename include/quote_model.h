@@ -53,6 +53,7 @@ public:
     QVector<HotRankItem> hotConcepts() const;
     int firstVisibleLogicalColumn() const;
     int firstContentLogicalColumn() const;
+    double costForCode(const QString& code) const;
 
 private:
     static QString formatSigned(double value, int precision, bool percent);

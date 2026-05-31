@@ -6,6 +6,7 @@
 #include "quote_provider.h"
 #include "watchlist_utils.h"
 
+#include <QDesktopServices>
 #include <QDateTime>
 #include <QCursor>
 #include <QEasingCurve>
@@ -364,6 +365,41 @@ QString extractSixDigitsSymbol(const QString& rawCode) {
         }
     }
     return (code.size() == 6 && watchlist_utils::isDigitsOnly(code)) ? code : QString();
+}
+
+QString buildEastmoneyDetailUrl(const QString& rawCode) {
+    const QString code = rawCode.trimmed().toLower();
+    if (code.isEmpty()) {
+        return {};
+    }
+
+    QString prefix;
+    QString symbol;
+
+    if (code.startsWith(QStringLiteral("sh"))
+        || code.startsWith(QStringLiteral("sz"))
+        || code.startsWith(QStringLiteral("bj"))) {
+        prefix = code.left(2);
+        symbol = code.mid(2);
+    } else {
+        symbol = extractSixDigitsSymbol(rawCode);
+        if (symbol.isEmpty()) {
+            return {};
+        }
+        const QChar head = symbol[0];
+        if (head == QLatin1Char('6') || head == QLatin1Char('5') || head == QLatin1Char('9')) {
+            prefix = QStringLiteral("sh");
+        } else {
+            prefix = QStringLiteral("sz");
+        }
+    }
+
+    if (symbol.size() != 6 || !watchlist_utils::isDigitsOnly(symbol)) {
+        return {};
+    }
+
+    return QStringLiteral("https://quote.eastmoney.com/concept/")
+        + prefix + symbol + QStringLiteral(".html");
 }
 
 bool isAshareStockCode(const QString& rawCode) {
@@ -934,12 +970,13 @@ public:
         update();
     }
 
-    void setSeries(const QString& title, const QString& code, const QVector<TimelinePoint>& points, double preClose, const QVector<TradePeriod>& tradePeriods = {}) {
+    void setSeries(const QString& title, const QString& code, const QVector<TimelinePoint>& points, double preClose, const QVector<TradePeriod>& tradePeriods = {}, double cost = qQNaN()) {
         m_title = title;
         m_code = code;
         m_points = points;
         m_preClose = preClose;
         m_tradePeriods = tradePeriods;
+        m_cost = cost;
         m_status.clear();
         update();
     }
@@ -1167,6 +1204,38 @@ protected:
             return plot.right();
         };
 
+        bool hasHongKongAfternoonMarker = false;
+        int hongKongAfternoonMarkerX = 0;
+        bool hasHongKongMorningMarker = false;
+        int hongKongMorningMarkerX = 0;
+        if (hasTradePeriodAxis && market == TimelineMarket::HongKong) {
+            QDate tradeDate;
+            for (auto it = m_points.crbegin(); it != m_points.crend(); ++it) {
+                if (it->time.isValid()) {
+                    tradeDate = it->time.date();
+                    break;
+                }
+            }
+            if (tradeDate.isValid()) {
+                const QDateTime afternoonMarkerTime(tradeDate, QTime(15, 0));
+                for (const TradePeriod& p : m_tradePeriods) {
+                    if (p.begin <= afternoonMarkerTime && afternoonMarkerTime < p.end) {
+                        hasHongKongAfternoonMarker = true;
+                        hongKongAfternoonMarkerX = xOfTradePeriodTime(afternoonMarkerTime);
+                        break;
+                    }
+                }
+                const QDateTime morningMarkerTime(tradeDate, QTime(11, 30));
+                for (const TradePeriod& p : m_tradePeriods) {
+                    if (p.begin <= morningMarkerTime && morningMarkerTime < p.end) {
+                        hasHongKongMorningMarker = true;
+                        hongKongMorningMarkerX = xOfTradePeriodTime(morningMarkerTime);
+                        break;
+                    }
+                }
+            }
+        }
+
         const QPen gridPen(m_cfg.timelineChartGridColor, 0.3, Qt::SolidLine);
         QPen periodEndPen(m_cfg.timelineChartGridColor, 1.0, Qt::CustomDashLine);
         periodEndPen.setDashPattern({3.0, 2.0});
@@ -1186,6 +1255,24 @@ protected:
                 painter.setPen(periodEndPen);
                 const int xE = xOfTradePeriodTime(p.end);
                 painter.drawLine(xE, plot.top(), xE, plot.bottom());
+            }
+            if (hasHongKongAfternoonMarker) {
+                painter.setPen(periodEndPen);
+                painter.drawLine(
+                    hongKongAfternoonMarkerX,
+                    plot.top(),
+                    hongKongAfternoonMarkerX,
+                    plot.bottom()
+                );
+            }
+            if (hasHongKongMorningMarker) {
+                painter.setPen(periodEndPen);
+                painter.drawLine(
+                    hongKongMorningMarkerX,
+                    plot.top(),
+                    hongKongMorningMarkerX,
+                    plot.bottom()
+                );
             }
         } else if (hasSessionAxis) {
             painter.setPen(gridPen);
@@ -1259,6 +1346,26 @@ protected:
                     .arg(tradePeriodTimeLabel(cur.end))
                     .arg(tradePeriodTimeLabel(next.begin));
                 painter.drawText(xBreak - 54, xLabelY, 108, 18, Qt::AlignHCenter | Qt::AlignTop, breakLabel);
+            }
+            if (hasHongKongAfternoonMarker) {
+                painter.drawText(
+                    hongKongAfternoonMarkerX - 30,
+                    xLabelY,
+                    60,
+                    18,
+                    Qt::AlignHCenter | Qt::AlignTop,
+                    QStringLiteral("15:00")
+                );
+            }
+            if (hasHongKongMorningMarker) {
+                painter.drawText(
+                    hongKongMorningMarkerX - 30,
+                    xLabelY,
+                    60,
+                    18,
+                    Qt::AlignHCenter | Qt::AlignTop,
+                    QStringLiteral("11:30")
+                );
             }
         } else if (hasSessionAxis) {
             const int xOpen  = xOfSessionTime(session.morningStart);
@@ -1365,6 +1472,22 @@ protected:
             painter.drawPath(avgPath);
         }
 
+        // Draw cost line
+        if (std::isfinite(m_cost) && m_cost > 0.0 && std::isfinite(baseline)) {
+            const double costPct = (m_cost - baseline) / baseline * 100.0;
+            const bool withinAshareLimit = !std::isfinite(ashareLimitPct) || ashareLimitPct <= 0.0
+                || (costPct >= -ashareLimitPct && costPct <= ashareLimitPct);
+            if (withinAshareLimit) {
+                const int yCost = yOfPct(costPct);
+                if (yCost >= plot.top() && yCost <= plot.bottom()) {
+                    QPen costPen(m_cfg.costLineColor, 1.0, Qt::CustomDashLine);
+                    costPen.setDashPattern({4.0, 3.0});
+                    painter.setPen(costPen);
+                    painter.drawLine(plot.left(), yCost, plot.right(), yCost);
+                }
+            }
+        }
+
         if (std::isfinite(latestPct) && std::isfinite(latestChange)) {
             // Get last valid avg price for display
             double latestAvgPrice = qQNaN();
@@ -1421,6 +1544,7 @@ private:
     QVector<TimelinePoint> m_points;
     QVector<TradePeriod> m_tradePeriods;
     double m_preClose = qQNaN();
+    double m_cost = qQNaN();
 };
 
 class TimelineChartPopup : public QWidget {
@@ -1464,7 +1588,7 @@ public:
         }
     }
 
-    void showForStock(const QString& code, const QString& name, const QRect& anchorRect, int baseWidth) {
+    void showForStock(const QString& code, const QString& name, const QRect& anchorRect, int baseWidth, double cost = qQNaN()) {
         Q_UNUSED(baseWidth);
         if (code.trimmed().isEmpty() || !isTimelineSupportedCode(code)) {
             hidePopup();
@@ -1474,6 +1598,7 @@ public:
         const bool changed = (m_code.compare(code, Qt::CaseInsensitive) != 0);
         m_code = code.trimmed();
         m_name = name.trimmed();
+        m_cost = cost;
         if (changed) {
             m_hongKongHalfDayDate = QDate();
         }
@@ -1634,7 +1759,7 @@ private:
         const QString title = m_name.isEmpty()
             ? m_code
             : QStringLiteral("%1  %2").arg(m_name, m_code);
-        m_chart->setSeries(title, m_code, points, preClose, tradePeriods);
+        m_chart->setSeries(title, m_code, points, preClose, tradePeriods, m_cost);
     }
 
     bool tryUseCachedTimeline(const QString& cacheKey, int days, bool fallbackAllowed, int token) {
@@ -1783,6 +1908,7 @@ private:
     QNetworkReply* m_reply = nullptr;
     QString m_code;
     QString m_name;
+    double m_cost = qQNaN();
     QDate m_hongKongHalfDayDate;
     QHash<QString, TimelineCacheEntry> m_timelineCache;
     int m_requestToken = 0;
@@ -2589,8 +2715,20 @@ void FloatingWindow::applyRowVisibility() {
         return;
     }
     const int total = m_model->rowCount();
+    int quotesSeen = 0;
     for (int r = 0; r < total; ++r) {
-        const bool isIndex = (r < m_indexCount);
+        const QuoteModel::RowKind kind = m_model->rowKind(r);
+        bool isIndex;
+        if (kind == QuoteModel::RowKindMarketBreadth) {
+            // Market breadth row precedes quotes and always belongs to the top table.
+            isIndex = true;
+        } else if (kind == QuoteModel::RowKindQuote) {
+            isIndex = (quotesSeen < m_indexCount);
+            ++quotesSeen;
+        } else {
+            // Hot sector / hot concept rows trail the quotes — treat as stock rows.
+            isIndex = false;
+        }
         m_table->setRowHidden(r, !isIndex);
         m_stockTable->setRowHidden(r, isIndex);
     }
@@ -2903,7 +3041,8 @@ void FloatingWindow::updateTimelinePopupForHover(const QPoint& viewportPos, QTab
 
     m_timelineHoverCode = code;
     m_timelineHoverName = name;
-    m_timelinePopup->showForStock(code, name, globalAnchor, width());
+    const double cost = m_model ? m_model->costForCode(code) : qQNaN();
+    m_timelinePopup->showForStock(code, name, globalAnchor, width(), cost);
 }
 
 void FloatingWindow::hideTimelinePopup() {
@@ -3152,17 +3291,45 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
     }
     case QEvent::MouseButtonDblClick: {
         auto* mouseEvent = static_cast<QMouseEvent*>(event);
-        if (mouseEvent->button() == Qt::LeftButton
-            && m_cfg.floatingWindowDoubleClickToHide
-            && !m_cfg.mousePassthroughEnabled
-            && shouldAllowMouseInteraction()) {
-            if (m_dragging) {
-                m_dragging = false;
-                m_dragButton = Qt::NoButton;
-                releaseMouse();
+        if (mouseEvent->button() == Qt::LeftButton && shouldAllowMouseInteraction()) {
+            // Double-click on stock name column: open eastmoney detail page
+            if (m_cfg.floatingWindowDoubleClickStockDetail && m_model) {
+                QTableView* srcView = nullptr;
+                if (watched == m_table->viewport()) {
+                    srcView = m_table;
+                } else if (m_stockTable && watched == m_stockTable->viewport()) {
+                    srcView = m_stockTable;
+                }
+                if (srcView) {
+                    const QModelIndex idx = srcView->indexAt(mouseEvent->position().toPoint());
+                    if (idx.isValid()
+                        && idx.column() == ColName
+                        && m_model->rowKind(idx.row()) == QuoteModel::RowKindQuote) {
+                        const QString rawCode = m_model->data(
+                            m_model->index(idx.row(), ColCode), Qt::DisplayRole
+                        ).toString().trimmed();
+                        const QString url = buildEastmoneyDetailUrl(rawCode);
+                        if (!url.isEmpty()) {
+                            QDesktopServices::openUrl(QUrl(url));
+                            hideTimelinePopup();
+                            hideMarketBreadthDetailPopup();
+                            hide();
+                            return true;
+                        }
+                    }
+                }
             }
-            hide();
-            return true;
+            // Fall through to close-window behavior
+            if (m_cfg.floatingWindowDoubleClickToHide
+                && !m_cfg.mousePassthroughEnabled) {
+                if (m_dragging) {
+                    m_dragging = false;
+                    m_dragButton = Qt::NoButton;
+                    releaseMouse();
+                }
+                hide();
+                return true;
+            }
         }
         break;
     }
@@ -3838,7 +4005,22 @@ void FloatingWindow::adjustWindowSize() {
         : 0;
 
     const int totalModelRows = m_model ? m_model->rowCount() : 0;
-    const int indexRows = qMin(m_indexCount, totalModelRows);
+    // Count special rows that precede quotes (e.g. market breadth) separately so that
+    // m_indexCount is applied only to quote rows, keeping all pre-quote special rows in
+    // the top table.
+    int specialBeforeQuotes = 0;
+    int quoteRowCount = 0;
+    bool anyQuoteSeen = false;
+    for (int r = 0; r < totalModelRows; ++r) {
+        if (m_model->rowKind(r) == QuoteModel::RowKindQuote) {
+            anyQuoteSeen = true;
+            ++quoteRowCount;
+        } else if (!anyQuoteSeen) {
+            ++specialBeforeQuotes;
+        }
+    }
+    const int indexQuoteRows = qMin(m_indexCount, quoteRowCount);
+    const int indexRows = specialBeforeQuotes + indexQuoteRows;
     const int stockRows = qMax(0, totalModelRows - indexRows);
 
     const int indexTableHeight = headerHeight + indexRows * rowHeight;

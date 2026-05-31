@@ -14,6 +14,8 @@ enum QuoteColumn {
     ColPct,
     ColChange,
     ColIndicator,
+    ColCost,
+    ColCostPct,
     ColCount
 };
 
@@ -24,6 +26,7 @@ inline constexpr int kMarketBreadthPopupDefaultHeightPx = 715;
 struct StockItem {
     QString code;
     QString name;
+    double cost = qQNaN(); // optional cost basis per share
 };
 
 struct StockGroup {
@@ -37,6 +40,7 @@ struct QuoteItem {
     double price = qQNaN();
     double pct = qQNaN();
     double change = qQNaN();
+    double cost = qQNaN(); // cost basis
 };
 
 struct HotRankItem {
@@ -176,6 +180,9 @@ struct AppConfig {
 
     bool debugIgnoreTradingTime = false;
 
+    bool acceptBetaUpdates = false;
+    bool autoCheckUpdates = true;
+
     bool simpleModeEnabled = false;
     bool blinkReminderEnabled = false;
     bool trayTooltipEnabled = false;
@@ -195,6 +202,7 @@ struct AppConfig {
     QColor gridColor = QColor(255, 255, 255, 80);
     QColor bgColor = QColor(18, 18, 18, 190);
     QColor textColor = QColor(245, 245, 245);
+    QColor costLineColor = QColor("#d66823");
     QColor upColor = QColor(255, 64, 64);
     QColor downColor = QColor(60, 200, 100);
     QColor flatColor = QColor(245, 245, 245);
@@ -205,7 +213,9 @@ struct AppConfig {
         {ColPrice, true},
         {ColPct, true},
         {ColChange, false},
-        {ColIndicator, false}
+        {ColIndicator, false},
+        {ColCost, false},
+        {ColCostPct, false}
     };
 
     QVector<int> columnOrder {
@@ -214,7 +224,9 @@ struct AppConfig {
         ColPrice,
         ColPct,
         ColChange,
-        ColIndicator
+        ColIndicator,
+        ColCost,
+        ColCostPct
     };
 
     // 0 means auto max width based on current column content/header.
@@ -224,7 +236,9 @@ struct AppConfig {
         {ColPrice, 0},
         {ColPct, 0},
         {ColChange, 0},
-        {ColIndicator, 0}
+        {ColIndicator, 0},
+        {ColCost, 0},
+        {ColCostPct, 0}
     };
 
     bool hoverReadingEnabled = true;
@@ -257,6 +271,7 @@ struct AppConfig {
     bool mousePassthroughEnabled = false;
     QString mousePassthroughActivationKey = "ctrl";
     bool floatingWindowDoubleClickToHide = true;
+    bool floatingWindowDoubleClickStockDetail = true;
     double floatingWindowPaddingPx = static_cast<double>(kFloatingWindowPaddingPx);
 
     // Empty string means use the default app icon (:/icon.png).
@@ -270,6 +285,15 @@ struct AppConfig {
     // Visual position of the "所有" group in the group bar (0-indexed).
     // e.g. 0 = first (default), 1 = second, etc.
     int groupAllPosition = 0;
+
+    // When true, the "所有" group shows only stocks not present in any other group.
+    bool allGroupShowUngroupedOnly = true;
+
+    // Config sync via GitHub Gist (syncs data.yaml content only)
+    QString gistToken;
+    QString gistId;
+    QString gistLastSyncTime;      // local clock ISO string of last successful sync
+    QString gistRemoteUpdatedAt;   // GitHub API updated_at at last sync (for conflict detection)
 
     QMap<int, int> columnWidths;
     QRect windowRect = QRect(120, 120, 760, 280);

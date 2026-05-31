@@ -29,6 +29,10 @@
 #if defined(Q_OS_MACOS)
 #include <Carbon/Carbon.h>
 #endif
+#include <QAction>
+#include <QFileSystemWatcher>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMenu>
 #include <QMessageBox>
 #include <QNetworkReply>
@@ -46,7 +50,7 @@
 
 namespace {
 
-using watchlist_utils::defaultDataYamlTemplate;
+using watchlist_utils::defaultWatchStocks;
 using watchlist_utils::isHongKongCode;
 using watchlist_utils::normalizeApiWatchCode;
 using watchlist_utils::normalizeFutureCode;
@@ -126,6 +130,18 @@ QVector<StockItem> defaultCommonIndexes() {
     };
 }
 
+QString userDataDirPath() {
+    return QDir(QDir::homePath()).filePath(QStringLiteral(".myStocks"));
+}
+
+QString userDataYamlPath() {
+    return QDir(userDataDirPath()).filePath(QStringLiteral("data.yaml"));
+}
+
+QString defaultBootstrapDataYamlText() {
+    return QStringLiteral("ver: 1\n\nstocks:\n  - code: 1.688256\n");
+}
+
 } // namespace
 
 AppController::AppController(QObject* parent)
@@ -140,7 +156,18 @@ AppController::AppController(QObject* parent)
             << "logEnabled=" << m_cfg.logEnabled
             << "logLevel=" << m_cfg.logLevel;
 
-    const QString dataYamlPath = findDataYaml();
+    QString dataYamlError;
+    const QString dataYamlPath = findDataYaml(&dataYamlError);
+    if (dataYamlPath.isEmpty() && !dataYamlError.isEmpty()) {
+        QMessageBox::critical(
+            nullptr,
+            i18n::t("app.name", m_resolvedLanguage),
+            i18n::t("dataYaml.accessFail", m_resolvedLanguage).arg(
+                QDir::toNativeSeparators(userDataYamlPath()),
+                dataYamlError
+            )
+        );
+    }
     bool migratedLegacyCodes = false;
     const QVector<StockItem> loadedYamlStocks = ConfigManager::loadStocksFromYaml(
         dataYamlPath,
@@ -174,7 +201,13 @@ AppController::AppController(QObject* parent)
 
     // Load custom groups
     if (!dataYamlPath.isEmpty()) {
-        m_groups = ConfigManager::loadGroupsFromYaml(dataYamlPath);
+        int yamlGroupAllPos = -1;
+        m_groups = ConfigManager::loadGroupsFromYaml(dataYamlPath, &yamlGroupAllPos);
+        // If data.yaml contains group_all_position, it takes precedence over QSettings
+        // (enables Gist sync to propagate group order across devices).
+        if (yamlGroupAllPos >= 0) {
+            m_cfg.groupAllPosition = yamlGroupAllPos;
+        }
         pruneGroupsForDeletedStocks(dataYamlPath);
     }
     // Default to first custom group on startup (logical index 1), fall back to "所有" (0)
@@ -288,10 +321,18 @@ AppController::AppController(QObject* parent)
             }
         }
     );
-    QTimer::singleShot(10000, this, [this]() {
-        m_updater->setConfig(m_cfg);
-        m_updater->checkForUpdates();
-    });
+    if (m_cfg.autoCheckUpdates) {
+        QTimer::singleShot(10000, this, [this]() {
+            m_updater->setConfig(m_cfg);
+            m_updater->checkForUpdates();
+        });
+    }
+
+    // Gist auto-sync: watch data.yaml for local changes, and pull on startup.
+    m_gistNam = new QNetworkAccessManager(this);
+    setupDataYamlWatcher();
+    // Startup pull: delay slightly so the tray is ready for notifications.
+    QTimer::singleShot(5000, this, [this]() { checkAndPullGistOnStartup(); });
 }
 
 namespace {
@@ -389,20 +430,59 @@ bool addMacHotkeyMapping(const QKeySequence& sequence) {
 }
 #endif
 
-bool ensureDataYamlExists(const QString& path) {
+bool ensureDataYamlExists(const QString& path, QString* errorMessage = nullptr) {
+    const auto setError = [errorMessage](const QString& message) {
+        if (errorMessage) {
+            *errorMessage = message;
+        }
+    };
+
     const QFileInfo info(path);
-    if (info.exists() && info.size() > 0) {
-        return true;
+    if (info.exists()) {
+        if (!info.isFile()) {
+            setError(QStringLiteral("path exists but is not a file"));
+            return false;
+        }
+        if (!info.isReadable()) {
+            setError(QStringLiteral("data.yaml is not readable"));
+            return false;
+        }
+        if (info.size() > 0) {
+            return true;
+        }
+        if (!info.isWritable()) {
+            setError(QStringLiteral("data.yaml is not writable"));
+            return false;
+        }
     }
 
-    QFile file(path);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    const QString dirPath = info.dir().absolutePath();
+    if (!QDir().mkpath(dirPath)) {
+        setError(QStringLiteral("failed to create data directory"));
         return false;
     }
 
-    const QByteArray content = defaultDataYamlTemplate().toUtf8();
-    qint64 written = file.write(content);
-    return written == content.size();
+    const QFileInfo dirInfo(dirPath);
+    if (!dirInfo.isReadable() || !dirInfo.isWritable()) {
+        setError(QStringLiteral("data directory is not readable or writable"));
+        return false;
+    }
+
+    QString yamlError;
+    if (!ConfigManager::saveDataYamlText(path, defaultBootstrapDataYamlText(), &yamlError)) {
+        setError(yamlError.isEmpty()
+            ? QStringLiteral("failed to write default data.yaml")
+            : yamlError);
+        return false;
+    }
+
+    const QFileInfo createdInfo(path);
+    if (!createdInfo.isReadable()) {
+        setError(QStringLiteral("data.yaml is not readable after creation"));
+        return false;
+    }
+
+    return true;
 }
 
 bool isBenignCanceledError(const QString& message) {
@@ -459,30 +539,15 @@ QStringList encodeWatchItems(const QVector<StockItem>& items) {
 
 } // namespace
 
-QString AppController::findDataYaml() const {
-    // First check user home directory ~/.myStocks/data.yaml
-    const QString homeDataPath = QDir(QDir::homePath()).filePath(".myStocks/data.yaml");
-    if (QFile::exists(homeDataPath)) {
-        return QDir::cleanPath(homeDataPath);
+QString AppController::findDataYaml(QString* errorMessage) const {
+    const QString path = QDir::cleanPath(userDataYamlPath());
+    if (ensureDataYamlExists(path, errorMessage)) {
+        return path;
     }
 
-#ifdef DEBUG_MODE
-    // In debug mode, read from source directory
-    const QString sourceDataPath = QString(SOURCE_DIR) + "/data.yaml";
-    if (QFile::exists(sourceDataPath)) {
-        qDebug() << "Debug mode: Reading data.yaml from:" << sourceDataPath;
-        return QDir::cleanPath(sourceDataPath);
-    }
-    qDebug() << "Debug mode: data.yaml not found in source directory:" << sourceDataPath;
-    // In debug mode, if source data.yaml doesn't exist, return empty (no fallback)
+    qWarning() << "Failed to resolve user data.yaml path" << path
+               << (errorMessage ? *errorMessage : QString());
     return {};
-#else
-    const QString appDataPath = QDir(QCoreApplication::applicationDirPath()).filePath("data.yaml");
-    if (ensureDataYamlExists(appDataPath)) {
-        return QDir::cleanPath(appDataPath);
-    }
-    return {};
-#endif
 }
 
 bool AppController::isFutureCode(const QString& code) {
@@ -515,7 +580,11 @@ QVector<StockItem> AppController::filterYamlStocks(
         }
         seen.insert(key);
 
-        out.push_back({code, item.name.trimmed()});
+        StockItem s;
+        s.code = code;
+        s.name = item.name.trimmed();
+        s.cost = item.cost;
+        out.push_back(s);
     }
 
     if (ignoredCodes) {
@@ -551,7 +620,7 @@ bool AppController::pruneGroupsForDeletedStocks(const QString& dataPath) {
     }
 
     if (anyChanged && !dataPath.isEmpty()) {
-        ConfigManager::saveGroupsToYaml(dataPath, m_groups);
+        ConfigManager::saveGroupsToYaml(dataPath, m_groups, m_cfg.groupAllPosition);
         qInfo() << "pruneGroupsForDeletedStocks: saved updated groups to" << dataPath;
     }
 
@@ -573,7 +642,11 @@ QVector<StockItem> AppController::mergedWatchItems() const {
             return;
         }
         seen.insert(key);
-        out.push_back({code, item.name.trimmed()});
+        StockItem s;
+        s.code = code;
+        s.name = item.name.trimmed();
+        s.cost = item.cost;
+        out.push_back(s);
     };
 
     for (const StockItem& item : m_indexes) {
@@ -589,6 +662,41 @@ QVector<StockItem> AppController::mergedWatchItems() const {
 
 QVector<StockItem> AppController::mergedWatchItemsForGroup() const {
     if (m_activeGroupIndex == 0 || m_activeGroupIndex > m_groups.size()) {
+        // "所有" group
+        if (m_cfg.allGroupShowUngroupedOnly && !m_groups.isEmpty()) {
+            // Build set of all codes that belong to at least one custom group.
+            QSet<QString> groupedKeys;
+            for (const StockGroup& g : m_groups) {
+                for (const QString& code : g.stockCodes) {
+                    groupedKeys.insert(watchCodeKey(code));
+                }
+            }
+            // Return indexes + only stocks NOT in any group.
+            QVector<StockItem> out;
+            out.reserve(m_indexes.size() + m_stocks.size());
+            QSet<QString> seen;
+            const auto appendUnique = [&out, &seen](const StockItem& item) {
+                const QString code = item.code.trimmed();
+                if (code.isEmpty()) return;
+                const QString key = watchCodeKey(code);
+                if (seen.contains(key)) return;
+                seen.insert(key);
+                StockItem s;
+                s.code = code;
+                s.name = item.name.trimmed();
+                s.cost = item.cost;
+                out.push_back(s);
+            };
+            for (const StockItem& item : m_indexes) {
+                appendUnique(item);
+            }
+            for (const StockItem& item : m_stocks) {
+                if (!groupedKeys.contains(watchCodeKey(item.code.trimmed()))) {
+                    appendUnique(item);
+                }
+            }
+            return out;
+        }
         return mergedWatchItems();
     }
     const StockGroup& group = m_groups.at(m_activeGroupIndex - 1);
@@ -608,21 +716,32 @@ QVector<StockItem> AppController::mergedWatchItemsForGroup() const {
             return;
         }
         seen.insert(key);
-        out.push_back({code, item.name.trimmed()});
+        StockItem s;
+        s.code = code;
+        s.name = item.name.trimmed();
+        s.cost = item.cost;
+        out.push_back(s);
     };
 
     for (const StockItem& item : m_indexes) {
         appendUnique(item);
     }
 
-    QSet<QString> groupCodes;
-    groupCodes.reserve(group.stockCodes.size());
-    for (const QString& c : group.stockCodes) {
-        groupCodes.insert(watchCodeKey(c));
-    }
+    // Build a lookup map from normalized key -> StockItem, then iterate
+    // group.stockCodes in config order to preserve the user-defined sequence.
+    QHash<QString, StockItem> stockMap;
+    stockMap.reserve(m_stocks.size());
     for (const StockItem& item : m_stocks) {
-        if (groupCodes.contains(watchCodeKey(item.code.trimmed()))) {
-            appendUnique(item);
+        const QString key = watchCodeKey(item.code.trimmed());
+        if (!key.isEmpty() && !stockMap.contains(key)) {
+            stockMap.insert(key, item);
+        }
+    }
+    for (const QString& c : group.stockCodes) {
+        const QString key = watchCodeKey(c);
+        const auto it = stockMap.find(key);
+        if (it != stockMap.end()) {
+            appendUnique(it.value());
         }
     }
 
@@ -760,7 +879,8 @@ void AppController::openSettings() {
             const QVector<StockGroup> newGroups = dlg.groups();
             const QString dataPath = findDataYaml();
             if (!dataPath.isEmpty()) {
-                ConfigManager::saveGroupsToYaml(dataPath, newGroups);
+                ConfigManager::saveGroupsToYaml(
+                    dataPath, newGroups, updatedCfg.groupAllPosition);
             }
             m_groups = newGroups;
         }
@@ -1162,20 +1282,20 @@ void AppController::setupTray() {
     m_trayBaseIcon = icon;
     m_tray = new QSystemTrayIcon(icon, this);
     QMenu* menu = new QMenu;
-    QAction* toggleAction = menu->addAction(QString(), this, [this]() { toggleWindow(); });
-    const auto updateToggleActionText = [this, toggleAction]() {
-        if (!toggleAction) {
+    m_trayToggleAction = menu->addAction(QString(), this, [this]() { toggleWindow(); });
+    const auto updateToggleActionText = [this]() {
+        if (!m_trayToggleAction) {
             return;
         }
 
         const bool isWindowVisible = m_window && m_window->isVisible();
-        toggleAction->setText(
+        m_trayToggleAction->setText(
             i18n::t(isWindowVisible ? "tray.hideWindow" : "tray.showWindow", m_resolvedLanguage)
         );
     };
     updateToggleActionText();
 
-    menu->addAction(i18n::t("tray.marketBreadth", m_resolvedLanguage), this, [this]() {
+    m_trayMarketBreadthAction = menu->addAction(i18n::t("tray.marketBreadth", m_resolvedLanguage), this, [this]() {
         toggleMarketBreadthDetailWindow();
     });
 
@@ -1192,11 +1312,9 @@ void AppController::setupTray() {
     });
     QMenu* otherMenu = menu->addMenu(i18n::t("tray.other", m_resolvedLanguage));
     otherMenu->addAction(i18n::t("tray.openDataDir", m_resolvedLanguage), this, [this]() {
-        const QString dataPath = findDataYaml();
-        const QString dataDir =
-            dataPath.isEmpty() ? QString() : QFileInfo(dataPath).absoluteDir().absolutePath();
+        const QString dataDir = userDataDirPath();
         if (!openDirectoryPath(dataDir)) {
-            qWarning() << "Failed to open data directory for path" << dataPath;
+            qWarning() << "Failed to open data directory" << dataDir;
         }
     });
     otherMenu->addAction(i18n::t("tray.openLogDir", m_resolvedLanguage), this, [this]() {
@@ -1220,14 +1338,6 @@ void AppController::setupTray() {
     m_tray->show();
 
     connect(menu, &QMenu::aboutToShow, this, updateToggleActionText);
-
-    connect(m_tray, &QSystemTrayIcon::activated, this,
-        [this](QSystemTrayIcon::ActivationReason reason) {
-            if (reason == QSystemTrayIcon::Trigger) {
-                toggleWindow();
-            }
-        }
-    );
 }
 
 void AppController::updateTrayTooltip() {
@@ -1254,9 +1364,13 @@ void AppController::setupHotkey() {
         m_marketBreadthHotkey = nullptr;
     }
 
-    if (!m_cfg.hotkey.trimmed().isEmpty()) {
+    const QString hotkey1 = m_cfg.hotkey.trimmed();
+    const QString hotkey2 = m_cfg.marketBreadthHotkey.trimmed();
+    const bool sameHotkey = !hotkey1.isEmpty() && hotkey1 == hotkey2;
+
+    if (!hotkey1.isEmpty()) {
         const QKeySequence hotkeySequence =
-            QKeySequence::fromString(m_cfg.hotkey, QKeySequence::PortableText);
+            QKeySequence::fromString(hotkey1, QKeySequence::PortableText);
 
 #if defined(Q_OS_MACOS)
         if (addMacHotkeyMapping(hotkeySequence)) {
@@ -1270,6 +1384,11 @@ void AppController::setupHotkey() {
             true, this
         );
         connect(m_hotkey, &QHotkey::activated, this, [this]() { toggleWindow(); });
+        if (sameHotkey) {
+            connect(m_hotkey, &QHotkey::activated, this, [this]() {
+                toggleMarketBreadthDetailWindow();
+            });
+        }
 
         if (!m_hotkey->isRegistered() && m_tray) {
             m_tray->showMessage(
@@ -1281,9 +1400,9 @@ void AppController::setupHotkey() {
         }
     }
 
-    if (!m_cfg.marketBreadthHotkey.trimmed().isEmpty()) {
+    if (!sameHotkey && !hotkey2.isEmpty()) {
         const QKeySequence marketBreadthHotkeySequence =
-            QKeySequence::fromString(m_cfg.marketBreadthHotkey, QKeySequence::PortableText);
+            QKeySequence::fromString(hotkey2, QKeySequence::PortableText);
 
 #if defined(Q_OS_MACOS)
         if (addMacHotkeyMapping(marketBreadthHotkeySequence)) {
@@ -1309,6 +1428,19 @@ void AppController::setupHotkey() {
             );
         }
     }
+
+    // Update tray menu shortcut display.
+    auto applyTrayShortcut = [](QAction* action, const QString& keyStr) {
+        if (!action) return;
+        const QKeySequence seq = keyStr.isEmpty()
+            ? QKeySequence()
+            : QKeySequence::fromString(keyStr, QKeySequence::PortableText);
+        action->setShortcut(seq);
+        action->setShortcutContext(Qt::WidgetShortcut); // display only, never fires
+        action->setShortcutVisibleInContextMenu(true);
+    };
+    applyTrayShortcut(m_trayToggleAction, hotkey1);
+    applyTrayShortcut(m_trayMarketBreadthAction, sameHotkey ? QString() : hotkey2);
 }
 
 void AppController::setupGroupHotkeys() {
@@ -1743,4 +1875,261 @@ QString AppController::probeTradingDateText(const QByteArray& body) const {
     }
 
     return {};
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gist auto-sync helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+void AppController::setupDataYamlWatcher() {
+    const QString dataPath = findDataYaml();
+    if (dataPath.isEmpty()) {
+        return;
+    }
+
+    if (m_dataYamlWatcher) {
+        m_dataYamlWatcher->deleteLater();
+        m_dataYamlWatcher = nullptr;
+    }
+
+    m_dataYamlWatcher = new QFileSystemWatcher(this);
+    m_dataYamlWatcher->addPath(dataPath);
+
+    m_gistAutoUploadDebounce = new QTimer(this);
+    m_gistAutoUploadDebounce->setSingleShot(true);
+    m_gistAutoUploadDebounce->setInterval(3000); // 3 s debounce
+
+    connect(m_gistAutoUploadDebounce, &QTimer::timeout, this, [this]() {
+        doGistAutoUpload();
+    });
+
+    connect(m_dataYamlWatcher, &QFileSystemWatcher::fileChanged, this,
+        [this](const QString& path) {
+            // Re-add the path: on macOS the watcher may stop after an inode replace.
+            if (m_dataYamlWatcher && !m_dataYamlWatcher->files().contains(path)) {
+                m_dataYamlWatcher->addPath(path);
+            }
+
+            if (m_suppressGistAutoUpload) {
+                return;
+            }
+            if (m_cfg.gistToken.isEmpty() || m_cfg.gistId.isEmpty()) {
+                return;
+            }
+
+            if (m_gistAutoUploadDebounce) {
+                m_gistAutoUploadDebounce->start();
+            }
+        }
+    );
+
+    qInfo() << "[Gist] data.yaml watcher set up for:" << dataPath;
+}
+
+void AppController::scheduleGistAutoUpload() {
+    if (m_gistAutoUploadDebounce) {
+        m_gistAutoUploadDebounce->start();
+    }
+}
+
+void AppController::doGistAutoUpload() {
+    if (m_cfg.gistToken.isEmpty() || m_cfg.gistId.isEmpty()) {
+        return;
+    }
+
+    const QString dataPath = findDataYaml();
+    if (dataPath.isEmpty()) {
+        return;
+    }
+
+    QString yamlError;
+    const QString yamlContent = ConfigManager::loadDataYamlText(dataPath, &yamlError);
+    if (!yamlError.isEmpty() || yamlContent.trimmed().isEmpty()) {
+        qWarning() << "[Gist] auto-upload: failed to read data.yaml:" << yamlError;
+        return;
+    }
+
+    QJsonObject filesObj;
+    QJsonObject fileEntry;
+    fileEntry[QStringLiteral("content")] = yamlContent;
+    filesObj[QStringLiteral("data.yaml")] = fileEntry;
+    QJsonObject body;
+    body[QStringLiteral("files")] = filesObj;
+
+    const QString token = m_cfg.gistToken;
+    const QString gistId = m_cfg.gistId;
+
+    QNetworkRequest req(QUrl(QStringLiteral("https://api.github.com/gists/") + gistId));
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    req.setRawHeader("Authorization", ("Bearer " + token).toUtf8());
+    req.setRawHeader("Accept", "application/vnd.github.v3+json");
+    req.setRawHeader("User-Agent", "myStocks-app");
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
+
+    qInfo() << "[Gist] auto-uploading data.yaml to gist" << gistId;
+    QNetworkReply* reply = m_gistNam->sendCustomRequest(
+        req, "PATCH", QJsonDocument(body).toJson(QJsonDocument::Compact));
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply]() {
+        reply->deleteLater();
+        const int httpStatus = reply->attribute(
+            QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (reply->error() != QNetworkReply::NoError || httpStatus < 200 || httpStatus >= 300) {
+            const QString err = reply->error() != QNetworkReply::NoError
+                ? reply->errorString()
+                : QStringLiteral("HTTP %1").arg(httpStatus);
+            qWarning() << "[Gist] auto-upload failed:" << err;
+            if (m_tray) {
+                m_tray->showMessage(
+                    i18n::t("app.name", m_resolvedLanguage),
+                    i18n::t("settings.sync.autoUploadFail", m_resolvedLanguage).arg(err),
+                    QSystemTrayIcon::Warning,
+                    4000
+                );
+            }
+            return;
+        }
+
+        // Parse updated_at from response to update conflict-detection baseline.
+        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        const QString remoteUpdatedAt =
+            doc.object()[QStringLiteral("updated_at")].toString();
+
+        const QString now = QDateTime::currentDateTime()
+            .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+        m_cfg.gistLastSyncTime = now;
+        if (!remoteUpdatedAt.isEmpty()) {
+            m_cfg.gistRemoteUpdatedAt = remoteUpdatedAt;
+        }
+        {
+            auto s = ConfigManager::createAppSettings();
+            s->setValue(QStringLiteral("sync/gistLastSyncTime"), now);
+            s->setValue(QStringLiteral("sync/gistRemoteUpdatedAt"), m_cfg.gistRemoteUpdatedAt);
+        }
+
+        qInfo() << "[Gist] auto-upload succeeded. remoteUpdatedAt=" << remoteUpdatedAt;
+        if (m_tray) {
+            m_tray->showMessage(
+                i18n::t("app.name", m_resolvedLanguage),
+                i18n::t("settings.sync.autoUploadOk", m_resolvedLanguage),
+                QSystemTrayIcon::Information,
+                2500
+            );
+        }
+    });
+}
+
+void AppController::checkAndPullGistOnStartup() {
+    if (m_cfg.gistToken.isEmpty() || m_cfg.gistId.isEmpty()) {
+        return;
+    }
+
+    const QString dataPath = findDataYaml();
+    if (dataPath.isEmpty()) {
+        qInfo() << "[Gist] startup pull skipped: data.yaml not found.";
+        return;
+    }
+
+    const QString token = m_cfg.gistToken;
+    const QString gistId = m_cfg.gistId;
+    const QString knownRemoteUpdatedAt = m_cfg.gistRemoteUpdatedAt;
+
+    QNetworkRequest req(QUrl(QStringLiteral("https://api.github.com/gists/") + gistId));
+    req.setRawHeader("Authorization", ("Bearer " + token).toUtf8());
+    req.setRawHeader("Accept", "application/vnd.github.v3+json");
+    req.setRawHeader("User-Agent", "myStocks-app");
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::NoLessSafeRedirectPolicy);
+
+    qInfo() << "[Gist] startup: checking remote version. knownUpdatedAt=" << knownRemoteUpdatedAt;
+    QNetworkReply* reply = m_gistNam->get(req);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, dataPath, knownRemoteUpdatedAt]() {
+        reply->deleteLater();
+        const int httpStatus = reply->attribute(
+            QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (reply->error() != QNetworkReply::NoError || httpStatus < 200 || httpStatus >= 300) {
+            const QString err = reply->error() != QNetworkReply::NoError
+                ? reply->errorString()
+                : QStringLiteral("HTTP %1").arg(httpStatus);
+            qWarning() << "[Gist] startup pull check failed:" << err;
+            return; // silent fail on startup
+        }
+
+        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll());
+        const QJsonObject root = doc.object();
+        const QString remoteUpdatedAt = root[QStringLiteral("updated_at")].toString();
+
+        // If the remote updated_at matches what we last synced, nothing to do.
+        if (!remoteUpdatedAt.isEmpty()
+            && !knownRemoteUpdatedAt.isEmpty()
+            && remoteUpdatedAt == knownRemoteUpdatedAt) {
+            qInfo() << "[Gist] startup: remote is in sync, no pull needed.";
+            return;
+        }
+
+        qInfo() << "[Gist] startup: remote is newer ("
+                << remoteUpdatedAt << " vs known " << knownRemoteUpdatedAt
+                << "), pulling...";
+
+        // Extract data.yaml content from the gist.
+        const QJsonObject files = root[QStringLiteral("files")].toObject();
+        QString yamlContent;
+        for (const QString& key : files.keys()) {
+            if (key.compare(QStringLiteral("data.yaml"), Qt::CaseInsensitive) == 0) {
+                yamlContent = files[key].toObject()[QStringLiteral("content")].toString();
+                break;
+            }
+        }
+        if (yamlContent.isEmpty()) {
+            qWarning() << "[Gist] startup pull: data.yaml not found in gist.";
+            return;
+        }
+
+        // Suppress auto-upload while we write the downloaded content.
+        m_suppressGistAutoUpload = true;
+        QString yamlError;
+        const bool saved = ConfigManager::saveDataYamlText(dataPath, yamlContent, &yamlError);
+        // Allow a brief settle time before re-enabling the watcher.
+        QTimer::singleShot(1500, this, [this]() { m_suppressGistAutoUpload = false; });
+
+        if (!saved) {
+            qWarning() << "[Gist] startup pull: failed to write data.yaml:" << yamlError;
+            if (m_tray) {
+                m_tray->showMessage(
+                    i18n::t("app.name", m_resolvedLanguage),
+                    i18n::t("settings.sync.startupPullFail", m_resolvedLanguage).arg(yamlError),
+                    QSystemTrayIcon::Warning,
+                    4000
+                );
+            }
+            return;
+        }
+
+        // Update the stored baseline.
+        const QString now = QDateTime::currentDateTime()
+            .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+        m_cfg.gistLastSyncTime = now;
+        m_cfg.gistRemoteUpdatedAt = remoteUpdatedAt;
+        {
+            auto s = ConfigManager::createAppSettings();
+            s->setValue(QStringLiteral("sync/gistLastSyncTime"), now);
+            s->setValue(QStringLiteral("sync/gistRemoteUpdatedAt"), remoteUpdatedAt);
+        }
+
+        // Reload stocks/groups from the newly written data.yaml.
+        reloadStocksFromYaml();
+
+        qInfo() << "[Gist] startup pull succeeded. stocks=" << m_stocks.size();
+        if (m_tray) {
+            m_tray->showMessage(
+                i18n::t("app.name", m_resolvedLanguage),
+                i18n::t("settings.sync.startupPullOk", m_resolvedLanguage)
+                    .arg(m_stocks.size()),
+                QSystemTrayIcon::Information,
+                4000
+            );
+        }
+    });
 }

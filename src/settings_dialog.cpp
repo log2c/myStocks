@@ -12,9 +12,12 @@
 #include <QApplication>
 #include <QButtonGroup>
 #include <QColorDialog>
+#include <QDateTime>
 #include <QDesktopServices>
 #include <QDialogButtonBox>
+#include <QDoubleValidator>
 #include <QDropEvent>
+#include <QFile>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -24,15 +27,18 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPalette>
 #include <QPixmap>
 #include <QProgressBar>
 #include <QRadioButton>
 #include <QScrollArea>
 #include <QSet>
+#include <QSettings>
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTimer>
@@ -40,6 +46,7 @@
 #include <QUrlQuery>
 #include <QVBoxLayout>
 
+#include <cmath>
 #include <functional>
 #include <utility>
 
@@ -47,6 +54,21 @@ namespace {
 
 using watchlist_utils::normalizeApiWatchCode;
 using watchlist_utils::watchCodeKey;
+
+// Event filter that ignores wheel events, letting them propagate to a parent
+// scroll area. Used to avoid nested-scroll-area conflict on the Other tab.
+class IgnoreWheelFilter : public QObject {
+public:
+    using QObject::QObject;
+protected:
+    bool eventFilter(QObject*, QEvent* ev) override {
+        if (ev->type() == QEvent::Wheel) {
+            ev->ignore();
+            return true;
+        }
+        return false;
+    }
+};
 
 struct IndexPreset {
     QString code;
@@ -127,7 +149,7 @@ QMessageBox::StandardButton showIconMessageBox(
 class StockTableWidget : public QTableWidget {
 public:
     explicit StockTableWidget(QWidget* parent = nullptr)
-        : QTableWidget(0, 4, parent) {
+        : QTableWidget(0, 5, parent) {
         setSelectionBehavior(QAbstractItemView::SelectRows);
         setSelectionMode(QAbstractItemView::SingleSelection);
         setDragDropMode(QAbstractItemView::NoDragDrop);
@@ -138,9 +160,10 @@ public:
         horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
         horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
         horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
-        horizontalHeader()->setSectionResizeMode(3, QHeaderView::Fixed);
+        horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+        horizontalHeader()->setSectionResizeMode(4, QHeaderView::Fixed);
         horizontalHeader()->setStretchLastSection(false);
-        setColumnWidth(3, 64);
+        setColumnWidth(4, 64);
     }
 
 protected:
@@ -171,10 +194,10 @@ public:
         m_confirmDelete = std::move(fn);
     }
 
-    void addStockRow(const QString& code, const QString& name) {
+    void addStockRow(const QString& code, const QString& name, double cost = qQNaN()) {
         const int row = rowCount();
         insertRow(row);
-        populateRow(row, code, name);
+        populateRow(row, code, name, cost);
         renumberRows();
     }
 
@@ -194,7 +217,17 @@ public:
             const QString code = item(r, 1) ? item(r, 1)->text() : QString();
             const QString name = item(r, 2) ? item(r, 2)->text() : QString();
             if (!code.isEmpty()) {
-                result.push_back({code, name});
+                double cost = qQNaN();
+                if (QLineEdit* le = qobject_cast<QLineEdit*>(cellWidget(r, 3))) {
+                    bool ok = false;
+                    const double v = le->text().trimmed().toDouble(&ok);
+                    if (ok && std::isfinite(v) && v > 0.0) cost = v;
+                }
+                StockItem s;
+                s.code = code;
+                s.name = name;
+                s.cost = cost;
+                result.push_back(s);
             }
         }
         return result;
@@ -215,9 +248,15 @@ public:
         if (row <= 0 || row >= rowCount()) return -1;
         const QString code = item(row, 1) ? item(row, 1)->text() : QString();
         const QString name = item(row, 2) ? item(row, 2)->text() : QString();
+        double cost = qQNaN();
+        if (QLineEdit* le = qobject_cast<QLineEdit*>(cellWidget(row, 3))) {
+            bool ok = false;
+            const double v = le->text().trimmed().toDouble(&ok);
+            if (ok && std::isfinite(v) && v > 0.0) cost = v;
+        }
         removeRow(row);
         insertRow(0);
-        populateRow(0, code, name);
+        populateRow(0, code, name, cost);
         renumberRows();
         selectRow(0);
         return 0;
@@ -227,10 +266,16 @@ public:
         if (row < 0 || row >= rowCount() - 1) return -1;
         const QString code = item(row, 1) ? item(row, 1)->text() : QString();
         const QString name = item(row, 2) ? item(row, 2)->text() : QString();
+        double cost = qQNaN();
+        if (QLineEdit* le = qobject_cast<QLineEdit*>(cellWidget(row, 3))) {
+            bool ok = false;
+            const double v = le->text().trimmed().toDouble(&ok);
+            if (ok && std::isfinite(v) && v > 0.0) cost = v;
+        }
         removeRow(row);
         const int newRow = rowCount();
         insertRow(newRow);
-        populateRow(newRow, code, name);
+        populateRow(newRow, code, name, cost);
         renumberRows();
         selectRow(newRow);
         return newRow;
@@ -243,15 +288,25 @@ private:
         const int hi = qMax(a, b);
         const QString codeA = item(lo, 1) ? item(lo, 1)->text() : QString();
         const QString nameA = item(lo, 2) ? item(lo, 2)->text() : QString();
+        double costA = qQNaN();
+        if (QLineEdit* le = qobject_cast<QLineEdit*>(cellWidget(lo, 3))) {
+            bool ok = false; const double v = le->text().trimmed().toDouble(&ok);
+            if (ok && std::isfinite(v) && v > 0.0) costA = v;
+        }
         const QString codeB = item(hi, 1) ? item(hi, 1)->text() : QString();
         const QString nameB = item(hi, 2) ? item(hi, 2)->text() : QString();
+        double costB = qQNaN();
+        if (QLineEdit* le = qobject_cast<QLineEdit*>(cellWidget(hi, 3))) {
+            bool ok = false; const double v = le->text().trimmed().toDouble(&ok);
+            if (ok && std::isfinite(v) && v > 0.0) costB = v;
+        }
 
         removeRow(hi);
         removeRow(lo);
         insertRow(lo);
-        populateRow(lo, codeB, nameB);
+        populateRow(lo, codeB, nameB, costB);
         insertRow(hi);
-        populateRow(hi, codeA, nameA);
+        populateRow(hi, codeA, nameA, costA);
 
         renumberRows();
         // a moved to: if a was the higher row (moved up), it's now at lo; if lower (moved down), at hi
@@ -260,7 +315,7 @@ private:
         return newCurrent;
     }
 
-    void populateRow(int row, const QString& code, const QString& name) {
+    void populateRow(int row, const QString& code, const QString& name, double cost = qQNaN()) {
         QTableWidgetItem* seqItem = new QTableWidgetItem(QString::number(row + 1));
         seqItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         setItem(row, 0, seqItem);
@@ -273,9 +328,27 @@ private:
         nameItem->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         setItem(row, 2, nameItem);
 
+        // Cost column (index 3)
+        const bool costEditable = watchlist_utils::isCostEditableCode(code);
+        if (costEditable) {
+            QLineEdit* costEdit = new QLineEdit();
+            costEdit->setValidator(new QDoubleValidator(0.0, 1e9, 3, costEdit));
+            costEdit->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            if (std::isfinite(cost) && cost > 0.0) {
+                costEdit->setText(QString::number(cost, 'f', 3));
+            }
+            costEdit->setPlaceholderText(QStringLiteral("--"));
+            setCellWidget(row, 3, costEdit);
+        } else {
+            QTableWidgetItem* costItem = new QTableWidgetItem(QStringLiteral("--"));
+            costItem->setFlags(Qt::ItemIsEnabled);
+            costItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            setItem(row, 3, costItem);
+        }
+
         QPushButton* delBtn = new QPushButton(QStringLiteral("\u2715 Del"));
         delBtn->setFlat(true);
-        setCellWidget(row, 3, delBtn);
+        setCellWidget(row, 4, delBtn);
 
         connect(delBtn, &QPushButton::clicked, this, [this]() {
             QPushButton* btn = qobject_cast<QPushButton*>(sender());
@@ -283,7 +356,7 @@ private:
                 return;
             }
             for (int r = 0; r < rowCount(); ++r) {
-                if (cellWidget(r, 3) == btn) {
+                if (cellWidget(r, 4) == btn) {
                     const QString code = item(r, 1) ? item(r, 1)->text() : QString();
                     const QString name = item(r, 2) ? item(r, 2)->text() : QString();
                     const QString display = code + (name.isEmpty() ? QString() : (QStringLiteral(" ") + name));
@@ -447,6 +520,19 @@ SettingsDialog::SettingsDialog(
     connect(box, &QDialogButtonBox::rejected, this, &QDialog::reject);
     root->addWidget(box);
 
+#ifdef WIN32
+    setStyleSheet(
+        QStringLiteral(
+            "QLineEdit, QAbstractSpinBox {"
+            "background-color: palette(base);"
+            "color: palette(text);"
+            "selection-background-color: palette(highlight);"
+            "selection-color: palette(highlighted-text);"
+            "}"
+        )
+    );
+#endif
+
 }
 
 AppConfig SettingsDialog::config() const {
@@ -464,6 +550,8 @@ AppConfig SettingsDialog::config() const {
     out.proxyPort = m_proxyPortSpin->value();
     out.proxyUser = m_proxyUserEdit->text().trimmed();
     out.debugIgnoreTradingTime = m_debugIgnoreTradingTimeCheck->isChecked();
+    out.acceptBetaUpdates = m_acceptBetaUpdatesCheck->isChecked();
+    out.autoCheckUpdates = m_autoCheckUpdatesCheck->isChecked();
     out.logEnabled = m_logEnabledCheck ? m_logEnabledCheck->isChecked() : out.logEnabled;
     out.logLevel = app_logging::normalizeLogLevel(m_logLevelCombo->currentData().toString());
     out.transparentBackgroundEnabled = m_transparentBackgroundCheck->isChecked();
@@ -496,6 +584,7 @@ AppConfig SettingsDialog::config() const {
     out.upColor = buttonColor(m_upBtn);
     out.downColor = buttonColor(m_downBtn);
     out.flatColor = buttonColor(m_flatBtn);
+    out.costLineColor = buttonColor(m_costLineColorBtn);
 
     out.showHeader = m_showHeaderCheck->isChecked();
     out.showGrid = m_showGridCheck->isChecked();
@@ -564,6 +653,8 @@ AppConfig SettingsDialog::config() const {
     out.floatingWindowDoubleClickToHide = m_doubleClickCloseWindowCheck
         && m_doubleClickCloseWindowCheck->isChecked()
         && !out.mousePassthroughEnabled;
+    out.floatingWindowDoubleClickStockDetail = m_doubleClickStockDetailCheck
+        && m_doubleClickStockDetailCheck->isChecked();
 
     if (m_trayIconBtnGroup) {
         const int id = m_trayIconBtnGroup->checkedId();
@@ -571,6 +662,15 @@ AppConfig SettingsDialog::config() const {
             ? m_trayIconPaths[id]
             : QString();
     }
+
+    if (m_gistTokenEdit) {
+        out.gistToken = m_gistTokenEdit->text().trimmed();
+    }
+    if (m_gistIdEdit) {
+        out.gistId = m_gistIdEdit->text().trimmed();
+    }
+    // gistLastSyncTime is updated in-place when sync succeeds; reflect via m_cfg
+    out.gistLastSyncTime = m_cfg.gistLastSyncTime;
 
     for (int i = 0; i < ColCount; ++i) {
         out.visibleColumns[i] = false;
@@ -635,6 +735,123 @@ QVector<StockItem> SettingsDialog::selectedIndexes() const {
 
 QVector<StockGroup> SettingsDialog::groups() const {
     return m_groups;
+}
+
+void SettingsDialog::rebuildGroupList() {
+    if (!m_groupList) {
+        return;
+    }
+
+    const QListWidgetItem* currentItem = m_groupList->currentItem();
+    const bool keepAllGroupSelected = currentItem
+        && currentItem->data(Qt::UserRole).toInt() == -1;
+    const QString currentGroupName = (!keepAllGroupSelected && currentItem)
+        ? currentItem->text().trimmed()
+        : QString();
+
+    int selectedRow = -1;
+    {
+        QSignalBlocker blocker(m_groupList);
+        m_groupList->clear();
+
+        const int allPos = qBound(0, m_cfg.groupAllPosition, m_groups.size());
+        m_cfg.groupAllPosition = allPos;
+        for (int visualIndex = 0; visualIndex <= m_groups.size(); ++visualIndex) {
+            if (visualIndex == allPos) {
+                QListWidgetItem* item = new QListWidgetItem(
+                    trText("settings.group.allGroup"),
+                    m_groupList
+                );
+                item->setData(Qt::UserRole, -1);
+                item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+                QFont font = item->font();
+                font.setItalic(true);
+                item->setFont(font);
+                if (keepAllGroupSelected) {
+                    selectedRow = visualIndex;
+                }
+                continue;
+            }
+
+            const int groupIndex = visualIndex < allPos ? visualIndex : visualIndex - 1;
+            QListWidgetItem* item = new QListWidgetItem(m_groups.at(groupIndex).name, m_groupList);
+            item->setData(Qt::UserRole, groupIndex);
+            item->setFlags(item->flags() | Qt::ItemIsEditable);
+            if (!currentGroupName.isEmpty() && item->text().trimmed() == currentGroupName) {
+                selectedRow = visualIndex;
+            }
+        }
+
+        if (selectedRow < 0 && m_groupList->count() > 0) {
+            if (m_groups.isEmpty()) {
+                selectedRow = qBound(0, allPos, m_groupList->count() - 1);
+            } else {
+                selectedRow = (allPos == 0) ? 1 : 0;
+            }
+        }
+        if (selectedRow >= 0) {
+            m_groupList->setCurrentRow(selectedRow);
+        }
+    }
+
+    refreshCurrentGroupSelection();
+}
+
+void SettingsDialog::reloadDialogDataFromYaml() {
+    if (m_dataYamlPath.trimmed().isEmpty()) {
+        return;
+    }
+
+    const QVector<StockItem> reloadedStocks = ConfigManager::loadStocksFromYaml(m_dataYamlPath);
+    QVector<StockItem> filteredStocks;
+    filteredStocks.reserve(reloadedStocks.size());
+    for (const StockItem& stock : reloadedStocks) {
+        if (!isPredefinedIndexCode(stock.code)) {
+            filteredStocks.push_back(stock);
+        }
+    }
+    m_stocks = std::move(filteredStocks);
+
+    QSet<QString> stockKeys;
+    for (const StockItem& stock : m_stocks) {
+        stockKeys.insert(watchCodeKey(stock.code));
+    }
+
+    m_groups = ConfigManager::loadGroupsFromYaml(m_dataYamlPath);
+    for (StockGroup& group : m_groups) {
+        QStringList reloadedCodes;
+        for (const QString& code : group.stockCodes) {
+            if (stockKeys.contains(watchCodeKey(code))) {
+                reloadedCodes.append(code);
+            }
+        }
+        group.stockCodes = std::move(reloadedCodes);
+    }
+
+    if (m_stockTable) {
+        QSignalBlocker blocker(m_stockTable);
+        m_stockTable->setRowCount(0);
+
+        StockTableWidget* table = static_cast<StockTableWidget*>(m_stockTable);
+        for (const StockItem& stock : m_stocks) {
+            const QString displayName = m_apiNamesByCode.value(stock.code, stock.name);
+            table->addStockRow(stock.code, displayName, stock.cost);
+        }
+        if (m_stockTable->rowCount() > 0) {
+            m_stockTable->setCurrentCell(0, 0);
+        }
+    }
+
+    if (m_stockSuggestList) {
+        m_stockSuggestList->clear();
+        m_stockSuggestList->hide();
+    }
+    if (m_stockSearchEdit) {
+        m_stockSearchEdit->clear();
+    }
+
+    refreshGroupStockChoices();
+    rebuildGroupList();
 }
 
 QString SettingsDialog::trText(const QString& key) const {
@@ -1055,6 +1272,13 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_doubleClickCloseWindowCheck->setEnabled(!m_cfg.mousePassthroughEnabled);
     addCompactFormRow(windowForm, m_doubleClickCloseWindowCheck);
 
+    m_doubleClickStockDetailCheck = new QCheckBox(
+        trText("settings.display.doubleClickStockDetail"),
+        w
+    );
+    m_doubleClickStockDetailCheck->setChecked(m_cfg.floatingWindowDoubleClickStockDetail);
+    addCompactFormRow(windowForm, m_doubleClickStockDetailCheck);
+
     m_showHeaderCheck = new QCheckBox(trText("settings.display.showHeader"), w);
     m_showHeaderCheck->setChecked(m_cfg.showHeader);
     addCompactFormRow(windowForm, m_showHeaderCheck);
@@ -1103,6 +1327,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_upBtn = createColorButton(w, m_cfg.upColor, pickColorTitle);
     m_downBtn = createColorButton(w, m_cfg.downColor, pickColorTitle);
     m_flatBtn = createColorButton(w, m_cfg.flatColor, pickColorTitle);
+    m_costLineColorBtn = createColorButton(w, m_cfg.costLineColor, pickColorTitle);
 
     const AppConfig defaultCfg;
     QPushButton* resetColorsButton = new QPushButton(
@@ -1115,12 +1340,14 @@ QWidget* SettingsDialog::buildDisplayTab() {
         m_upBtn->setProperty("pickColor", defaultCfg.upColor);
         m_downBtn->setProperty("pickColor", defaultCfg.downColor);
         m_flatBtn->setProperty("pickColor", defaultCfg.flatColor);
+        m_costLineColorBtn->setProperty("pickColor", defaultCfg.costLineColor);
 
         paintColorButton(m_bgBtn, defaultCfg.bgColor);
         paintColorButton(m_textBtn, defaultCfg.textColor);
         paintColorButton(m_upBtn, defaultCfg.upColor);
         paintColorButton(m_downBtn, defaultCfg.downColor);
         paintColorButton(m_flatBtn, defaultCfg.flatColor);
+        paintColorButton(m_costLineColorBtn, defaultCfg.costLineColor);
     });
 
     connect(m_transparentOpacitySlider, &QSlider::valueChanged, this, [this](int value) {
@@ -1151,6 +1378,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
     windowForm->addRow(trText("settings.general.up"), m_upBtn);
     windowForm->addRow(trText("settings.general.down"), m_downBtn);
     windowForm->addRow(trText("settings.general.flat"), m_flatBtn);
+    windowForm->addRow(trText("settings.display.costLineColor"), m_costLineColorBtn);
     addCompactFormRow(windowForm, resetColorsButton);
 
     m_simpleModeCheck = new QCheckBox(trText("settings.display.simpleMode"), w);
@@ -1509,7 +1737,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
         item->setCheckState(m_cfg.visibleColumns.value(logical, true) ? Qt::Checked : Qt::Unchecked);
     }
 
-    columnsForm->addRow(trText("settings.display.columns"), m_columnList);
+    columnsForm->addRow(m_columnList);
 
     QLabel* columnsHint = new QLabel(trText("settings.display.columnsHint"), w);
     columnsHint->setWordWrap(true);
@@ -1548,15 +1776,321 @@ QWidget* SettingsDialog::buildOtherTab() {
     root->setContentsMargins(6, 6, 6, 6);
     root->setSpacing(6);
 
+    // --- Config sync group ---
+    m_syncNam = new QNetworkAccessManager(this);
+    {
+        QGroupBox* syncGroup = new QGroupBox(trText("settings.sync.group"), w);
+        QVBoxLayout* syncLayout = new QVBoxLayout(syncGroup);
+        syncLayout->setContentsMargins(8, 10, 8, 8);
+        syncLayout->setSpacing(6);
+
+        QFormLayout* syncForm = new QFormLayout;
+        syncForm->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        syncForm->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+        syncForm->setHorizontalSpacing(8);
+        syncForm->setVerticalSpacing(4);
+
+        m_gistTokenEdit = new QLineEdit(syncGroup);
+        m_gistTokenEdit->setEchoMode(QLineEdit::Password);
+        m_gistTokenEdit->setPlaceholderText(QStringLiteral("ghp_..."));
+        m_gistTokenEdit->setText(m_cfg.gistToken);
+
+        m_gistIdEdit = new QLineEdit(syncGroup);
+        m_gistIdEdit->setPlaceholderText(QStringLiteral("e.g. a1b2c3d4e5f6..."));
+        m_gistIdEdit->setText(m_cfg.gistId);
+
+        m_gistLastSyncLabel = new QLabel(syncGroup);
+        {
+            const QString ts = m_cfg.gistLastSyncTime.trimmed();
+            if (ts.isEmpty()) {
+                m_gistLastSyncLabel->setText(trText("settings.sync.never"));
+            } else {
+                m_gistLastSyncLabel->setText(ts);
+            }
+        }
+
+        syncForm->addRow(trText("settings.sync.gistToken"), m_gistTokenEdit);
+        syncForm->addRow(trText("settings.sync.gistId"), m_gistIdEdit);
+        syncForm->addRow(trText("settings.sync.lastSync"), m_gistLastSyncLabel);
+        syncLayout->addLayout(syncForm);
+
+        QWidget* syncBtnRow = new QWidget(syncGroup);
+        QHBoxLayout* syncBtnLayout = new QHBoxLayout(syncBtnRow);
+        syncBtnLayout->setContentsMargins(0, 2, 0, 0);
+        syncBtnLayout->setSpacing(8);
+
+        QPushButton* downloadBtn = new QPushButton(trText("settings.sync.download"), syncBtnRow);
+        QPushButton* uploadBtn   = new QPushButton(trText("settings.sync.upload"),   syncBtnRow);
+        syncBtnLayout->addStretch();
+        syncBtnLayout->addWidget(downloadBtn);
+        syncBtnLayout->addWidget(uploadBtn);
+        syncLayout->addWidget(syncBtnRow);
+
+        root->addWidget(syncGroup);
+
+        auto validateFields = [this]() -> bool {
+            if (m_gistTokenEdit->text().trimmed().isEmpty()
+                || m_gistIdEdit->text().trimmed().isEmpty()) {
+                QMessageBox::warning(this,
+                    trText("settings.sync.group"),
+                    trText("settings.sync.missingFields"));
+                return false;
+            }
+            return true;
+        };
+
+        // Unified sync handler: fetch remote info first, then present a choice dialog.
+        auto doSync = [this, uploadBtn, downloadBtn, validateFields]() {
+            if (!validateFields()) return;
+            const QString token = m_gistTokenEdit->text().trimmed();
+            const QString gistId = m_gistIdEdit->text().trimmed();
+
+            // Persist token and gist ID immediately (before network request)
+            m_cfg.gistToken = token;
+            m_cfg.gistId = gistId;
+            {
+                auto s = ConfigManager::createAppSettings();
+                s->setValue(QStringLiteral("sync/gistToken"), token);
+                s->setValue(QStringLiteral("sync/gistId"), gistId);
+            }
+
+            uploadBtn->setEnabled(false);
+            downloadBtn->setEnabled(false);
+
+            // GET gist to obtain remote updated_at before showing the choice dialog.
+            QNetworkRequest req(QUrl(QStringLiteral("https://api.github.com/gists/") + gistId));
+            req.setRawHeader("Authorization", ("Bearer " + token).toUtf8());
+            req.setRawHeader("Accept", "application/vnd.github.v3+json");
+            req.setRawHeader("User-Agent", "myStocks-app");
+            req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                             QNetworkRequest::NoLessSafeRedirectPolicy);
+
+            QNetworkReply* fetchReply = m_syncNam->get(req);
+            connect(fetchReply, &QNetworkReply::finished, this,
+                [this, fetchReply, uploadBtn, downloadBtn, token, gistId]() {
+                    fetchReply->deleteLater();
+                    uploadBtn->setEnabled(true);
+                    downloadBtn->setEnabled(true);
+
+                    const int httpStatus = fetchReply->attribute(
+                        QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                    if (fetchReply->error() != QNetworkReply::NoError
+                        || httpStatus < 200 || httpStatus >= 300) {
+                        const QString err = fetchReply->error() != QNetworkReply::NoError
+                            ? fetchReply->errorString()
+                            : QStringLiteral("HTTP %1").arg(httpStatus);
+                        QMessageBox::critical(this,
+                            trText("settings.sync.group"),
+                            trText("settings.sync.fetchFail").arg(err));
+                        return;
+                    }
+
+                    const QJsonDocument fetchDoc = QJsonDocument::fromJson(fetchReply->readAll());
+                    const QJsonObject root = fetchDoc.object();
+                    const QString remoteUpdatedAt = root[QStringLiteral("updated_at")].toString();
+
+                    // Format remote timestamp (ISO 8601 → local time string)
+                    QString remoteDisplay;
+                    if (!remoteUpdatedAt.isEmpty()) {
+                        const QDateTime dt =
+                            QDateTime::fromString(remoteUpdatedAt, Qt::ISODate).toLocalTime();
+                        remoteDisplay = dt.isValid()
+                            ? dt.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))
+                            : remoteUpdatedAt;
+                    } else {
+                        remoteDisplay = trText("settings.sync.never");
+                    }
+
+                    const QString localDisplay = m_cfg.gistLastSyncTime.trimmed().isEmpty()
+                        ? trText("settings.sync.never")
+                        : m_cfg.gistLastSyncTime.trimmed();
+
+                    // Build the choice dialog.
+                    QDialog dlg(this);
+                    dlg.setWindowTitle(trText("settings.sync.group"));
+                    dlg.setWindowModality(Qt::WindowModal);
+                    QVBoxLayout* vlay = new QVBoxLayout(&dlg);
+                    vlay->setSpacing(12);
+                    vlay->setContentsMargins(20, 16, 20, 16);
+
+                    QLabel* infoLabel = new QLabel(&dlg);
+                    infoLabel->setText(trText("settings.sync.syncDialog.info")
+                        .arg(remoteDisplay, localDisplay));
+                    infoLabel->setWordWrap(true);
+                    vlay->addWidget(infoLabel);
+
+                    QHBoxLayout* btnLay = new QHBoxLayout;
+                    btnLay->setSpacing(8);
+                    QPushButton* useRemoteBtn =
+                        new QPushButton(trText("settings.sync.syncDialog.useRemote"), &dlg);
+                    QPushButton* useLocalBtn =
+                        new QPushButton(trText("settings.sync.syncDialog.useLocal"), &dlg);
+                    QPushButton* ignoreBtn =
+                        new QPushButton(trText("settings.sync.syncDialog.ignore"), &dlg);
+                    ignoreBtn->setDefault(true);
+                    btnLay->addStretch();
+                    btnLay->addWidget(useRemoteBtn);
+                    btnLay->addWidget(useLocalBtn);
+                    btnLay->addWidget(ignoreBtn);
+                    vlay->addLayout(btnLay);
+
+                    enum SyncChoice { ChooseRemote, ChooseLocal, ChooseIgnore };
+                    SyncChoice syncChoice = ChooseIgnore;
+                    connect(useRemoteBtn, &QPushButton::clicked, &dlg,
+                        [&syncChoice, &dlg]() { syncChoice = ChooseRemote; dlg.accept(); });
+                    connect(useLocalBtn, &QPushButton::clicked, &dlg,
+                        [&syncChoice, &dlg]() { syncChoice = ChooseLocal; dlg.accept(); });
+                    connect(ignoreBtn, &QPushButton::clicked, &dlg,
+                        [&dlg]() { dlg.reject(); });
+
+                    ignoreBtn->setFocus();
+                    dlg.exec();
+
+                    if (syncChoice == ChooseIgnore) return;
+
+                    uploadBtn->setEnabled(false);
+                    downloadBtn->setEnabled(false);
+
+                    if (syncChoice == ChooseRemote) {
+                        // Use remote: write already-fetched gist content to local data.yaml.
+                        const QJsonObject files = root[QStringLiteral("files")].toObject();
+                        QString yamlContent;
+                        for (const QString& key : files.keys()) {
+                            if (key.compare(QStringLiteral("data.yaml"),
+                                            Qt::CaseInsensitive) == 0) {
+                                yamlContent =
+                                    files[key].toObject()[QStringLiteral("content")].toString();
+                                break;
+                            }
+                        }
+                        uploadBtn->setEnabled(true);
+                        downloadBtn->setEnabled(true);
+                        if (yamlContent.isEmpty()) {
+                            QMessageBox::critical(this,
+                                trText("settings.sync.group"),
+                                trText("settings.sync.downloadFail").arg(
+                                    QStringLiteral("data.yaml not found in gist")));
+                            return;
+                        }
+                        QString yamlError;
+                        if (!ConfigManager::saveDataYamlText(
+                                m_dataYamlPath, yamlContent, &yamlError)) {
+                            QMessageBox::critical(this,
+                                trText("settings.sync.group"),
+                                trText("settings.sync.downloadFail").arg(yamlError));
+                            return;
+                        }
+                        const QString now = QDateTime::currentDateTime()
+                            .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+                        m_cfg.gistLastSyncTime = now;
+                        if (!remoteUpdatedAt.isEmpty()) {
+                            m_cfg.gistRemoteUpdatedAt = remoteUpdatedAt;
+                        }
+                        m_gistLastSyncLabel->setText(now);
+                        {
+                            auto s = ConfigManager::createAppSettings();
+                            s->setValue(QStringLiteral("sync/gistLastSyncTime"), now);
+                            s->setValue(QStringLiteral("sync/gistRemoteUpdatedAt"),
+                                        m_cfg.gistRemoteUpdatedAt);
+                        }
+                        reloadDialogDataFromYaml();
+                        QMessageBox::information(this,
+                            trText("settings.sync.group"),
+                            trText("settings.sync.downloadOk"));
+                    } else {
+                        // Use local: PATCH upload local data.yaml to remote.
+                        QString yamlError;
+                        const QString yamlContent = ConfigManager::loadDataYamlText(
+                            m_dataYamlPath, &yamlError);
+                        if (!yamlError.isEmpty()) {
+                            uploadBtn->setEnabled(true);
+                            downloadBtn->setEnabled(true);
+                            QMessageBox::critical(this,
+                                trText("settings.sync.group"),
+                                trText("settings.sync.uploadFail").arg(yamlError));
+                            return;
+                        }
+
+                        QJsonObject filesObj;
+                        QJsonObject fileEntry;
+                        fileEntry[QStringLiteral("content")] = yamlContent;
+                        filesObj[QStringLiteral("data.yaml")] = fileEntry;
+                        QJsonObject body;
+                        body[QStringLiteral("files")] = filesObj;
+
+                        QNetworkRequest patchReq(
+                            QUrl(QStringLiteral("https://api.github.com/gists/") + gistId));
+                        patchReq.setHeader(QNetworkRequest::ContentTypeHeader,
+                                           QStringLiteral("application/json"));
+                        patchReq.setRawHeader("Authorization", ("Bearer " + token).toUtf8());
+                        patchReq.setRawHeader("Accept", "application/vnd.github.v3+json");
+                        patchReq.setRawHeader("User-Agent", "myStocks-app");
+                        patchReq.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                                              QNetworkRequest::NoLessSafeRedirectPolicy);
+
+                        QNetworkReply* patchReply = m_syncNam->sendCustomRequest(
+                            patchReq, "PATCH",
+                            QJsonDocument(body).toJson(QJsonDocument::Compact));
+                        connect(patchReply, &QNetworkReply::finished, this,
+                            [this, patchReply, uploadBtn, downloadBtn]() {
+                                patchReply->deleteLater();
+                                uploadBtn->setEnabled(true);
+                                downloadBtn->setEnabled(true);
+                                const int status = patchReply->attribute(
+                                    QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                                if (patchReply->error() != QNetworkReply::NoError
+                                    || status < 200 || status >= 300) {
+                                    const QString err =
+                                        patchReply->error() != QNetworkReply::NoError
+                                        ? patchReply->errorString()
+                                        : QStringLiteral("HTTP %1").arg(status);
+                                    QMessageBox::critical(this,
+                                        trText("settings.sync.group"),
+                                        trText("settings.sync.uploadFail").arg(err));
+                                    return;
+                                }
+                                const QJsonDocument doc2 =
+                                    QJsonDocument::fromJson(patchReply->readAll());
+                                const QString newRemoteUpdatedAt =
+                                    doc2.object()[QStringLiteral("updated_at")].toString();
+                                const QString now = QDateTime::currentDateTime()
+                                    .toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+                                m_cfg.gistLastSyncTime = now;
+                                if (!newRemoteUpdatedAt.isEmpty()) {
+                                    m_cfg.gistRemoteUpdatedAt = newRemoteUpdatedAt;
+                                }
+                                m_gistLastSyncLabel->setText(now);
+                                {
+                                    auto s = ConfigManager::createAppSettings();
+                                    s->setValue(QStringLiteral("sync/gistLastSyncTime"), now);
+                                    s->setValue(QStringLiteral("sync/gistRemoteUpdatedAt"),
+                                                m_cfg.gistRemoteUpdatedAt);
+                                }
+                                QMessageBox::information(this,
+                                    trText("settings.sync.group"),
+                                    trText("settings.sync.uploadOk"));
+                            }
+                        );
+                    }
+                }
+            );
+        };
+        connect(uploadBtn,   &QPushButton::clicked, this, doSync);
+        connect(downloadBtn, &QPushButton::clicked, this, doSync);
+    }
+
     // --- Debug/Log group ---
     QWidget* debugWidget = new QWidget(w);
     QFormLayout* form = new QFormLayout(debugWidget);
     applyCompactFormLayout(form);
 
-    m_debugIgnoreTradingTimeCheck = new QCheckBox(
-        trText("settings.general.debugIgnoreTradingTime"),
-        debugWidget
-    );
+    m_acceptBetaUpdatesCheck = new QCheckBox(debugWidget);
+    m_acceptBetaUpdatesCheck->setChecked(m_cfg.acceptBetaUpdates);
+
+    m_autoCheckUpdatesCheck = new QCheckBox(debugWidget);
+    m_autoCheckUpdatesCheck->setChecked(m_cfg.autoCheckUpdates);
+
+    m_debugIgnoreTradingTimeCheck = new QCheckBox(debugWidget);
     m_debugIgnoreTradingTimeCheck->setChecked(m_cfg.debugIgnoreTradingTime);
 
     m_logLevelCombo = new QComboBox(debugWidget);
@@ -1573,7 +2107,9 @@ QWidget* SettingsDialog::buildOtherTab() {
         m_logLevelCombo->setCurrentIndex(logLevelIndex);
     }
 
-    addCompactFormRow(form, m_debugIgnoreTradingTimeCheck);
+    form->addRow(trText("settings.other.acceptBetaUpdates"), m_acceptBetaUpdatesCheck);
+    form->addRow(trText("settings.other.autoCheckUpdates"), m_autoCheckUpdatesCheck);
+    form->addRow(trText("settings.other.debugMode"), m_debugIgnoreTradingTimeCheck);
     form->addRow(trText("settings.other.logLevel"), m_logLevelCombo);
     root->addWidget(debugWidget);
 
@@ -1587,6 +2123,7 @@ QWidget* SettingsDialog::buildOtherTab() {
     trayScroll->setWidgetResizable(true);
     trayScroll->setFrameShape(QFrame::NoFrame);
     trayScroll->setFixedHeight(230);
+    trayScroll->viewport()->installEventFilter(new IgnoreWheelFilter(trayScroll));
 
     QWidget* trayGrid = new QWidget;
     const int kCols = 7;
@@ -1632,6 +2169,10 @@ QWidget* SettingsDialog::buildOtherTab() {
         m_trayIconPaths.append(resourcePath);
 
         QWidget* cell = new QWidget(trayGrid);
+#ifdef WIN32
+        cell->setObjectName(QStringLiteral("trayIconCell"));
+        cell->setAttribute(Qt::WA_StyledBackground, true);
+#endif
         QVBoxLayout* cl = new QVBoxLayout(cell);
         cl->setContentsMargins(2, 2, 2, 2);
         cl->setSpacing(2);
@@ -1648,6 +2189,57 @@ QWidget* SettingsDialog::buildOtherTab() {
 
         QRadioButton* rb = new QRadioButton(cell); // no text
         rb->setToolTip(tooltip);
+#ifdef WIN32
+        rb->setObjectName(QStringLiteral("trayIconRadio"));
+
+        const auto updateTrayIconSelectionStyle = [this, cell, rb]() {
+            const QPalette pal = this->palette();
+            QColor cellBorder = pal.color(QPalette::Mid);
+            QColor cellBackground(0, 0, 0, 0);
+            if (rb->isChecked()) {
+                cellBorder = pal.color(QPalette::Highlight);
+                cellBackground = pal.color(QPalette::Highlight);
+                cellBackground.setAlpha(56);
+            }
+
+            cell->setStyleSheet(
+                QStringLiteral(
+                    "#trayIconCell {"
+                    "border: %1px solid %2;"
+                    "border-radius: 8px;"
+                    "background-color: %3;"
+                    "}"
+                )
+                    .arg(rb->isChecked() ? 2 : 1)
+                    .arg(cellBorder.name(QColor::HexArgb))
+                    .arg(cellBackground.name(QColor::HexArgb))
+            );
+
+            rb->setStyleSheet(
+                QStringLiteral(
+                    "QRadioButton::indicator {"
+                    "width: 15px;"
+                    "height: 15px;"
+                    "border-radius: 7px;"
+                    "border: 2px solid %1;"
+                    "background-color: %2;"
+                    "}"
+                    "QRadioButton::indicator:checked {"
+                    "border: 2px solid %3;"
+                    "background-color: %3;"
+                    "}"
+                )
+                    .arg(pal.color(QPalette::Mid).name(QColor::HexArgb))
+                    .arg(pal.color(QPalette::Base).name(QColor::HexArgb))
+                    .arg(pal.color(QPalette::Highlight).name(QColor::HexArgb))
+            );
+        };
+
+        connect(rb, &QRadioButton::toggled, cell, [updateTrayIconSelectionStyle](bool) {
+            updateTrayIconSelectionStyle();
+        });
+        updateTrayIconSelectionStyle();
+#endif
 
         cl->addWidget(iconLabel, 0, Qt::AlignCenter);
         cl->addWidget(rb, 0, Qt::AlignCenter);
@@ -1724,6 +2316,7 @@ QWidget* SettingsDialog::buildStocksTab() {
         trText("settings.stocks.colSeq"),
         trText("settings.stocks.colCode"),
         trText("settings.stocks.colName"),
+        trText("settings.stocks.colCost"),
         trText("settings.stocks.colDel")
     });
     table->setMinimumHeight(220);
@@ -1731,7 +2324,7 @@ QWidget* SettingsDialog::buildStocksTab() {
     for (const StockItem& s : m_stocks) {
         // Use API name if available, fall back to stored name
         const QString displayName = m_apiNamesByCode.value(s.code, s.name);
-        table->addStockRow(s.code, displayName);
+        table->addStockRow(s.code, displayName, s.cost);
     }
 
     m_stockTable = table;
@@ -1786,12 +2379,9 @@ QWidget* SettingsDialog::buildStocksTab() {
     btnLayout->setContentsMargins(0, 0, 0, 0);
     btnLayout->setSpacing(6);
     QPushButton* saveBtn = new QPushButton(trText("settings.stocks.save"), btnRow);
-    QPushButton* resetBtn = new QPushButton(trText("settings.stocks.reset"), btnRow);
     saveBtn->setMinimumWidth(82);
-    resetBtn->setMinimumWidth(82);
     btnLayout->addStretch();
     btnLayout->addWidget(saveBtn);
-    btnLayout->addWidget(resetBtn);
     vbox->addWidget(btnRow);
 
     // --- Network setup ---
@@ -1896,6 +2486,32 @@ QWidget* SettingsDialog::buildStocksTab() {
             static_cast<StockTableWidget*>(m_stockTable)->stocks();
         qInfo() << "[StocksTab] save requested path=" << m_dataYamlPath << "count=" << stocks.size();
         if (ConfigManager::saveStocksToYaml(m_dataYamlPath, stocks)) {
+            const QVector<StockItem> reloadedStocks = ConfigManager::loadStocksFromYaml(m_dataYamlPath);
+            QVector<StockItem> filteredStocks;
+            filteredStocks.reserve(reloadedStocks.size());
+            for (const StockItem& stock : reloadedStocks) {
+                if (!isPredefinedIndexCode(stock.code)) {
+                    filteredStocks.push_back(stock);
+                }
+            }
+            m_stocks = std::move(filteredStocks);
+
+            QSet<QString> stockKeys;
+            for (const StockItem& stock : m_stocks) {
+                stockKeys.insert(watchCodeKey(stock.code));
+            }
+            for (StockGroup& group : m_groups) {
+                QStringList prunedCodes;
+                for (const QString& code : group.stockCodes) {
+                    if (stockKeys.contains(watchCodeKey(code))) {
+                        prunedCodes.append(code);
+                    }
+                }
+                group.stockCodes = std::move(prunedCodes);
+            }
+            refreshGroupStockChoices();
+            refreshCurrentGroupSelection();
+
             qInfo() << "[StocksTab] save success path=" << m_dataYamlPath;
             showIconMessageBox(
                 this,
@@ -1910,56 +2526,6 @@ QWidget* SettingsDialog::buildStocksTab() {
                 QMessageBox::Warning,
                 trText("app.name"),
                 trText("settings.stocks.saveFail")
-            );
-        }
-    });
-
-    // Reset button: reload from data.yaml and repopulate
-    connect(resetBtn, &QPushButton::clicked, this, [this]() {
-        qInfo() << "[StocksTab] reset requested path=" << m_dataYamlPath;
-
-        // Clear search state
-        m_stockSearchEdit->clear();
-        m_stockSuggestList->clear();
-        m_stockSuggestList->hide();
-        if (m_stockSearchDebounce) {
-            m_stockSearchDebounce->stop();
-        }
-        if (m_stockSearchReply) {
-            m_stockSearchReply->abort();
-            m_stockSearchReply->deleteLater();
-            m_stockSearchReply = nullptr;
-        }
-
-        // Reload stocks from yaml
-        QVector<StockItem> loaded;
-        if (!m_dataYamlPath.isEmpty()) {
-            loaded = ConfigManager::loadStocksFromYaml(m_dataYamlPath);
-        }
-
-        qInfo() << "[StocksTab] reset loaded count=" << loaded.size();
-
-        QStringList ignoredIndexes;
-
-        // Rebuild table
-        StockTableWidget* tbl = static_cast<StockTableWidget*>(m_stockTable);
-        tbl->setRowCount(0);
-        for (const StockItem& s : loaded) {
-            if (isPredefinedIndexCode(s.code)) {
-                ignoredIndexes.push_back(s.code);
-                continue;
-            }
-            tbl->addStockRow(s.code, s.name);
-        }
-
-        ignoredIndexes.removeDuplicates();
-        if (!ignoredIndexes.isEmpty()) {
-            showIconMessageBox(
-                this,
-                QMessageBox::Information,
-                trText("app.name"),
-                trText("settings.indexSector.ignoreYamlIndexFmt")
-                    .arg(ignoredIndexes.join(QStringLiteral(", ")))
             );
         }
     });
@@ -2204,6 +2770,108 @@ void SettingsDialog::doStockSearch(bool forceSearch) {
     });
 }
 
+QString SettingsDialog::groupMemberDisplayName(const QString& code) const {
+    const QString key = watchCodeKey(code);
+    for (const StockItem& stock : m_stocks) {
+        if (watchCodeKey(stock.code) != key) {
+            continue;
+        }
+        const QString name = stock.name.trimmed();
+        return name.isEmpty()
+            ? stock.code
+            : QStringLiteral("%1 %2").arg(stock.code, name);
+    }
+    return code;
+}
+
+void SettingsDialog::refreshGroupStockChoices() {
+    if (!m_groupStockList) {
+        return;
+    }
+
+    QSignalBlocker blocker(m_groupStockList);
+    m_groupStockList->clear();
+    for (const StockItem& stock : m_stocks) {
+        if (stock.code.isEmpty()) {
+            continue;
+        }
+        const QString name = stock.name.trimmed();
+        QListWidgetItem* item = new QListWidgetItem(
+            name.isEmpty()
+                ? stock.code
+                : QStringLiteral("%1 %2").arg(stock.code, name),
+            m_groupStockList
+        );
+        item->setData(Qt::UserRole, stock.code);
+        item->setCheckState(Qt::Unchecked);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+    }
+}
+
+void SettingsDialog::refreshCurrentGroupSelection() {
+    if (!m_groupList || !m_groupStockList || !m_groupMemberList) {
+        return;
+    }
+
+    const QListWidgetItem* current = m_groupList->currentItem();
+    if (!current) {
+        m_groupMemberList->setEnabled(false);
+        m_groupMemberList->clear();
+        m_groupStockList->setEnabled(false);
+        QSignalBlocker blocker(m_groupStockList);
+        for (int index = 0; index < m_groupStockList->count(); ++index) {
+            m_groupStockList->item(index)->setCheckState(Qt::Unchecked);
+        }
+        return;
+    }
+
+    const int groupIndex = current->data(Qt::UserRole).toInt();
+    if (groupIndex < 0) {
+        m_groupMemberList->setEnabled(false);
+        m_groupMemberList->clear();
+        m_groupStockList->setEnabled(false);
+        QSignalBlocker blocker(m_groupStockList);
+        for (int index = 0; index < m_groupStockList->count(); ++index) {
+            m_groupStockList->item(index)->setCheckState(Qt::Unchecked);
+        }
+        return;
+    }
+    if (groupIndex >= m_groups.size()) {
+        return;
+    }
+
+    const StockGroup& group = m_groups.at(groupIndex);
+    {
+        QSignalBlocker blocker(m_groupMemberList);
+        m_groupMemberList->clear();
+        m_groupMemberList->setEnabled(true);
+        for (const QString& code : group.stockCodes) {
+            QListWidgetItem* item = new QListWidgetItem(
+                groupMemberDisplayName(code),
+                m_groupMemberList
+            );
+            item->setData(Qt::UserRole, code);
+        }
+    }
+
+    {
+        QSet<QString> keys;
+        for (const QString& code : group.stockCodes) {
+            keys.insert(watchCodeKey(code));
+        }
+        QSignalBlocker blocker(m_groupStockList);
+        m_groupStockList->setEnabled(true);
+        for (int index = 0; index < m_groupStockList->count(); ++index) {
+            QListWidgetItem* item = m_groupStockList->item(index);
+            item->setCheckState(
+                keys.contains(watchCodeKey(item->data(Qt::UserRole).toString()))
+                    ? Qt::Checked
+                    : Qt::Unchecked
+            );
+        }
+    }
+}
+
 QWidget* SettingsDialog::buildGroupsTab() {
     QWidget* w = new QWidget(this);
     QVBoxLayout* vbox = new QVBoxLayout(w);
@@ -2344,6 +3012,15 @@ QWidget* SettingsDialog::buildGroupsTab() {
                 m_groups[ur].name = it->text().trimmed();
             }
         );
+
+        // Checkbox: "所有" group shows only ungrouped members
+        QCheckBox* ungroupedOnlyCheck = new QCheckBox(
+            trText("settings.group.allGroupUngroupedOnly"), w);
+        ungroupedOnlyCheck->setChecked(m_cfg.allGroupShowUngroupedOnly);
+        leftVbox->addWidget(ungroupedOnlyCheck);
+        connect(ungroupedOnlyCheck, &QCheckBox::toggled, this, [this](bool checked) {
+            m_cfg.allGroupShowUngroupedOnly = checked;
+        });
     }
 
     // ── Right: ordered members + stock checkboxes ─────────────────────────
@@ -2403,76 +3080,20 @@ QWidget* SettingsDialog::buildGroupsTab() {
             m_groupStockList = new QListWidget(w);
             m_groupStockList->setEnabled(false);
             rightVbox->addWidget(m_groupStockList, 1);
-
-            for (const StockItem& stock : m_stocks) {
-                if (stock.code.isEmpty()) continue;
-                QListWidgetItem* it = new QListWidgetItem(
-                    QStringLiteral("%1 %2").arg(stock.code, stock.name), m_groupStockList);
-                it->setData(Qt::UserRole, stock.code);
-                it->setCheckState(Qt::Unchecked);
-                it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
-            }
+            refreshGroupStockChoices();
         }
     }
 
     // ── Group selection → populate right panels ───────────────────────────
-    const auto memberDisplayName = [this](const QString& code) -> QString {
-        for (const StockItem& s : m_stocks) {
-            if (watchCodeKey(s.code) == watchCodeKey(code))
-                return QStringLiteral("%1 %2").arg(s.code, s.name);
-        }
-        return code;
-    };
-
     connect(m_groupList, &QListWidget::currentRowChanged, this,
-        [this, memberDisplayName](int) {
-            if (!m_groupStockList || !m_groupMemberList) return;
-            const QListWidgetItem* cur = m_groupList->currentItem();
-            if (!cur) return;
-            const int gi = cur->data(Qt::UserRole).toInt();
-
-            if (gi < 0) { // "所有"
-                m_groupMemberList->setEnabled(false);
-                m_groupMemberList->clear();
-                m_groupStockList->setEnabled(false);
-                QSignalBlocker b(m_groupStockList);
-                for (int i = 0; i < m_groupStockList->count(); ++i)
-                    m_groupStockList->item(i)->setCheckState(Qt::Unchecked);
-                return;
-            }
-            if (gi >= m_groups.size()) return;
-            const StockGroup& g = m_groups.at(gi);
-
-            // Populate ordered members
-            {
-                QSignalBlocker bl(m_groupMemberList);
-                m_groupMemberList->clear();
-                m_groupMemberList->setEnabled(true);
-                for (const QString& code : g.stockCodes) {
-                    QListWidgetItem* it = new QListWidgetItem(
-                        memberDisplayName(code), m_groupMemberList);
-                    it->setData(Qt::UserRole, code);
-                }
-            }
-
-            // Update checkboxes
-            {
-                QSet<QString> keys;
-                for (const QString& c : g.stockCodes) keys.insert(watchCodeKey(c));
-                QSignalBlocker bl(m_groupStockList);
-                m_groupStockList->setEnabled(true);
-                for (int i = 0; i < m_groupStockList->count(); ++i) {
-                    QListWidgetItem* it = m_groupStockList->item(i);
-                    it->setCheckState(keys.contains(watchCodeKey(it->data(Qt::UserRole).toString()))
-                        ? Qt::Checked : Qt::Unchecked);
-                }
-            }
+        [this](int) {
+            refreshCurrentGroupSelection();
         }
     );
 
     // ── Stock checkbox → update group members ─────────────────────────────
     connect(m_groupStockList, &QListWidget::itemChanged, this,
-        [this, memberDisplayName](QListWidgetItem* it) {
+        [this](QListWidgetItem* it) {
             if (!m_groupList || !m_groupStockList->isEnabled()) return;
             const QListWidgetItem* cur = m_groupList->currentItem();
             if (!cur) return;
@@ -2487,7 +3108,7 @@ QWidget* SettingsDialog::buildGroupsTab() {
                 if (!codes.contains(code)) {
                     codes.append(code);
                     QListWidgetItem* mi = new QListWidgetItem(
-                        memberDisplayName(code), m_groupMemberList);
+                        groupMemberDisplayName(code), m_groupMemberList);
                     mi->setData(Qt::UserRole, code);
                 }
             } else {

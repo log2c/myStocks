@@ -13,6 +13,7 @@
 #include <QStringList>
 #include <QVector>
 
+class QFileSystemWatcher;
 class FloatingWindow;
 class EastMoneyHotRankProvider;
 class AshareMarketBreadthProvider;
@@ -20,6 +21,7 @@ class IQuoteProvider;
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
 class QHotkey;
 #endif
+class QAction;
 class QuoteModel;
 class QSystemTrayIcon;
 class QTimer;
@@ -29,7 +31,7 @@ public:
     explicit AppController(QObject* parent = nullptr);
 
 private:
-    QString findDataYaml() const;
+    QString findDataYaml(QString* errorMessage = nullptr) const;
     void toggleWindow();
     void toggleMarketBreadthDetailWindow();
     void resetFloatingWindowPosition();
@@ -77,6 +79,10 @@ private:
     void applyActiveGroup(int groupIndex);
     void applyGroupsToWindow();
     bool pruneGroupsForDeletedStocks(const QString& dataPath);
+    void setupDataYamlWatcher();
+    void scheduleGistAutoUpload();
+    void doGistAutoUpload();
+    void checkAndPullGistOnStartup();
 
 private:
     AppConfig m_cfg;
@@ -100,6 +106,8 @@ private:
     QTimer* m_hotRankTimer = nullptr;
     QTimer* m_marketBreadthTimer = nullptr;
     QSystemTrayIcon* m_tray = nullptr;
+    QAction* m_trayToggleAction = nullptr;
+    QAction* m_trayMarketBreadthAction = nullptr;
     QIcon m_trayBaseIcon;
     QTimer* m_trayErrorBadgeTimer = nullptr;
 
@@ -112,6 +120,12 @@ private:
     bool m_hotProbeTradingDay = true;
 
     Updater* m_updater = nullptr;
+
+    // Gist auto-sync
+    QNetworkAccessManager* m_gistNam = nullptr;
+    QFileSystemWatcher* m_dataYamlWatcher = nullptr;
+    QTimer* m_gistAutoUploadDebounce = nullptr;
+    bool m_suppressGistAutoUpload = false;
 
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
     QHotkey* m_hotkey = nullptr;
