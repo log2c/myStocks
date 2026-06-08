@@ -285,7 +285,8 @@ const TranslationMap& translations() {
                 {"popup.marketBreadth.expand", "Expanded"},
                 {"popup.marketBreadth.shrink", "Contracted"},
                 {"popup.marketBreadth.same", "Flat"},
-                {"popup.marketBreadth.vsYesterdayFmt", "vs Yesterday %1"}
+                {"popup.marketBreadth.vsYesterdayFmt", "vs Yesterday %1"},
+                {"popup.timeline.profit", "P/L"}
             }
         },
         {
@@ -564,7 +565,8 @@ const TranslationMap& translations() {
                 {"popup.marketBreadth.expand", "放量"},
                 {"popup.marketBreadth.shrink", "缩量"},
                 {"popup.marketBreadth.same", "持平"},
-                {"popup.marketBreadth.vsYesterdayFmt", "比昨日%1"}
+                {"popup.marketBreadth.vsYesterdayFmt", "比昨日%1"},
+                {"popup.timeline.profit", "收益"}
             }
         }
     };

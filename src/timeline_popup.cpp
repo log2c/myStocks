@@ -1,6 +1,7 @@
 #include "timeline_popup.h"
 
 #include "app_constants.h"
+#include "i18n.h"
 #include "watchlist_utils.h"
 
 #include <QDateTime>
@@ -625,6 +626,7 @@ public:
 
     void setConfig(const AppConfig& cfg) {
         m_cfg = cfg;
+        m_resolvedLanguage = i18n::resolveLanguage(m_cfg.language);
         update();
     }
 
@@ -1056,6 +1058,40 @@ protected:
             }
         }
 
+        const auto colorByChange = [&](double pct) {
+            if (!std::isfinite(pct)) {
+                return m_cfg.timelineChartTextColor;
+            }
+            if (pct > 0.0) {
+                return m_cfg.timelineChartUpColor;
+            }
+            if (pct < 0.0) {
+                return m_cfg.timelineChartDownColor;
+            }
+            return m_cfg.timelineChartTextColor;
+        };
+
+        bool hasCostProfitText = false;
+        QString costProfitPrefix;
+        QString costProfitPct;
+        int costProfitTotalWidth = 0;
+        QColor costProfitColor = m_cfg.timelineChartTextColor;
+        if (std::isfinite(m_cost) && m_cost > 0.0 && std::isfinite(lastPoint.price)) {
+            const double costProfitPctValue = (lastPoint.price - m_cost) / m_cost * 100.0;
+            costProfitPrefix = i18n::t("popup.timeline.profit", m_resolvedLanguage) + QStringLiteral(": ");
+            costProfitPct = QStringLiteral("%1%").arg(signedNumber(costProfitPctValue, 2));
+            costProfitColor = colorByChange(costProfitPctValue);
+
+            QFont normalFont = painter.font();
+            QFont boldFont = normalFont;
+            boldFont.setBold(true);
+            const QFontMetrics normalFm(normalFont);
+            const QFontMetrics boldFm(boldFont);
+            costProfitTotalWidth = normalFm.horizontalAdvance(costProfitPrefix)
+                + boldFm.horizontalAdvance(costProfitPct);
+            hasCostProfitText = costProfitTotalWidth > 0;
+        }
+
         if (hasPricePath) {
             QPainterPath fillPath = pricePath;
             fillPath.lineTo(lastPriceX, plot.bottom());
@@ -1116,9 +1152,13 @@ protected:
             const int w3 = s3.isEmpty() ? 0 : fm.horizontalAdvance(s3);
             const int totalW = w0 + gap + w1 + gap + w2 + (w3 > 0 ? gap + w3 : 0);
             const int titleAdvance = fm.horizontalAdvance(m_title + QStringLiteral("  "));
+            const int rightReserve = hasCostProfitText ? (costProfitTotalWidth + gap) : 0;
+            const int availableWidth = qMax(0, headerRect.width() - rightReserve);
+            const int contentRight = headerRect.right() - rightReserve;
             int x = (titleAdvance + totalW + 4 <= headerRect.width())
+                && (titleAdvance + totalW + 4 <= availableWidth)
                 ? headerRect.left() + titleAdvance
-                : qMax(headerRect.left(), headerRect.right() - totalW);
+                : qMax(headerRect.left(), contentRight - totalW + 1);
             const int y = headerRect.top();
             const int h = headerRect.height();
             painter.setPen(QPen(trendColor));
@@ -1133,10 +1173,38 @@ protected:
                 painter.drawText(x, y, w3, h, Qt::AlignLeft | Qt::AlignVCenter, s3);
             }
         }
+
+        if (hasCostProfitText) {
+            const int y = headerRect.top();
+            const int h = headerRect.height();
+            const int startX = headerRect.right() - costProfitTotalWidth + 1;
+
+            QFont normalFont = painter.font();
+            QFont boldFont = normalFont;
+            boldFont.setBold(true);
+            const QFontMetrics normalFm(normalFont);
+            const int prefixWidth = normalFm.horizontalAdvance(costProfitPrefix);
+
+            painter.setPen(QPen(costProfitColor));
+            painter.setFont(normalFont);
+            painter.drawText(startX, y, prefixWidth, h, Qt::AlignLeft | Qt::AlignVCenter, costProfitPrefix);
+
+            painter.setFont(boldFont);
+            painter.drawText(
+                startX + prefixWidth,
+                y,
+                costProfitTotalWidth - prefixWidth,
+                h,
+                Qt::AlignLeft | Qt::AlignVCenter,
+                costProfitPct
+            );
+            painter.setFont(normalFont);
+        }
     }
 
 private:
     AppConfig m_cfg;
+    QString m_resolvedLanguage = QStringLiteral("zh_CN");
     QString m_title;
     QString m_code;
     QString m_status;
