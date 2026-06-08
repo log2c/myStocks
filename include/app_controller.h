@@ -121,10 +121,11 @@ private:
 
     Updater* m_updater = nullptr;
 
-    // Gist auto-sync
+    // Gist scheduled sync
     QNetworkAccessManager* m_gistNam = nullptr;
     QFileSystemWatcher* m_dataYamlWatcher = nullptr;
     QTimer* m_gistAutoUploadDebounce = nullptr;
+    bool m_gistSyncPending = false;
     bool m_suppressGistAutoUpload = false;
 
 #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)

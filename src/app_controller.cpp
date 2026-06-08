@@ -328,7 +328,7 @@ AppController::AppController(QObject* parent)
         });
     }
 
-    // Gist auto-sync: watch data.yaml for local changes, and pull on startup.
+    // Gist sync: watch local changes, upload on fixed schedule, and pull on startup.
     m_gistNam = new QNetworkAccessManager(this);
     setupDataYamlWatcher();
     // Startup pull: delay slightly so the tray is ready for notifications.
@@ -1897,10 +1897,11 @@ void AppController::setupDataYamlWatcher() {
 
     m_gistAutoUploadDebounce = new QTimer(this);
     m_gistAutoUploadDebounce->setSingleShot(true);
-    m_gistAutoUploadDebounce->setInterval(3000); // 3 s debounce
+    m_gistAutoUploadDebounce->setInterval(60000);
 
     connect(m_gistAutoUploadDebounce, &QTimer::timeout, this, [this]() {
         doGistAutoUpload();
+        scheduleGistAutoUpload();
     });
 
     connect(m_dataYamlWatcher, &QFileSystemWatcher::fileChanged, this,
@@ -1917,23 +1918,51 @@ void AppController::setupDataYamlWatcher() {
                 return;
             }
 
-            if (m_gistAutoUploadDebounce) {
-                m_gistAutoUploadDebounce->start();
-            }
+            m_gistSyncPending = true;
+            qInfo() << "[Gist] local data.yaml changed, queued for next scheduled sync.";
         }
     );
+
+    scheduleGistAutoUpload();
 
     qInfo() << "[Gist] data.yaml watcher set up for:" << dataPath;
 }
 
 void AppController::scheduleGistAutoUpload() {
-    if (m_gistAutoUploadDebounce) {
-        m_gistAutoUploadDebounce->start();
+    if (!m_gistAutoUploadDebounce) {
+        return;
     }
+
+    const QDateTime now = QDateTime::currentDateTime();
+    const QDate today = now.date();
+    const QDateTime t1130(today, QTime(11, 30));
+    const QDateTime t1500(today, QTime(15, 0));
+
+    QDateTime next;
+    if (now < t1130) {
+        next = t1130;
+    } else if (now < t1500) {
+        next = t1500;
+    } else {
+        next = QDateTime(today.addDays(1), QTime(11, 30));
+    }
+
+    int delayMs = static_cast<int>(now.msecsTo(next));
+    if (delayMs < 1000) {
+        delayMs = 1000;
+    }
+
+    m_gistAutoUploadDebounce->start(delayMs);
+    qInfo() << "[Gist] next scheduled sync at" << next.toString(Qt::ISODate);
 }
 
 void AppController::doGistAutoUpload() {
     if (m_cfg.gistToken.isEmpty() || m_cfg.gistId.isEmpty()) {
+        return;
+    }
+
+    if (!m_gistSyncPending) {
+        qInfo() << "[Gist] scheduled sync skipped: no local changes.";
         return;
     }
 
@@ -2009,6 +2038,7 @@ void AppController::doGistAutoUpload() {
         }
 
         qInfo() << "[Gist] auto-upload succeeded. remoteUpdatedAt=" << remoteUpdatedAt;
+        m_gistSyncPending = false;
         if (m_tray) {
             m_tray->showMessage(
                 i18n::t("app.name", m_resolvedLanguage),
