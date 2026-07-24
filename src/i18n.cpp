@@ -285,7 +285,9 @@ const TranslationMap& translations() {
                 {"popup.marketBreadth.expand", "Expanded"},
                 {"popup.marketBreadth.shrink", "Contracted"},
                 {"popup.marketBreadth.same", "Flat"},
-                {"popup.marketBreadth.vsYesterdayFmt", "vs Yesterday %1"}
+                {"popup.marketBreadth.vsYesterdayFmt", "vs Yesterday %1"},
+                {"popup.timeline.profit", "P/L"},
+                {"popup.timeline.breakevenGain", "Breakeven gain"}
             }
         },
         {
@@ -564,7 +566,9 @@ const TranslationMap& translations() {
                 {"popup.marketBreadth.expand", "放量"},
                 {"popup.marketBreadth.shrink", "缩量"},
                 {"popup.marketBreadth.same", "持平"},
-                {"popup.marketBreadth.vsYesterdayFmt", "比昨日%1"}
+                {"popup.marketBreadth.vsYesterdayFmt", "比昨日%1"},
+                {"popup.timeline.profit", "收益"},
+                {"popup.timeline.breakevenGain", "回本涨幅"}
             }
         }
     };
@@ -642,9 +646,9 @@ QString t(const QString& key, const QString& language) {
 
 QStringList columnNames(const QString& language) {
     if (resolvedLanguageCode(language) == "zh_CN") {
-        return {"代码", "名称", "最新价", "涨跌幅", "涨跌额", "标识", "成本", "收益率"};
+        return {"代码", "名称", "最新价", "涨跌幅", "涨跌额", "标识", "成本", "收益率", "回本涨幅"};
     }
-    return {"Code", "Name", "Price", "Change%", "Change", "Signal", "Cost", "Return%"};
+    return {"Code", "Name", "Price", "Change%", "Change", "Signal", "Cost", "Return%", "Breakeven gain"};
 }
 
 } // namespace i18n

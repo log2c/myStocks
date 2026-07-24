@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(MyStocks VERSION 0.0.5 LANGUAGES CXX)
+project(MyStocks VERSION 0.0.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,6 +26,91 @@ if(APPLE)
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
+
+if(APPLE)
+    # Qt's prebuilt macOS package exports the deprecated AGL framework through
+    # imported link dependencies of several Qt targets, but recent Xcode SDKs
+    # no longer ship AGL.framework, which breaks the final link.
+    #
+    # Strip every form we've seen in the wild:
+    #   * a single joined item  "-framework AGL"
+    #   * two consecutive items "-framework;AGL"
+    # from every relevant link-property on every Qt target that might export it.
+    set(_qt_agl_targets Qt6::Gui Qt6::Widgets Qt6::Core)
+    set(_qt_agl_props
+        INTERFACE_LINK_LIBRARIES
+        IMPORTED_LINK_DEPENDENT_LIBRARIES
+        IMPORTED_LINK_DEPENDENT_LIBRARIES_RELEASE
+        IMPORTED_LINK_DEPENDENT_LIBRARIES_DEBUG
+        IMPORTED_LINK_DEPENDENT_LIBRARIES_RELWITHDEBINFO
+        IMPORTED_LINK_DEPENDENT_LIBRARIES_MINSIZEREL
+        IMPORTED_LINK_INTERFACE_LIBRARIES
+        IMPORTED_LINK_INTERFACE_LIBRARIES_RELEASE
+        IMPORTED_LINK_INTERFACE_LIBRARIES_DEBUG
+        IMPORTED_LINK_INTERFACE_LIBRARIES_RELWITHDEBINFO
+        IMPORTED_LINK_INTERFACE_LIBRARIES_MINSIZEREL
+    )
+    foreach(_qt_target IN LISTS _qt_agl_targets)
+        if(NOT TARGET ${_qt_target})
+            continue()
+        endif()
+        foreach(_qt_prop IN LISTS _qt_agl_props)
+            get_target_property(_qt_libs ${_qt_target} ${_qt_prop})
+            if(NOT _qt_libs OR _qt_libs MATCHES "-NOTFOUND$")
+                continue()
+            endif()
+
+            list(LENGTH _qt_libs _qt_len)
+            set(_qt_libs_filtered "")
+            set(_i 0)
+            set(_stripped FALSE)
+            while(_i LESS _qt_len)
+                list(GET _qt_libs ${_i} _qt_cur)
+                set(_qt_nxt "")
+                math(EXPR _next "${_i} + 1")
+                if(_next LESS _qt_len)
+                    list(GET _qt_libs ${_next} _qt_nxt)
+                endif()
+
+                if(_qt_cur STREQUAL "-framework AGL")
+                    math(EXPR _i "${_i} + 1")
+                    set(_stripped TRUE)
+                elseif(_qt_cur STREQUAL "-framework" AND _qt_nxt STREQUAL "AGL")
+                    math(EXPR _i "${_i} + 2")
+                    set(_stripped TRUE)
+                else()
+                    list(APPEND _qt_libs_filtered "${_qt_cur}")
+                    math(EXPR _i "${_i} + 1")
+                endif()
+            endwhile()
+
+            if(_stripped)
+                message(STATUS "Stripped deprecated AGL from ${_qt_target} ${_qt_prop}")
+                set_property(TARGET ${_qt_target} PROPERTY ${_qt_prop} "${_qt_libs_filtered}")
+            endif()
+        endforeach()
+    endforeach()
+
+    # Bulletproof fallback: build a tiny stub AGL.framework and expose its
+    # containing directory via -F so any residual "-framework AGL" flag
+    # coming from Qt (or a transitive dependency) still resolves at link
+    # time even when the SDK no longer provides the real framework.
+    set(_agl_stub_dir "${CMAKE_BINARY_DIR}/agl_stub")
+    set(_agl_stub_src "${CMAKE_BINARY_DIR}/agl_stub.cpp")
+    if(NOT EXISTS "${_agl_stub_src}")
+        file(WRITE "${_agl_stub_src}"
+            "// Stub AGL implementation for macOS SDKs that no longer ship the deprecated framework.\n"
+        )
+    endif()
+    add_library(AGL_stub SHARED "${_agl_stub_src}")
+    set_target_properties(AGL_stub PROPERTIES
+        FRAMEWORK TRUE
+        OUTPUT_NAME "AGL"
+        FRAMEWORK_VERSION A
+        MACOSX_FRAMEWORK_IDENTIFIER "com.mystocks.agl-stub"
+        LIBRARY_OUTPUT_DIRECTORY "${_agl_stub_dir}"
+    )
+endif()
 
 if(APPLE AND NOT DEFINED yaml-cpp_DIR)
     set(_yaml_cpp_prefix_candidates
@@ -178,6 +263,14 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 if(APPLE)
+    # Ensure the AGL stub framework is built before we link, and put its
+    # directory on the framework search path so any leftover "-framework AGL"
+    # flag from Qt or its dependencies resolves against the stub.
+    if(TARGET AGL_stub)
+        add_dependencies(MyStocks AGL_stub)
+        target_link_options(MyStocks BEFORE PRIVATE "-F${_agl_stub_dir}")
+    endif()
+
     set(MYSTOCKS_MAC_ICON_NAME "MyStocks.icns")
     set(MYSTOCKS_MAC_ICON_SOURCE "${CMAKE_SOURCE_DIR}/assets/icons/icon.png")
     set(MYSTOCKS_MAC_ICONSET_DIR "${CMAKE_CURRENT_BINARY_DIR}/MyStocks.iconset")

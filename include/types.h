@@ -16,6 +16,7 @@ enum QuoteColumn {
     ColIndicator,
     ColCost,
     ColCostPct,
+    ColBreakevenGain,
     ColCount
 };
 
@@ -215,7 +216,8 @@ struct AppConfig {
         {ColChange, false},
         {ColIndicator, false},
         {ColCost, false},
-        {ColCostPct, false}
+        {ColCostPct, false},
+        {ColBreakevenGain, false}
     };
 
     QVector<int> columnOrder {
@@ -226,7 +228,8 @@ struct AppConfig {
         ColChange,
         ColIndicator,
         ColCost,
-        ColCostPct
+        ColCostPct,
+        ColBreakevenGain
     };
 
     // 0 means auto max width based on current column content/header.
@@ -238,7 +241,8 @@ struct AppConfig {
         {ColChange, 0},
         {ColIndicator, 0},
         {ColCost, 0},
-        {ColCostPct, 0}
+        {ColCostPct, 0},
+        {ColBreakevenGain, 0}
     };
 
     bool hoverReadingEnabled = true;

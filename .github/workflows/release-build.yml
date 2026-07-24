@@ -19,7 +19,7 @@ jobs:
           - os: windows-latest
             artifact_name: MyStocks-windows-release
             artifact_platform: windows
-            qt_arch: win64_msvc2019_64
+            qt_arch: win64_msvc2022_64
 
     steps:
       - name: Checkout
@@ -35,7 +35,8 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.7.2'
+          # Qt 6.7.2 links the removed macOS AGL framework on current runners.
+          version: '6.8.3'
           arch: ${{ matrix.qt_arch }}
           cache: true
 

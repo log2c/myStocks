@@ -1,6 +1,7 @@
 #include "timeline_popup.h"
 
 #include "app_constants.h"
+#include "i18n.h"
 #include "watchlist_utils.h"
 
 #include <QDateTime>
@@ -625,6 +626,7 @@ public:
 
     void setConfig(const AppConfig& cfg) {
         m_cfg = cfg;
+        m_resolvedLanguage = i18n::resolveLanguage(m_cfg.language);
         update();
     }
 
@@ -667,16 +669,25 @@ protected:
             return;
         }
 
-        const int headerHeight = 22;
+        const int headerLineHeight = 22;
+        const double headerLastPrice = m_points.isEmpty() ? qQNaN() : m_points.last().price;
+        const bool showBreakevenGain = std::isfinite(m_cost)
+            && m_cost > 0.0
+            && std::isfinite(headerLastPrice)
+            && headerLastPrice > 0.0
+            && headerLastPrice < m_cost;
+        const int headerHeight = showBreakevenGain ? headerLineHeight * 2 : headerLineHeight;
+        const int headerToPlotGap = showBreakevenGain ? 14 : 6;
         const int leftMargin = 56;
         const int rightMargin = 56;
         const int bottomMargin = 28;
-        QRect headerRect(r.left(), r.top(), r.width(), headerHeight);
+        QRect headerRect(r.left(), r.top(), r.width(), headerLineHeight);
+        QRect breakevenGainRect(r.left(), r.top() + headerLineHeight, r.width(), headerLineHeight);
         QRect plot(
             r.left() + leftMargin,
-            r.top() + headerHeight + 6,
+            r.top() + headerHeight + headerToPlotGap,
             r.width() - leftMargin - rightMargin,
-            r.height() - headerHeight - bottomMargin - 6
+            r.height() - headerHeight - bottomMargin - headerToPlotGap
         );
         if (plot.width() < 20 || plot.height() < 20) {
             return;
@@ -1056,6 +1067,53 @@ protected:
             }
         }
 
+        const auto colorByChange = [&](double pct) {
+            if (!std::isfinite(pct)) {
+                return m_cfg.timelineChartTextColor;
+            }
+            if (pct > 0.0) {
+                return m_cfg.timelineChartUpColor;
+            }
+            if (pct < 0.0) {
+                return m_cfg.timelineChartDownColor;
+            }
+            return m_cfg.timelineChartTextColor;
+        };
+
+        bool hasCostProfitText = false;
+        QString costProfitPrefix;
+        QString costProfitPct;
+        QString breakevenGainPrefix;
+        QString breakevenGainPct;
+        int costProfitTotalWidth = 0;
+        int breakevenGainTotalWidth = 0;
+        QColor costProfitColor = m_cfg.timelineChartTextColor;
+        QColor breakevenGainColor = m_cfg.timelineChartTextColor;
+        if (std::isfinite(m_cost) && m_cost > 0.0 && std::isfinite(lastPoint.price)) {
+            const double costProfitPctValue = (lastPoint.price - m_cost) / m_cost * 100.0;
+            costProfitPrefix = i18n::t("popup.timeline.profit", m_resolvedLanguage) + QStringLiteral(": ");
+            costProfitPct = QStringLiteral("%1%").arg(signedNumber(costProfitPctValue, 2));
+            costProfitColor = colorByChange(costProfitPctValue);
+            if (costProfitPctValue < 0.0 && lastPoint.price > 0.0) {
+                const double breakevenGainPctValue = (m_cost / lastPoint.price - 1.0) * 100.0;
+                breakevenGainPrefix = i18n::t("popup.timeline.breakevenGain", m_resolvedLanguage)
+                    + QStringLiteral(": ");
+                breakevenGainPct = QStringLiteral("%1%").arg(signedNumber(breakevenGainPctValue, 2));
+                breakevenGainColor = colorByChange(breakevenGainPctValue);
+            }
+
+            QFont normalFont = painter.font();
+            QFont boldFont = normalFont;
+            boldFont.setBold(true);
+            const QFontMetrics normalFm(normalFont);
+            const QFontMetrics boldFm(boldFont);
+            costProfitTotalWidth = normalFm.horizontalAdvance(costProfitPrefix)
+                + boldFm.horizontalAdvance(costProfitPct);
+            breakevenGainTotalWidth = normalFm.horizontalAdvance(breakevenGainPrefix)
+                + boldFm.horizontalAdvance(breakevenGainPct);
+            hasCostProfitText = costProfitTotalWidth > 0;
+        }
+
         if (hasPricePath) {
             QPainterPath fillPath = pricePath;
             fillPath.lineTo(lastPriceX, plot.bottom());
@@ -1115,12 +1173,22 @@ protected:
             const int w2 = fm.horizontalAdvance(s2);
             const int w3 = s3.isEmpty() ? 0 : fm.horizontalAdvance(s3);
             const int totalW = w0 + gap + w1 + gap + w2 + (w3 > 0 ? gap + w3 : 0);
+            const bool hasBreakevenGainText = breakevenGainTotalWidth > 0;
+            const QRect& marketInfoRect = hasBreakevenGainText ? breakevenGainRect : headerRect;
             const int titleAdvance = fm.horizontalAdvance(m_title + QStringLiteral("  "));
-            int x = (titleAdvance + totalW + 4 <= headerRect.width())
-                ? headerRect.left() + titleAdvance
-                : qMax(headerRect.left(), headerRect.right() - totalW);
-            const int y = headerRect.top();
-            const int h = headerRect.height();
+            const int rightReserve = hasBreakevenGainText
+                ? (breakevenGainTotalWidth + gap)
+                : (hasCostProfitText ? (costProfitTotalWidth + gap) : 0);
+            const int availableWidth = qMax(0, marketInfoRect.width() - rightReserve);
+            const int contentRight = marketInfoRect.right() - rightReserve;
+            int x = hasBreakevenGainText
+                ? marketInfoRect.left()
+                : ((titleAdvance + totalW + 4 <= marketInfoRect.width())
+                    && (titleAdvance + totalW + 4 <= availableWidth)
+                    ? marketInfoRect.left() + titleAdvance
+                    : qMax(marketInfoRect.left(), contentRight - totalW + 1));
+            const int y = marketInfoRect.top();
+            const int h = marketInfoRect.height();
             painter.setPen(QPen(trendColor));
             painter.drawText(x, y, w0, h, Qt::AlignLeft | Qt::AlignVCenter, s0);
             x += w0 + gap;
@@ -1133,10 +1201,62 @@ protected:
                 painter.drawText(x, y, w3, h, Qt::AlignLeft | Qt::AlignVCenter, s3);
             }
         }
+
+        if (hasCostProfitText) {
+            const int y = headerRect.top();
+            const int startX = headerRect.right() - costProfitTotalWidth + 1;
+
+            QFont normalFont = painter.font();
+            QFont boldFont = normalFont;
+            boldFont.setBold(true);
+            const QFontMetrics normalFm(normalFont);
+            const int prefixWidth = normalFm.horizontalAdvance(costProfitPrefix);
+            const int profitPctWidth = QFontMetrics(boldFont).horizontalAdvance(costProfitPct);
+
+            painter.setPen(QPen(costProfitColor));
+            painter.setFont(normalFont);
+            painter.drawText(startX, y, prefixWidth, headerRect.height(), Qt::AlignLeft | Qt::AlignVCenter, costProfitPrefix);
+
+            painter.setFont(boldFont);
+            painter.drawText(
+                startX + prefixWidth,
+                y,
+                profitPctWidth,
+                headerRect.height(),
+                Qt::AlignLeft | Qt::AlignVCenter,
+                costProfitPct
+            );
+            painter.setFont(normalFont);
+
+            if (breakevenGainTotalWidth > 0) {
+                const int breakevenStartX = breakevenGainRect.right() - breakevenGainTotalWidth + 1;
+                const int breakevenPrefixWidth = normalFm.horizontalAdvance(breakevenGainPrefix);
+                painter.setPen(QPen(breakevenGainColor));
+                painter.drawText(
+                    breakevenStartX,
+                    breakevenGainRect.top(),
+                    breakevenPrefixWidth,
+                    breakevenGainRect.height(),
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    breakevenGainPrefix
+                );
+                painter.setFont(boldFont);
+                painter.drawText(
+                    breakevenStartX + breakevenPrefixWidth,
+                    breakevenGainRect.top(),
+                    QFontMetrics(boldFont).horizontalAdvance(breakevenGainPct),
+                    breakevenGainRect.height(),
+                    Qt::AlignLeft | Qt::AlignVCenter,
+                    breakevenGainPct
+                );
+                painter.setFont(normalFont);
+            }
+        }
     }
 
 private:
     AppConfig m_cfg;
+    QString m_resolvedLanguage = QStringLiteral("zh_CN");
     QString m_title;
     QString m_code;
     QString m_status;

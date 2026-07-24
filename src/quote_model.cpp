@@ -111,6 +111,14 @@ QString formatNetInflowYi(double value) {
     return text;
 }
 
+bool hasBreakevenGain(const QuoteItem& quote) {
+    return std::isfinite(quote.cost)
+        && quote.cost > 0.0
+        && std::isfinite(quote.price)
+        && quote.price > 0.0
+        && quote.price < quote.cost;
+}
+
 } // namespace
 
 QuoteModel::QuoteModel(QObject* parent)
@@ -246,6 +254,11 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
             const double costPct = (q.price - q.cost) / q.cost * 100.0;
             return formatSigned(costPct, 2, true);
         }
+        case ColBreakevenGain: {
+            if (!hasBreakevenGain(q)) return QString();
+            const double breakevenGainPct = (q.cost / q.price - 1.0) * 100.0;
+            return formatSigned(breakevenGainPct, 2, true);
+        }
         default:
             return {};
         }
@@ -299,6 +312,9 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
             if (costPct > 0.0) return m_cfg.upColor;
             if (costPct < 0.0) return m_cfg.downColor;
             return m_cfg.flatColor;
+        }
+        if (index.column() == ColBreakevenGain) {
+            return hasBreakevenGain(q) ? m_cfg.upColor : defaultText;
         }
         if (index.column() >= ColPrice) {
             if (std::isnan(q.pct)) {
