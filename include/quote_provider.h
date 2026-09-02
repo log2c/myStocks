@@ -46,6 +46,7 @@ private:
 
 private:
     QNetworkAccessManager m_nam;
+    QNetworkReply* m_activeReply = nullptr;
     int m_pendingRequests = 0;
     QStringList m_errors;
     QHash<QString, QuoteItem> m_buffer;

@@ -495,6 +495,17 @@ EastMoneyQuoteProvider::EastMoneyQuoteProvider(QObject* parent)
     : IQuoteProvider(parent) {}
 
 void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
+    // Ensure only one in-flight polling request at a time: cancel any previous
+    // request (e.g. one that is timing out) so its stale handler cannot run and
+    // corrupt the shared buffer with an overlapping response.
+    if (m_activeReply) {
+        QNetworkReply* stale = m_activeReply;
+        m_activeReply = nullptr;
+        disconnect(stale, nullptr, this, nullptr);
+        stale->abort();
+        stale->deleteLater();
+    }
+
     m_nam.setProxy(m_proxy);
     m_pendingRequests = 0;
     m_errors.clear();
@@ -552,9 +563,17 @@ void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
     );
 
     QNetworkReply* reply = m_nam.get(req);
+    m_activeReply = reply;
     ++m_pendingRequests;
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, requestMap, trace]() {
+        if (m_activeReply != reply) {
+            // Superseded/aborted by a newer request; ignore this stale response.
+            reply->deleteLater();
+            return;
+        }
+        m_activeReply = nullptr;
+
         const QString err = (reply->error() == QNetworkReply::NoError)
             ? QString()
             : reply->errorString();
