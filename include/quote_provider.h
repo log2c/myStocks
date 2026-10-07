@@ -38,16 +38,47 @@ public:
 private:
     static QString toSecId(const QString& rawCode);
     static double firstNumber(const QJsonObject& obj, const QStringList& keys);
-    void handleResponse(
+    void requestEastMoney(
         const QHash<QString, StockItem>& requestMap,
+        int hostIndex
+    );
+    void handleEastMoneyResponse(
+        const QHash<QString, StockItem>& requestMap,
+        int hostIndex,
         const QByteArray& body,
         const QString& errorText
     );
+    void requestTencent(
+        const QHash<QString, StockItem>& requestMap,
+        QHash<QString, StockItem> fallbackMap = {}
+    );
+    void handleTencentResponse(
+        const QHash<QString, StockItem>& batchMap,
+        QHash<QString, StockItem> remainingMap,
+        QHash<QString, StockItem> fallbackMap,
+        const QByteArray& body,
+        const QString& errorText
+    );
+    void requestSina(
+        const QHash<QString, StockItem>& requestMap,
+        QHash<QString, StockItem> fallbackMap = {}
+    );
+    void handleSinaResponse(
+        const QHash<QString, StockItem>& batchMap,
+        QHash<QString, StockItem> remainingMap,
+        QHash<QString, StockItem> fallbackMap,
+        const QByteArray& body,
+        const QString& errorText
+    );
+    QHash<QString, StockItem> unresolvedFrom(
+        const QHash<QString, StockItem>& requestMap
+    ) const;
+    void finishFetch();
 
 private:
     QNetworkAccessManager m_nam;
     QNetworkReply* m_activeReply = nullptr;
-    int m_pendingRequests = 0;
+    QString m_activeRequestKey;
     QStringList m_errors;
     QHash<QString, QuoteItem> m_buffer;
 };

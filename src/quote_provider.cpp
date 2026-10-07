@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace {
 
@@ -475,6 +476,62 @@ const QVector<QPair<QString, QString>>& indexQuoteConfig() {
     return kConfig;
 }
 
+const QStringList& eastMoneyQuoteHosts() {
+    static const QStringList kHosts = {
+        QStringLiteral("push2.eastmoney.com"),
+        QStringLiteral("push2delay.eastmoney.com"),
+        QStringLiteral("push2delay2.eastmoney.com"),
+    };
+    return kHosts;
+}
+
+QString tencentSymbolForSecId(const QString& secId) {
+    const QStringList parts = secIdKey(secId).split(QLatin1Char('.'));
+    if (parts.size() != 2 || parts.at(1).isEmpty()) {
+        return {};
+    }
+    if (parts.at(0) == QLatin1String("1")) {
+        return QStringLiteral("sh") + parts.at(1);
+    }
+    if (parts.at(0) == QLatin1String("0")) {
+        return QStringLiteral("sz") + parts.at(1);
+    }
+    if (parts.at(0) == QLatin1String("116")) {
+        return QStringLiteral("hk") + parts.at(1);
+    }
+    return {};
+}
+
+QString sinaSymbolForSecId(const QString& secId) {
+    const QString symbol = tencentSymbolForSecId(secId);
+    if (symbol.startsWith(QLatin1String("hk"))) {
+        return QStringLiteral("rt_") + symbol;
+    }
+    return symbol;
+}
+
+bool parseAsciiDouble(const QByteArray& value, double* result) {
+    bool ok = false;
+    const double parsed = value.trimmed().toDouble(&ok);
+    if (!ok || !std::isfinite(parsed)) {
+        return false;
+    }
+    *result = parsed;
+    return true;
+}
+
+QuoteItem quoteFromPrices(const StockItem& stock, double price, double previousClose) {
+    QuoteItem quote;
+    quote.code = stock.code;
+    quote.name = stock.name;
+    quote.price = price;
+    quote.change = price - previousClose;
+    quote.pct = qFuzzyIsNull(previousClose)
+        ? 0.0
+        : (quote.change / previousClose * 100.0);
+    return quote;
+}
+
 } // namespace
 
 IQuoteProvider::IQuoteProvider(QObject* parent)
@@ -495,22 +552,6 @@ EastMoneyQuoteProvider::EastMoneyQuoteProvider(QObject* parent)
     : IQuoteProvider(parent) {}
 
 void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
-    // Ensure only one in-flight polling request at a time: cancel any previous
-    // request (e.g. one that is timing out) so its stale handler cannot run and
-    // corrupt the shared buffer with an overlapping response.
-    if (m_activeReply) {
-        QNetworkReply* stale = m_activeReply;
-        m_activeReply = nullptr;
-        disconnect(stale, nullptr, this, nullptr);
-        stale->abort();
-        stale->deleteLater();
-    }
-
-    m_nam.setProxy(m_proxy);
-    m_pendingRequests = 0;
-    m_errors.clear();
-    m_buffer.clear();
-
     QStringList secIds;
     secIds.reserve(stocks.size());
 
@@ -537,7 +578,41 @@ void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
         return;
     }
 
-    QUrl url("https://push2delay.eastmoney.com/api/qt/ulist.np/get");
+    std::sort(secIds.begin(), secIds.end());
+    const QString requestKey = secIds.join(QLatin1Char(','));
+    if (m_activeReply && m_activeRequestKey == requestKey) {
+        return;
+    }
+
+    if (m_activeReply) {
+        QNetworkReply* stale = m_activeReply;
+        m_activeReply = nullptr;
+        disconnect(stale, nullptr, this, nullptr);
+        stale->abort();
+        stale->deleteLater();
+    }
+
+    m_nam.setProxy(m_proxy);
+    m_activeRequestKey = requestKey;
+    m_errors.clear();
+    m_buffer.clear();
+    requestEastMoney(requestMap, 0);
+}
+
+void EastMoneyQuoteProvider::requestEastMoney(
+    const QHash<QString, StockItem>& requestMap,
+    int hostIndex
+) {
+    const QStringList& hosts = eastMoneyQuoteHosts();
+    if (requestMap.isEmpty() || hostIndex < 0 || hostIndex >= hosts.size()) {
+        finishFetch();
+        return;
+    }
+
+    QStringList secIds = requestMap.keys();
+    std::sort(secIds.begin(), secIds.end());
+
+    QUrl url(QStringLiteral("https://%1/api/qt/ulist.np/get").arg(hosts.at(hostIndex)));
     QUrlQuery query;
     query.addQueryItem("secids", secIds.join(','));
     query.addQueryItem(
@@ -556,7 +631,7 @@ void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
     req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
 
     const network_logger::RequestTrace trace = network_logger::logRequestStart(
-        "eastmoney",
+        QStringLiteral("eastmoney-quote"),
         "GET",
         req,
         m_proxy
@@ -564,11 +639,10 @@ void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
 
     QNetworkReply* reply = m_nam.get(req);
     m_activeReply = reply;
-    ++m_pendingRequests;
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply, requestMap, trace]() {
+    connect(reply, &QNetworkReply::finished, this,
+        [this, reply, requestMap, hostIndex, trace]() {
         if (m_activeReply != reply) {
-            // Superseded/aborted by a newer request; ignore this stale response.
             reply->deleteLater();
             return;
         }
@@ -582,7 +656,7 @@ void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
         network_logger::logRequestFinish(trace, reply, body.size(), body);
 
         reply->deleteLater();
-        handleResponse(requestMap, body, err);
+        handleEastMoneyResponse(requestMap, hostIndex, body, err);
     });
 }
 
@@ -702,29 +776,32 @@ double EastMoneyQuoteProvider::firstNumber(const QJsonObject& obj, const QString
     return firstNumberFromObject(obj, keys);
 }
 
-void EastMoneyQuoteProvider::handleResponse(
+void EastMoneyQuoteProvider::handleEastMoneyResponse(
     const QHash<QString, StockItem>& requestMap,
+    int hostIndex,
     const QByteArray& body,
     const QString& errorText
 ) {
+    const QString host = eastMoneyQuoteHosts().value(hostIndex);
+    const qsizetype previousSize = m_buffer.size();
     if (!errorText.isEmpty()) {
-        m_errors << QString("eastmoney request failed: %1").arg(errorText);
+        m_errors << QString("%1 request failed: %2").arg(host, errorText);
     } else {
         QJsonParseError pe;
         const QJsonDocument doc = QJsonDocument::fromJson(body, &pe);
         if (pe.error != QJsonParseError::NoError) {
-            m_errors << QString("eastmoney json parse error: %1").arg(pe.errorString());
+            m_errors << QString("%1 json parse error: %2").arg(host, pe.errorString());
         } else if (!doc.isObject()) {
-            m_errors << QStringLiteral("eastmoney invalid payload");
+            m_errors << QString("%1 invalid payload").arg(host);
         } else {
             const QJsonObject root = doc.object();
             const int rc = root.value("rc").toInt(0);
             if (root.contains("rc") && rc != 0) {
                 const QString rcMsg = firstNonEmptyStringFromObject(root, {"msg", "message"});
                 const QString suffix = rcMsg.isEmpty() ? QString() : (" msg=" + rcMsg);
-                m_errors << QString("eastmoney rc=%1%2").arg(rc).arg(suffix);
+                m_errors << QString("%1 rc=%2%3").arg(host).arg(rc).arg(suffix);
             } else if (!root.value("data").isObject()) {
-                m_errors << QStringLiteral("eastmoney data missing");
+                m_errors << QString("%1 data missing").arg(host);
             } else {
                 const QJsonObject data = root.value("data").toObject();
                 const QVector<QJsonObject> diff = extractDiffObjects(data.value("diff"));
@@ -757,7 +834,7 @@ void EastMoneyQuoteProvider::handleResponse(
                     const double changeRaw = firstNumber(row, {"f4", "f169"});
 
                     if (std::isnan(lastRaw)) {
-                        m_errors << QString("%1: eastmoney missing price field").arg(stock.code);
+                        m_errors << QString("%1: %2 missing price field").arg(stock.code, host);
                         continue;
                     }
 
@@ -769,7 +846,7 @@ void EastMoneyQuoteProvider::handleResponse(
                     const double pre = isFuture ? preRaw : normalizeEastMoneyPrice(preRaw);
 
                     if (std::isnan(last) || std::isnan(pre)) {
-                        m_errors << QString("%1: eastmoney invalid price fields").arg(stock.code);
+                        m_errors << QString("%1: %2 invalid price fields").arg(stock.code, host);
                         continue;
                     }
 
@@ -793,20 +870,310 @@ void EastMoneyQuoteProvider::handleResponse(
                     m_buffer.insert(q.code, q);
                 }
 
-                if (diff.isEmpty() && m_buffer.isEmpty()) {
-                    m_errors << QStringLiteral("eastmoney diff missing or empty");
+                if (diff.isEmpty() && m_buffer.size() == previousSize) {
+                    m_errors << QString("%1 diff missing or empty").arg(host);
                 }
             }
         }
     }
 
-    --m_pendingRequests;
-    if (m_pendingRequests <= 0) {
-        if (m_buffer.isEmpty() && !m_errors.isEmpty()) {
-            emit error("eastmoney: " + m_errors.join(" | "));
-        }
-        emit quotesReady(toVector(m_buffer));
+    const QHash<QString, StockItem> unresolved = unresolvedFrom(requestMap);
+    if (unresolved.isEmpty()) {
+        finishFetch();
+    } else if (hostIndex == 0) {
+        requestTencent(unresolved);
+    } else if (hostIndex + 1 < eastMoneyQuoteHosts().size()) {
+        requestEastMoney(unresolved, hostIndex + 1);
+    } else {
+        finishFetch();
     }
+}
+
+void EastMoneyQuoteProvider::requestTencent(
+    const QHash<QString, StockItem>& requestMap,
+    QHash<QString, StockItem> fallbackMap
+) {
+    QHash<QString, StockItem> batchMap;
+    QHash<QString, StockItem> remainingMap;
+    QStringList symbols;
+
+    for (auto it = requestMap.constBegin(); it != requestMap.constEnd(); ++it) {
+        const QString symbol = tencentSymbolForSecId(it.key());
+        if (symbol.isEmpty()) {
+            fallbackMap.insert(it.key(), it.value());
+            continue;
+        }
+        if (symbols.size() >= 100) {
+            remainingMap.insert(it.key(), it.value());
+            continue;
+        }
+        symbols.push_back(symbol);
+        batchMap.insert(it.key(), it.value());
+    }
+
+    if (symbols.isEmpty()) {
+        requestSina(fallbackMap);
+        return;
+    }
+
+    QUrl url(QStringLiteral("https://qt.gtimg.cn/"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("q"), symbols.join(QLatin1Char(',')));
+    url.setQuery(query);
+
+    QNetworkRequest req(url);
+    req.setRawHeader(headers::kUserAgent, m_userAgent.toUtf8());
+    req.setRawHeader(headers::kReferer, "https://stock.qq.com/");
+    req.setRawHeader(headers::kAccept, "*/*");
+    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
+
+    const network_logger::RequestTrace trace = network_logger::logRequestStart(
+        QStringLiteral("tencent-quote"), "GET", req, m_proxy
+    );
+    QNetworkReply* reply = m_nam.get(req);
+    m_activeReply = reply;
+
+    connect(reply, &QNetworkReply::finished, this,
+        [this, reply, batchMap, remainingMap, fallbackMap, trace]() mutable {
+        if (m_activeReply != reply) {
+            reply->deleteLater();
+            return;
+        }
+        m_activeReply = nullptr;
+        const QString err = (reply->error() == QNetworkReply::NoError)
+            ? QString()
+            : reply->errorString();
+        const QByteArray body = reply->readAll();
+        network_logger::logRequestFinish(trace, reply, body.size(), body);
+        reply->deleteLater();
+        handleTencentResponse(
+            batchMap,
+            std::move(remainingMap),
+            std::move(fallbackMap),
+            body,
+            err
+        );
+    });
+}
+
+void EastMoneyQuoteProvider::handleTencentResponse(
+    const QHash<QString, StockItem>& batchMap,
+    QHash<QString, StockItem> remainingMap,
+    QHash<QString, StockItem> fallbackMap,
+    const QByteArray& body,
+    const QString& errorText
+) {
+    if (!errorText.isEmpty()) {
+        m_errors << QString("tencent request failed: %1").arg(errorText);
+    } else {
+        const QList<QByteArray> lines = body.split('\n');
+        for (QByteArray line : lines) {
+            line = line.trimmed();
+            const qsizetype equals = line.indexOf('=');
+            if (!line.startsWith("v_") || equals <= 2) {
+                continue;
+            }
+
+            const QString symbol = QString::fromLatin1(line.mid(2, equals - 2));
+            StockItem stock;
+            QString secId;
+            for (auto it = batchMap.constBegin(); it != batchMap.constEnd(); ++it) {
+                if (tencentSymbolForSecId(it.key()) == symbol) {
+                    secId = it.key();
+                    stock = it.value();
+                    break;
+                }
+            }
+            if (secId.isEmpty()) {
+                continue;
+            }
+
+            const qsizetype firstQuote = line.indexOf('"', equals);
+            const qsizetype lastQuote = line.lastIndexOf('"');
+            if (firstQuote < 0 || lastQuote <= firstQuote) {
+                continue;
+            }
+            const QList<QByteArray> fields = line.mid(firstQuote + 1, lastQuote - firstQuote - 1).split('~');
+            double price = 0.0;
+            double previousClose = 0.0;
+            if (fields.size() <= 4
+                || !parseAsciiDouble(fields.at(3), &price)
+                || !parseAsciiDouble(fields.at(4), &previousClose)
+                || price <= 0.0) {
+                continue;
+            }
+            m_buffer.insert(stock.code, quoteFromPrices(stock, price, previousClose));
+        }
+    }
+
+    const QHash<QString, StockItem> unresolved = unresolvedFrom(batchMap);
+    for (auto it = unresolved.constBegin(); it != unresolved.constEnd(); ++it) {
+        fallbackMap.insert(it.key(), it.value());
+    }
+
+    if (!remainingMap.isEmpty()) {
+        requestTencent(remainingMap, std::move(fallbackMap));
+    } else if (!fallbackMap.isEmpty()) {
+        requestSina(fallbackMap);
+    } else {
+        finishFetch();
+    }
+}
+
+void EastMoneyQuoteProvider::requestSina(
+    const QHash<QString, StockItem>& requestMap,
+    QHash<QString, StockItem> fallbackMap
+) {
+    QHash<QString, StockItem> batchMap;
+    QHash<QString, StockItem> remainingMap;
+    QStringList symbols;
+
+    for (auto it = requestMap.constBegin(); it != requestMap.constEnd(); ++it) {
+        const QString symbol = sinaSymbolForSecId(it.key());
+        if (symbol.isEmpty()) {
+            fallbackMap.insert(it.key(), it.value());
+            continue;
+        }
+        if (symbols.size() >= 100) {
+            remainingMap.insert(it.key(), it.value());
+            continue;
+        }
+        symbols.push_back(symbol);
+        batchMap.insert(it.key(), it.value());
+    }
+
+    if (symbols.isEmpty()) {
+        requestEastMoney(fallbackMap, 1);
+        return;
+    }
+
+    QUrl url(QStringLiteral("https://hq.sinajs.cn/list="));
+    url.setPath(url.path() + symbols.join(QLatin1Char(',')));
+
+    QNetworkRequest req(url);
+    req.setRawHeader(headers::kUserAgent, m_userAgent.toUtf8());
+    req.setRawHeader(headers::kReferer, "https://finance.sina.com.cn/");
+    req.setRawHeader(headers::kAccept, "*/*");
+    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
+
+    const network_logger::RequestTrace trace = network_logger::logRequestStart(
+        QStringLiteral("sina-quote"), "GET", req, m_proxy
+    );
+    QNetworkReply* reply = m_nam.get(req);
+    m_activeReply = reply;
+
+    connect(reply, &QNetworkReply::finished, this,
+        [this, reply, batchMap, remainingMap, fallbackMap, trace]() mutable {
+        if (m_activeReply != reply) {
+            reply->deleteLater();
+            return;
+        }
+        m_activeReply = nullptr;
+        const QString err = (reply->error() == QNetworkReply::NoError)
+            ? QString()
+            : reply->errorString();
+        const QByteArray body = reply->readAll();
+        network_logger::logRequestFinish(trace, reply, body.size(), body);
+        reply->deleteLater();
+        handleSinaResponse(
+            batchMap,
+            std::move(remainingMap),
+            std::move(fallbackMap),
+            body,
+            err
+        );
+    });
+}
+
+void EastMoneyQuoteProvider::handleSinaResponse(
+    const QHash<QString, StockItem>& batchMap,
+    QHash<QString, StockItem> remainingMap,
+    QHash<QString, StockItem> fallbackMap,
+    const QByteArray& body,
+    const QString& errorText
+) {
+    if (!errorText.isEmpty()) {
+        m_errors << QString("sina request failed: %1").arg(errorText);
+    } else {
+        const QList<QByteArray> lines = body.split('\n');
+        for (QByteArray line : lines) {
+            line = line.trimmed();
+            const QByteArray prefix("var hq_str_");
+            const qsizetype equals = line.indexOf('=');
+            if (!line.startsWith(prefix) || equals <= prefix.size()) {
+                continue;
+            }
+
+            const QString symbol = QString::fromLatin1(line.mid(prefix.size(), equals - prefix.size()));
+            StockItem stock;
+            QString secId;
+            for (auto it = batchMap.constBegin(); it != batchMap.constEnd(); ++it) {
+                if (sinaSymbolForSecId(it.key()) == symbol) {
+                    secId = it.key();
+                    stock = it.value();
+                    break;
+                }
+            }
+            if (secId.isEmpty()) {
+                continue;
+            }
+
+            const qsizetype firstQuote = line.indexOf('"', equals);
+            const qsizetype lastQuote = line.lastIndexOf('"');
+            if (firstQuote < 0 || lastQuote <= firstQuote) {
+                continue;
+            }
+            const QList<QByteArray> fields = line.mid(firstQuote + 1, lastQuote - firstQuote - 1).split(',');
+            const bool hongKong = symbol.startsWith(QLatin1String("rt_hk"));
+            const qsizetype priceIndex = hongKong ? 6 : 3;
+            const qsizetype previousCloseIndex = hongKong ? 3 : 2;
+            double price = 0.0;
+            double previousClose = 0.0;
+            if (fields.size() <= qMax(priceIndex, previousCloseIndex)
+                || !parseAsciiDouble(fields.at(priceIndex), &price)
+                || !parseAsciiDouble(fields.at(previousCloseIndex), &previousClose)
+                || price <= 0.0) {
+                continue;
+            }
+            m_buffer.insert(stock.code, quoteFromPrices(stock, price, previousClose));
+        }
+    }
+
+    const QHash<QString, StockItem> unresolved = unresolvedFrom(batchMap);
+    for (auto it = unresolved.constBegin(); it != unresolved.constEnd(); ++it) {
+        fallbackMap.insert(it.key(), it.value());
+    }
+
+    if (!remainingMap.isEmpty()) {
+        requestSina(remainingMap, std::move(fallbackMap));
+    } else if (!fallbackMap.isEmpty()) {
+        requestEastMoney(fallbackMap, 1);
+    } else {
+        finishFetch();
+    }
+}
+
+QHash<QString, StockItem> EastMoneyQuoteProvider::unresolvedFrom(
+    const QHash<QString, StockItem>& requestMap
+) const {
+    QHash<QString, StockItem> unresolved;
+    for (auto it = requestMap.constBegin(); it != requestMap.constEnd(); ++it) {
+        if (!m_buffer.contains(it.value().code)) {
+            unresolved.insert(it.key(), it.value());
+        }
+    }
+    return unresolved;
+}
+
+void EastMoneyQuoteProvider::finishFetch() {
+    m_activeRequestKey.clear();
+    if (m_buffer.isEmpty()) {
+        if (m_errors.isEmpty()) {
+            m_errors << QStringLiteral("all quote providers returned no usable data");
+        }
+        emit error("quotes: " + m_errors.join(" | "));
+    }
+    emit quotesReady(toVector(m_buffer));
 }
 
 EastMoneyHotRankProvider::EastMoneyHotRankProvider(QObject* parent)
