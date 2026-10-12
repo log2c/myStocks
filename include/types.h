@@ -164,6 +164,16 @@ inline QString normalizeHotRankSortOrder(const QString& rawOrder) {
     return QStringLiteral("desc");
 }
 
+inline QString normalizeQuoteApi(const QString& rawApi) {
+    const QString api = rawApi.trimmed().toLower();
+    if (api == QLatin1String("tencent")
+        || api == QLatin1String("sina")
+        || api == QLatin1String("ahfun")) {
+        return api;
+    }
+    return QStringLiteral("default");
+}
+
 struct AppConfig {
     int pollMs = 3000;
     double opacity = 0.9;
@@ -173,6 +183,7 @@ struct AppConfig {
     QString language = "auto";
 
     QString userAgent = defaultChrome100UserAgent();
+    QString quoteApi = "default";
     QString proxyType = "none";
     QString proxyHost;
     int proxyPort = 0;
@@ -254,11 +265,11 @@ struct AppConfig {
     bool marketBreadthEnabled = true;
     int marketBreadthRefreshSecs = 10;
     bool timelineChartFixedRangeEnabled = false;
-    QColor timelineChartBgColor = QColor(14, 18, 24, 238);
-    QColor timelineChartGridColor = QColor(255, 255, 255, 45);
+    QColor timelineChartBgColor = QColor(255, 255, 255);
+    QColor timelineChartGridColor = QColor(80, 80, 80, 55);
     QColor timelineChartPriceLineColor = QColor("#3cb2ef");
     QColor timelineChartAvgLineColor = QColor(229, 194, 104);
-    QColor timelineChartTextColor = QColor(236, 240, 245);
+    QColor timelineChartTextColor = QColor(32, 33, 36);
     QColor timelineChartUpColor = QColor(255, 89, 94);
     QColor timelineChartDownColor = QColor(78, 186, 112);
     bool hotRankEnabled = false;

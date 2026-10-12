@@ -22,6 +22,8 @@
 
 namespace {
 
+inline constexpr int kAhFunQuoteRequestTimeoutMs = 20000;
+
 struct SharedHotRankCacheEntry {
     QVector<HotRankItem> items;
     QString requestKey;
@@ -551,6 +553,16 @@ void IQuoteProvider::applyConfig(const AppConfig& cfg) {
 EastMoneyQuoteProvider::EastMoneyQuoteProvider(QObject* parent)
     : IQuoteProvider(parent) {}
 
+void EastMoneyQuoteProvider::applyConfig(const AppConfig& cfg) {
+    IQuoteProvider::applyConfig(cfg);
+    const QString api = normalizeQuoteApi(cfg.quoteApi);
+    if (api != m_quoteApi) {
+        m_quoteApi = api;
+        m_currentApi = api == QLatin1String("default") ? QStringLiteral("tencent") : api;
+        m_consecutiveFailures = 0;
+    }
+}
+
 void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
     QStringList secIds;
     secIds.reserve(stocks.size());
@@ -596,13 +608,27 @@ void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
     m_activeRequestKey = requestKey;
     m_errors.clear();
     m_buffer.clear();
-    requestEastMoney(requestMap, 0);
+    m_primaryCodes.clear();
+    m_primaryCompleted = false;
+    for (auto it = requestMap.constBegin(); it != requestMap.constEnd(); ++it) {
+        if (!tencentSymbolForSecId(it.key()).isEmpty()) {
+            m_primaryCodes.push_back(it.value().code);
+        }
+    }
+    if (m_currentApi == QLatin1String("sina")) {
+        requestSina(requestMap);
+    } else if (m_currentApi == QLatin1String("ahfun")) {
+        requestAhFun(requestMap);
+    } else {
+        requestTencent(requestMap);
+    }
 }
 
 void EastMoneyQuoteProvider::requestEastMoney(
     const QHash<QString, StockItem>& requestMap,
     int hostIndex
 ) {
+    completePrimaryRequest();
     const QStringList& hosts = eastMoneyQuoteHosts();
     if (requestMap.isEmpty() || hostIndex < 0 || hostIndex >= hosts.size()) {
         finishFetch();
@@ -912,20 +938,19 @@ void EastMoneyQuoteProvider::requestTencent(
     }
 
     if (symbols.isEmpty()) {
-        requestSina(fallbackMap);
+        requestEastMoney(fallbackMap, 1);
         return;
     }
 
-    QUrl url(QStringLiteral("https://qt.gtimg.cn/"));
-    QUrlQuery query;
-    query.addQueryItem(QStringLiteral("q"), symbols.join(QLatin1Char(',')));
-    url.setQuery(query);
+    std::sort(symbols.begin(), symbols.end());
+    QUrl url(QStringLiteral("https://qt.gtimg.cn/q="));
+    url.setPath(url.path() + symbols.join(QLatin1Char(',')));
 
     QNetworkRequest req(url);
     req.setRawHeader(headers::kUserAgent, m_userAgent.toUtf8());
     req.setRawHeader(headers::kReferer, "https://stock.qq.com/");
     req.setRawHeader(headers::kAccept, "*/*");
-    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
+    req.setTransferTimeout(kAhFunQuoteRequestTimeoutMs);
 
     const network_logger::RequestTrace trace = network_logger::logRequestStart(
         QStringLiteral("tencent-quote"), "GET", req, m_proxy
@@ -1014,7 +1039,7 @@ void EastMoneyQuoteProvider::handleTencentResponse(
     if (!remainingMap.isEmpty()) {
         requestTencent(remainingMap, std::move(fallbackMap));
     } else if (!fallbackMap.isEmpty()) {
-        requestSina(fallbackMap);
+        fallbackFromTencent(fallbackMap);
     } else {
         finishFetch();
     }
@@ -1054,7 +1079,7 @@ void EastMoneyQuoteProvider::requestSina(
     req.setRawHeader(headers::kUserAgent, m_userAgent.toUtf8());
     req.setRawHeader(headers::kReferer, "https://finance.sina.com.cn/");
     req.setRawHeader(headers::kAccept, "*/*");
-    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
+    req.setTransferTimeout(kAhFunQuoteRequestTimeoutMs);
 
     const network_logger::RequestTrace trace = network_logger::logRequestStart(
         QStringLiteral("sina-quote"), "GET", req, m_proxy
@@ -1147,6 +1172,141 @@ void EastMoneyQuoteProvider::handleSinaResponse(
     if (!remainingMap.isEmpty()) {
         requestSina(remainingMap, std::move(fallbackMap));
     } else if (!fallbackMap.isEmpty()) {
+        fallbackFromSina(fallbackMap);
+    } else {
+        finishFetch();
+    }
+}
+
+void EastMoneyQuoteProvider::requestAhFun(
+    const QHash<QString, StockItem>& requestMap,
+    QHash<QString, StockItem> fallbackMap
+) {
+    QHash<QString, StockItem> batchMap;
+    QHash<QString, StockItem> remainingMap;
+    QStringList symbols;
+
+    for (auto it = requestMap.constBegin(); it != requestMap.constEnd(); ++it) {
+        const QString symbol = tencentSymbolForSecId(it.key());
+        if (symbol.isEmpty()) {
+            fallbackMap.insert(it.key(), it.value());
+            continue;
+        }
+        if (symbols.size() >= 100) {
+            remainingMap.insert(it.key(), it.value());
+            continue;
+        }
+        symbols.push_back(symbol);
+        batchMap.insert(it.key(), it.value());
+    }
+
+    if (symbols.isEmpty()) {
+        requestEastMoney(fallbackMap, 1);
+        return;
+    }
+
+    std::sort(symbols.begin(), symbols.end());
+    QUrl url(QStringLiteral("https://stockdata.ahfun.me/get_stock_price/"));
+    url.setPath(url.path() + symbols.join(QLatin1Char(',')));
+
+    QNetworkRequest req(url);
+    req.setRawHeader(headers::kUserAgent, m_userAgent.toUtf8());
+    req.setRawHeader(headers::kAccept, "application/json");
+    req.setTransferTimeout(kAhFunQuoteRequestTimeoutMs);
+
+    const network_logger::RequestTrace trace = network_logger::logRequestStart(
+        QStringLiteral("ahfun-quote"), "GET", req, m_proxy
+    );
+    QNetworkReply* reply = m_nam.get(req);
+    m_activeReply = reply;
+
+    connect(reply, &QNetworkReply::finished, this,
+        [this, reply, batchMap, remainingMap, fallbackMap, trace]() mutable {
+        if (m_activeReply != reply) {
+            reply->deleteLater();
+            return;
+        }
+        m_activeReply = nullptr;
+        const QString err = reply->error() == QNetworkReply::NoError
+            ? QString()
+            : reply->errorString();
+        const QByteArray body = reply->readAll();
+        network_logger::logRequestFinish(trace, reply, body.size(), body);
+        reply->deleteLater();
+        handleAhFunResponse(
+            batchMap,
+            std::move(remainingMap),
+            std::move(fallbackMap),
+            body,
+            err
+        );
+    });
+}
+
+void EastMoneyQuoteProvider::handleAhFunResponse(
+    const QHash<QString, StockItem>& batchMap,
+    QHash<QString, StockItem> remainingMap,
+    QHash<QString, StockItem> fallbackMap,
+    const QByteArray& body,
+    const QString& errorText
+) {
+    if (!errorText.isEmpty()) {
+        m_errors << QStringLiteral("ahfun request failed: %1").arg(errorText);
+    } else {
+        QJsonParseError parseError;
+        const QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
+        const QJsonObject results = doc.isObject()
+            ? doc.object().value(QStringLiteral("results")).toObject()
+            : QJsonObject();
+
+        if (parseError.error != QJsonParseError::NoError || results.isEmpty()) {
+            m_errors << QStringLiteral("ahfun response parse failed: %1")
+                .arg(parseError.error == QJsonParseError::NoError
+                    ? QStringLiteral("results missing or empty")
+                    : parseError.errorString());
+        } else {
+            for (auto it = batchMap.constBegin(); it != batchMap.constEnd(); ++it) {
+                const QString symbol = tencentSymbolForSecId(it.key());
+                const QJsonObject row = results.value(symbol).toObject();
+                const QByteArray data = row.value(QStringLiteral("data")).toString().toUtf8();
+                if (data.isEmpty()) {
+                    continue;
+                }
+
+                const QList<QByteArray> fields = data.split(',');
+                const bool hongKong = symbol.startsWith(QLatin1String("hk"));
+                const qsizetype priceIndex = hongKong ? 6 : 3;
+                const qsizetype previousCloseIndex = hongKong ? 3 : 2;
+                double price = 0.0;
+                double previousClose = 0.0;
+                if (fields.size() <= qMax(priceIndex, previousCloseIndex)
+                    || !parseAsciiDouble(fields.at(priceIndex), &price)
+                    || !parseAsciiDouble(fields.at(previousCloseIndex), &previousClose)
+                    || price <= 0.0) {
+                    continue;
+                }
+
+                QuoteItem quote = quoteFromPrices(it.value(), price, previousClose);
+                const qsizetype nameIndex = hongKong ? 1 : 0;
+                if (fields.size() > nameIndex) {
+                    const QString remoteName = QString::fromUtf8(fields.at(nameIndex)).trimmed();
+                    if (!remoteName.isEmpty()) {
+                        quote.name = remoteName;
+                    }
+                }
+                m_buffer.insert(quote.code, quote);
+            }
+        }
+    }
+
+    const QHash<QString, StockItem> unresolved = unresolvedFrom(batchMap);
+    for (auto it = unresolved.constBegin(); it != unresolved.constEnd(); ++it) {
+        fallbackMap.insert(it.key(), it.value());
+    }
+
+    if (!remainingMap.isEmpty()) {
+        requestAhFun(remainingMap, std::move(fallbackMap));
+    } else if (!fallbackMap.isEmpty()) {
         requestEastMoney(fallbackMap, 1);
     } else {
         finishFetch();
@@ -1166,6 +1326,7 @@ QHash<QString, StockItem> EastMoneyQuoteProvider::unresolvedFrom(
 }
 
 void EastMoneyQuoteProvider::finishFetch() {
+    completePrimaryRequest();
     m_activeRequestKey.clear();
     if (m_buffer.isEmpty()) {
         if (m_errors.isEmpty()) {
@@ -1174,6 +1335,62 @@ void EastMoneyQuoteProvider::finishFetch() {
         emit error("quotes: " + m_errors.join(" | "));
     }
     emit quotesReady(toVector(m_buffer));
+}
+
+void EastMoneyQuoteProvider::completePrimaryRequest() {
+    if (m_primaryCompleted) {
+        return;
+    }
+    m_primaryCompleted = true;
+    if (m_primaryCodes.isEmpty()) {
+        return;
+    }
+
+    bool complete = true;
+    for (const QString& code : m_primaryCodes) {
+        if (!m_buffer.contains(code)) {
+            complete = false;
+            break;
+        }
+    }
+    if (complete) {
+        m_consecutiveFailures = 0;
+        return;
+    }
+
+    if (m_quoteApi != QLatin1String("default") || ++m_consecutiveFailures < 3) {
+        return;
+    }
+    const QString previous = m_currentApi;
+    if (m_currentApi == QLatin1String("tencent")) {
+        m_currentApi = QStringLiteral("sina");
+    } else if (m_currentApi == QLatin1String("sina")) {
+        m_currentApi = QStringLiteral("ahfun");
+    } else {
+        m_currentApi = QStringLiteral("tencent");
+    }
+    m_consecutiveFailures = 0;
+    qWarning() << "Quote API switched after 3 consecutive failures:" << previous << "->" << m_currentApi;
+}
+
+void EastMoneyQuoteProvider::fallbackFromTencent(
+    const QHash<QString, StockItem>& requestMap
+) {
+    if (m_quoteApi == QLatin1String("default")) {
+        requestSina(requestMap);
+    } else {
+        requestEastMoney(requestMap, 1);
+    }
+}
+
+void EastMoneyQuoteProvider::fallbackFromSina(
+    const QHash<QString, StockItem>& requestMap
+) {
+    if (m_quoteApi == QLatin1String("default")) {
+        requestAhFun(requestMap);
+    } else {
+        requestEastMoney(requestMap, 1);
+    }
 }
 
 EastMoneyHotRankProvider::EastMoneyHotRankProvider(QObject* parent)

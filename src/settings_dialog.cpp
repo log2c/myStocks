@@ -109,8 +109,8 @@ inline constexpr auto kEastMoneyContentType = "application/json;charset=UTF-8";
 
 } // namespace headers
 
-inline constexpr int kStockSearchDebounceMs = 400;
-inline constexpr int kStockSearchMinLength = 2;
+inline constexpr int kStockSearchDebounceMs = 300;
+inline constexpr int kStockSearchMinLength = 1;
 inline constexpr int kStockSearchResultLimit = 20;
 
 QIcon dialogWindowIcon(QWidget* parent) {
@@ -545,6 +545,7 @@ AppConfig SettingsDialog::config() const {
     ).toString(QKeySequence::PortableText);
     out.startupShowFloatingWindow = m_startupShowFloatingWindowCheck->isChecked();
     out.userAgent = m_userAgentEdit->text().trimmed();
+    out.quoteApi = normalizeQuoteApi(m_quoteApiCombo->currentData().toString());
     out.proxyType = m_proxyTypeCombo->currentData().toString();
     out.proxyHost = m_proxyHostEdit->text().trimmed();
     out.proxyPort = m_proxyPortSpin->value();
@@ -1196,6 +1197,14 @@ QWidget* SettingsDialog::buildNetworkTab() {
         m_userAgentEdit->setText(defaultChrome100UserAgent());
     }
 
+    m_quoteApiCombo = new QComboBox(w);
+    m_quoteApiCombo->addItem(trText("settings.quoteApi.default"), "default");
+    m_quoteApiCombo->addItem(trText("settings.quoteApi.tencent"), "tencent");
+    m_quoteApiCombo->addItem(trText("settings.quoteApi.sina"), "sina");
+    m_quoteApiCombo->addItem(trText("settings.quoteApi.ahfun"), "ahfun");
+    const int quoteApiIndex = m_quoteApiCombo->findData(normalizeQuoteApi(m_cfg.quoteApi));
+    m_quoteApiCombo->setCurrentIndex(quoteApiIndex < 0 ? 0 : quoteApiIndex);
+
     m_proxyTypeCombo = new QComboBox(w);
     m_proxyTypeCombo->addItem(trText("settings.proxy.none"), "none");
     m_proxyTypeCombo->addItem(trText("settings.proxy.http"), "http");
@@ -1218,12 +1227,48 @@ QWidget* SettingsDialog::buildNetworkTab() {
     m_proxyPasswordEdit = new QLineEdit(m_cfg.proxyPassword, w);
     m_proxyPasswordEdit->setEchoMode(QLineEdit::Password);
 
+    QWidget* publicIpRow = new QWidget(w);
+    QHBoxLayout* publicIpLayout = new QHBoxLayout(publicIpRow);
+    publicIpLayout->setContentsMargins(0, 0, 0, 0);
+    publicIpLayout->setSpacing(6);
+    m_publicIpLabel = new QLabel(trText("settings.network.publicIpUnknown"), publicIpRow);
+    m_publicIpLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_publicIpButton = new QPushButton(trText("settings.network.detectPublicIp"), publicIpRow);
+    publicIpLayout->addWidget(m_publicIpLabel, 1);
+    publicIpLayout->addWidget(m_publicIpButton);
+
+    m_publicIpResolver = new network_utils::PublicIpResolver(this);
+    m_publicIpResolver->applyConfig(m_cfg);
+    connect(m_publicIpButton, &QPushButton::clicked, this, [this]() {
+        m_publicIpButton->setEnabled(false);
+        m_publicIpLabel->setText(trText("settings.network.detectingPublicIp"));
+
+        AppConfig requestConfig = m_cfg;
+        requestConfig.userAgent = m_userAgentEdit->text().trimmed();
+        requestConfig.proxyType = m_proxyTypeCombo->currentData().toString();
+        requestConfig.proxyHost = m_proxyHostEdit->text().trimmed();
+        requestConfig.proxyPort = m_proxyPortSpin->value();
+        requestConfig.proxyUser = m_proxyUserEdit->text().trimmed();
+        requestConfig.proxyPassword = m_proxyPasswordEdit->text();
+        m_publicIpResolver->applyConfig(requestConfig);
+        m_publicIpResolver->resolve([this](const QString& ip, const QString& error) {
+            m_publicIpButton->setEnabled(true);
+            m_publicIpLabel->setText(
+                ip.isEmpty()
+                    ? trText("settings.network.publicIpFailed").arg(error)
+                    : ip
+            );
+        });
+    });
+
+    form->addRow(trText("settings.network.quoteApi"), m_quoteApiCombo);
     form->addRow(trText("settings.general.userAgent"), m_userAgentEdit);
     form->addRow(trText("settings.general.proxyType"), m_proxyTypeCombo);
     form->addRow(trText("settings.general.proxyHost"), m_proxyHostEdit);
     form->addRow(trText("settings.general.proxyPort"), m_proxyPortSpin);
     form->addRow(trText("settings.general.proxyUser"), m_proxyUserEdit);
     form->addRow(trText("settings.general.proxyPassword"), m_proxyPasswordEdit);
+    form->addRow(trText("settings.network.publicIp"), publicIpRow);
 
     return w;
 }
@@ -2415,7 +2460,7 @@ QWidget* SettingsDialog::buildStocksTab() {
         m_stockTable->setCurrentCell(newRow, 0);
     });
 
-    // Filter spaces; trigger debounce on 3+ chars
+    // Filter spaces; trigger debounce once a search term is present.
     connect(m_stockSearchEdit, &QLineEdit::textEdited, this, [this](const QString& rawText) {
         QString text = rawText;
         text.remove(QLatin1Char(' '));
@@ -2618,49 +2663,43 @@ void SettingsDialog::parseSearchResult(const QByteArray& data) {
         return;
     }
 
-    QJsonParseError parseError;
-    const QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
-    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-        qWarning() << "[StockSearch] parse failed:" << parseError.errorString();
+    QString text = network_utils::decodeMarketText(data).trimmed();
+
+    static const QString prefix = QStringLiteral("var suggestvalue=\"");
+    if (!text.startsWith(prefix) || !text.endsWith(QLatin1Char('"'))) {
+        qWarning() << "[StockSearch] unexpected Sina suggest payload";
         m_stockSuggestList->clear();
         m_stockSuggestList->hide();
         return;
     }
 
-    const QJsonObject root = doc.object();
-    const QJsonArray items = root.value(QStringLiteral("Data")).toArray();
+    text = text.mid(prefix.size(), text.size() - prefix.size() - 1);
 
     m_stockSuggestList->clear();
     QSet<QString> addedCodes;
 
-    for (const QJsonValue& value : items) {
-        if (!value.isObject()) {
+    const QStringList records = text.split(QLatin1Char(';'), Qt::SkipEmptyParts);
+    for (const QString& record : records) {
+        if (m_stockSuggestList->count() >= kStockSearchResultLimit) {
+            break;
+        }
+
+        const QStringList fields = record.split(QLatin1Char(','), Qt::KeepEmptyParts);
+        if (fields.size() < 5) {
             continue;
         }
 
-        const QJsonObject obj = value.toObject();
-        QString quoteId = obj.value(QStringLiteral("QuoteID")).toString().trimmed();
-
-        if (quoteId.isEmpty()) {
-            QString market;
-            const QJsonValue marketValue = obj.value(QStringLiteral("MktNum"));
-            if (marketValue.isString()) {
-                market = marketValue.toString().trimmed();
-            } else if (marketValue.isDouble()) {
-                market = QString::number(static_cast<int>(marketValue.toDouble()));
+        QString normalizedCode;
+        const QStringList codeCandidates = {
+            fields.value(3).trimmed(),
+            fields.value(0).trimmed(),
+            fields.value(2).trimmed(),
+        };
+        for (const QString& candidate : codeCandidates) {
+            normalizedCode = normalizeApiWatchCode(candidate);
+            if (!normalizedCode.isEmpty()) {
+                break;
             }
-
-            const QString symbol = obj.value(QStringLiteral("Code")).toString().trimmed();
-            if (!market.isEmpty() && !symbol.isEmpty()) {
-                quoteId = market + QStringLiteral(".") + symbol;
-            } else {
-                quoteId = symbol;
-            }
-        }
-
-        QString normalizedCode = normalizeApiWatchCode(quoteId);
-        if (normalizedCode.isEmpty()) {
-            normalizedCode = normalizeApiWatchCode(obj.value(QStringLiteral("Code")).toString());
         }
         if (normalizedCode.isEmpty()) {
             continue;
@@ -2672,8 +2711,17 @@ void SettingsDialog::parseSearchResult(const QByteArray& data) {
         }
         addedCodes.insert(key);
 
-        const QString name = obj.value(QStringLiteral("Name")).toString().trimmed();
-        const QString securityType = obj.value(QStringLiteral("SecurityTypeName")).toString().trimmed();
+        QString name = fields.value(4).trimmed();
+        if (name.isEmpty()) {
+            name = fields.value(6).trimmed();
+        }
+        const QString marketType = fields.value(1).trimmed();
+        QString securityType;
+        if (marketType == QLatin1String("11")) {
+            securityType = QStringLiteral("A 股");
+        } else if (marketType == QLatin1String("31")) {
+            securityType = QStringLiteral("港股");
+        }
         QString displayText = name.isEmpty()
             ? normalizedCode
             : (normalizedCode + QStringLiteral(" - ") + name);
@@ -2714,49 +2762,47 @@ void SettingsDialog::doStockSearch(bool forceSearch) {
     }
 
     if (m_stockSearchReply) {
-        m_stockSearchReply->abort();
-        m_stockSearchReply->deleteLater();
+        QNetworkReply* staleReply = m_stockSearchReply;
         m_stockSearchReply = nullptr;
+        disconnect(staleReply, nullptr, this, nullptr);
+        staleReply->abort();
+        staleReply->deleteLater();
     }
 
-    QUrl url(QStringLiteral("https://searchapi.eastmoney.com/api/Info/Search"));
+    QUrl url(QStringLiteral("https://suggest3.sinajs.cn/suggest/"));
     QUrlQuery query;
-    query.addQueryItem(QStringLiteral("type"), QStringLiteral("14"));
-    query.addQueryItem(
-        QStringLiteral("and14"),
-        QStringLiteral("MultiMatch/Name,Code,PinYin/%1/true").arg(keyword)
-    );
-    query.addQueryItem(QStringLiteral("pageIndex14"), QStringLiteral("1"));
-    query.addQueryItem(QStringLiteral("pageSize14"), QString::number(kStockSearchResultLimit));
+    query.addQueryItem(QStringLiteral("type"), QString());
+    query.addQueryItem(QStringLiteral("key"), keyword);
     url.setQuery(query);
 
     QNetworkRequest req(url);
     req.setRawHeader(headers::kUserAgent, network_utils::effectiveUserAgent(m_cfg).toUtf8());
-    req.setRawHeader(headers::kReferer, headers::kEastMoneyReferer);
+    req.setRawHeader(headers::kReferer, "https://finance.sina.com.cn/");
     req.setRawHeader(headers::kAccept, "*/*");
     req.setRawHeader(headers::kConnection, "keep-alive");
-    req.setRawHeader(headers::kContentType, headers::kEastMoneyContentType);
     req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
 
     const network_logger::RequestTrace trace = network_logger::logRequestStart(
-        QStringLiteral("eastmoney-search"),
+        QStringLiteral("sina-search"),
         QStringLiteral("GET"),
         req,
         m_stockSearchNam->proxy()
     );
 
-    m_stockSearchReply = m_stockSearchNam->get(req);
-    connect(m_stockSearchReply, &QNetworkReply::finished, this, [this, trace]() {
-        if (!m_stockSearchReply) {
+    QNetworkReply* reply = m_stockSearchNam->get(req);
+    m_stockSearchReply = reply;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, trace]() {
+        if (m_stockSearchReply != reply) {
+            reply->deleteLater();
             return;
         }
 
-        const QNetworkReply::NetworkError netErr = m_stockSearchReply->error();
-        const QByteArray data = m_stockSearchReply->readAll();
+        const QNetworkReply::NetworkError netErr = reply->error();
+        const QByteArray data = reply->readAll();
 
-        network_logger::logRequestFinish(trace, m_stockSearchReply, data.size(), data);
+        network_logger::logRequestFinish(trace, reply, data.size(), data);
 
-        m_stockSearchReply->deleteLater();
+        reply->deleteLater();
         m_stockSearchReply = nullptr;
 
         if (netErr != QNetworkReply::NoError) {

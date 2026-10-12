@@ -2,6 +2,7 @@
 
 #include "app_constants.h"
 #include "i18n.h"
+#include "network_utils.h"
 #include "watchlist_utils.h"
 
 #include <QDateTime>
@@ -15,6 +16,7 @@
 #include <QNetworkRequest>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPixmap>
 #include <QScreen>
 #include <QTimer>
 #include <QTimeZone>
@@ -418,6 +420,50 @@ QString timelineRequestCacheKey(const QString& secId, int days, bool keepLastTra
         .arg(secId, QString::number(days), keepLastTradingDayOnly ? QStringLiteral("1") : QStringLiteral("0"));
 }
 
+QString sinaTimelineImageUrl(const QString& rawCode) {
+    const QString raw = rawCode.trimmed();
+    const QString lower = raw.toLower();
+    if (lower.startsWith(QStringLiteral("bj"))) {
+        const QString digits = lower.mid(2);
+        if (digits.size() == 6 && watchlist_utils::isDigitsOnly(digits)) {
+            return QStringLiteral("https://image.sinajs.cn/newchart/min/n/%1.gif").arg(digits);
+        }
+    }
+
+    const TimelineMarket market = timelineMarketOfCode(raw);
+    if (market == TimelineMarket::HongKong) {
+        if (!watchlist_utils::normalizeHongKongIndexCode(raw).isEmpty()) {
+            return {};
+        }
+        const QString secId = toTimelineSecId(raw);
+        const int dot = secId.indexOf(QLatin1Char('.'));
+        const QString digits = dot >= 0 ? secId.mid(dot + 1) : QString();
+        if (digits.size() != 5 || !watchlist_utils::isDigitsOnly(digits)) {
+            return {};
+        }
+        return QStringLiteral("https://image.sinajs.cn/newchart/png/min/hk/%1.png").arg(digits);
+    }
+
+    if (market != TimelineMarket::Ashare) {
+        return {};
+    }
+
+    const QStringList parts = toTimelineSecId(raw).split(QLatin1Char('.'));
+    if (parts.size() != 2 || parts.at(1).size() != 6) {
+        return {};
+    }
+
+    QString symbol;
+    if (parts.at(0) == QLatin1String("1")) {
+        symbol = QStringLiteral("sh") + parts.at(1);
+    } else if (parts.at(0) == QLatin1String("0")) {
+        symbol = QStringLiteral("sz") + parts.at(1);
+    } else {
+        return {};
+    }
+    return QStringLiteral("https://image.sinajs.cn/newchart/min/n/%1.gif").arg(symbol);
+}
+
 bool isAshareTradingTimeNow() {
     const QTimeZone bjZone("Asia/Shanghai");
     const QDateTime now = QDateTime::currentDateTimeUtc().toTimeZone(bjZone);
@@ -648,10 +694,24 @@ public:
         update();
     }
 
+    void setImage(const QString& title, const QString& code, const QPixmap& image) {
+        m_title = title;
+        m_code = code;
+        m_image = image;
+        m_status.clear();
+        update();
+    }
+
+    void clearImage() {
+        m_image = {};
+        update();
+    }
+
     void setStatusText(const QString& status) {
-        m_status = status;
-        if (!status.isEmpty()) {
-            m_points.clear();
+        // A curve refresh runs after the Sina image is shown. Its failure must
+        // not replace an already valid image with an error message.
+        if (status.isEmpty() || m_image.isNull()) {
+            m_status = status;
         }
         update();
     }
@@ -678,9 +738,10 @@ protected:
             && headerLastPrice < m_cost;
         const int headerHeight = showBreakevenGain ? headerLineHeight * 2 : headerLineHeight;
         const int headerToPlotGap = showBreakevenGain ? 14 : 6;
-        const int leftMargin = 56;
-        const int rightMargin = 56;
-        const int bottomMargin = 28;
+        const bool imageMode = !m_image.isNull();
+        const int leftMargin = imageMode ? 0 : 56;
+        const int rightMargin = imageMode ? 0 : 56;
+        const int bottomMargin = imageMode ? 0 : 28;
         QRect headerRect(r.left(), r.top(), r.width(), headerLineHeight);
         QRect breakevenGainRect(r.left(), r.top() + headerLineHeight, r.width(), headerLineHeight);
         QRect plot(
@@ -701,8 +762,25 @@ protected:
             painter.drawText(plot, Qt::AlignCenter, m_status);
             return;
         }
+        if (imageMode) {
+            const QPixmap scaled = m_image.scaled(
+                plot.size(),
+                Qt::KeepAspectRatioByExpanding,
+                Qt::SmoothTransformation
+            );
+            const QPoint topLeft(
+                plot.center().x() - scaled.width() / 2,
+                plot.center().y() - scaled.height() / 2
+            );
+            painter.save();
+            painter.setClipRect(plot);
+            painter.drawPixmap(topLeft, scaled);
+            painter.restore();
+        }
         if (m_points.isEmpty()) {
-            painter.drawText(plot, Qt::AlignCenter, QStringLiteral("No timeline data"));
+            if (!imageMode) {
+                painter.drawText(plot, Qt::AlignCenter, QStringLiteral("No timeline data"));
+            }
             return;
         }
 
@@ -725,6 +803,62 @@ protected:
             }
             return QStringLiteral("0.%1").arg(QStringLiteral("0").repeated(prec));
         };
+
+        if (imageMode) {
+            const TimelinePoint& lastPoint = m_points.last();
+            if (std::isfinite(m_cost) && m_cost > 0.0
+                && std::isfinite(lastPoint.price) && lastPoint.price > 0.0) {
+                const double profitPct = (lastPoint.price - m_cost) / m_cost * 100.0;
+                const QString profitLabel = i18n::t("popup.timeline.profit", m_resolvedLanguage)
+                    + QStringLiteral(": ");
+                const QString profitValue = QStringLiteral("%1%").arg(signedNumber(profitPct, 2));
+                QColor profitColor = m_cfg.timelineChartTextColor;
+                if (profitPct > 0.0) {
+                    profitColor = m_cfg.timelineChartUpColor;
+                } else if (profitPct < 0.0) {
+                    profitColor = m_cfg.timelineChartDownColor;
+                }
+
+                QFont normalFont = painter.font();
+                QFont boldFont = normalFont;
+                boldFont.setBold(true);
+                const QFontMetrics normalMetrics(normalFont);
+                const QFontMetrics boldMetrics(boldFont);
+                const int profitLabelWidth = normalMetrics.horizontalAdvance(profitLabel);
+                const int profitWidth = profitLabelWidth + boldMetrics.horizontalAdvance(profitValue);
+                int startX = headerRect.right() - profitWidth + 1;
+                painter.setPen(profitColor);
+                painter.setFont(normalFont);
+                painter.drawText(startX, headerRect.top(), profitLabelWidth, headerRect.height(),
+                    Qt::AlignLeft | Qt::AlignVCenter, profitLabel);
+                painter.setFont(boldFont);
+                painter.drawText(startX + profitLabelWidth, headerRect.top(),
+                    boldMetrics.horizontalAdvance(profitValue), headerRect.height(),
+                    Qt::AlignLeft | Qt::AlignVCenter, profitValue);
+
+                if (profitPct < 0.0) {
+                    const double breakevenPct = (m_cost / lastPoint.price - 1.0) * 100.0;
+                    const QString breakevenLabel = i18n::t(
+                        "popup.timeline.breakevenGain", m_resolvedLanguage
+                    ) + QStringLiteral(": ");
+                    const QString breakevenValue = QStringLiteral("%1%").arg(signedNumber(breakevenPct, 2));
+                    const int breakevenLabelWidth = normalMetrics.horizontalAdvance(breakevenLabel);
+                    const int breakevenWidth = breakevenLabelWidth
+                        + boldMetrics.horizontalAdvance(breakevenValue);
+                    startX = breakevenGainRect.right() - breakevenWidth + 1;
+                    painter.setPen(m_cfg.timelineChartDownColor);
+                    painter.setFont(normalFont);
+                    painter.drawText(startX, breakevenGainRect.top(), breakevenLabelWidth,
+                        breakevenGainRect.height(), Qt::AlignLeft | Qt::AlignVCenter, breakevenLabel);
+                    painter.setFont(boldFont);
+                    painter.drawText(startX + breakevenLabelWidth, breakevenGainRect.top(),
+                        boldMetrics.horizontalAdvance(breakevenValue), breakevenGainRect.height(),
+                        Qt::AlignLeft | Qt::AlignVCenter, breakevenValue);
+                }
+                painter.setFont(normalFont);
+            }
+            return;
+        }
 
         double baseline = m_preClose;
         if (!std::isfinite(baseline) || qFuzzyIsNull(baseline)) {
@@ -1249,6 +1383,7 @@ private:
     QString m_title;
     QString m_code;
     QString m_status;
+    QPixmap m_image;
     QVector<TimelinePoint> m_points;
     QVector<TradePeriod> m_tradePeriods;
     double m_preClose = qQNaN();
@@ -1286,6 +1421,7 @@ public:
 
     void applyConfig(const AppConfig& cfg) {
         m_cfg = cfg;
+        m_nam.setProxy(network_utils::proxyFromConfig(cfg));
         m_chart->setConfig(cfg);
         if (!isVisible()) {
             return;
@@ -1567,11 +1703,60 @@ private:
         });
     }
 
+    void requestSinaTimelineImage(const QUrl& url, bool fallbackAllowed, int token) {
+        cancelPendingReply();
+
+        QNetworkRequest req(url);
+        const QString userAgent = m_cfg.userAgent.trimmed().isEmpty()
+            ? defaultChrome100UserAgent()
+            : m_cfg.userAgent.trimmed();
+        req.setRawHeader("User-Agent", userAgent.toUtf8());
+        req.setRawHeader("Referer", "https://finance.sina.com.cn/");
+        req.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::PreferNetwork);
+        req.setTransferTimeout(20000);
+
+        QNetworkReply* reply = m_nam.get(req);
+        m_reply = reply;
+        connect(reply, &QNetworkReply::finished, this, [this, reply, token, fallbackAllowed]() {
+            if (reply == m_reply) {
+                m_reply = nullptr;
+            }
+            if (token != m_requestToken) {
+                reply->deleteLater();
+                return;
+            }
+
+            const QString error = reply->error() == QNetworkReply::NoError
+                ? QString()
+                : reply->errorString();
+            const QByteArray body = reply->readAll();
+            reply->deleteLater();
+
+            QPixmap image;
+            if (error.isEmpty() && image.loadFromData(body) && !image.isNull()) {
+                const QString title = m_name.isEmpty()
+                    ? m_code
+                    : QStringLiteral("%1  %2").arg(m_name, m_code);
+                m_chart->setImage(title, m_code, image);
+                requestTimeline(1, false, false, token);
+                return;
+            }
+
+            requestTimeline(1, fallbackAllowed, false, token);
+        });
+    }
+
     void fetchTimeline(bool fallbackAllowed) {
         ++m_requestToken;
         const QString title = m_name.isEmpty() ? m_code : QStringLiteral("%1  %2").arg(m_name, m_code);
+        m_chart->clearImage();
         m_chart->setStatusText(QStringLiteral("Loading %1 ...").arg(title));
-        requestTimeline(1, fallbackAllowed, false, m_requestToken);
+        const QUrl imageUrl(sinaTimelineImageUrl(m_code));
+        if (imageUrl.isValid() && !imageUrl.isEmpty()) {
+            requestSinaTimelineImage(imageUrl, fallbackAllowed, m_requestToken);
+        } else {
+            requestTimeline(1, fallbackAllowed, false, m_requestToken);
+        }
     }
 
     QWidget* m_parentWindow = nullptr;

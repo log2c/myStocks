@@ -1552,7 +1552,7 @@ void AppController::rebuildProvider() {
 
     m_provider = new EastMoneyQuoteProvider(this);
 
-    qInfo() << "Rebuild provider done. source=eastmoney";
+    qInfo() << "Rebuild provider done. quoteApi=" << normalizeQuoteApi(m_cfg.quoteApi);
 
     m_provider->setLanguage(m_resolvedLanguage);
     m_provider->applyConfig(m_cfg);

@@ -614,6 +614,9 @@ AppConfig ConfigManager::loadConfig() {
         readConfigValue(s, QStringLiteral("language"), cfg.language).toString()
     );
     cfg.userAgent = readConfigValue(s, QStringLiteral("userAgent"), cfg.userAgent).toString();
+    cfg.quoteApi = normalizeQuoteApi(
+        readConfigValue(s, QStringLiteral("quoteApi"), cfg.quoteApi).toString()
+    );
     cfg.proxyType = readConfigValue(s, QStringLiteral("proxyType"), cfg.proxyType).toString();
     cfg.proxyHost = readConfigValue(s, QStringLiteral("proxyHost"), cfg.proxyHost).toString();
     cfg.proxyPort = readConfigValue(s, QStringLiteral("proxyPort"), cfg.proxyPort).toInt();
@@ -695,10 +698,15 @@ AppConfig ConfigManager::loadConfig() {
         "ui/timelineChartFixedRangeEnabled",
         cfg.timelineChartFixedRangeEnabled
     ).toBool();
-    cfg.timelineChartBgColor = s.value(
-        "ui/timelineChartBgColor",
-        cfg.timelineChartBgColor
-    ).value<QColor>();
+    const QVariant timelineBgValue = s.value("ui/timelineChartBgColor");
+    cfg.timelineChartBgColor = timelineBgValue.isValid()
+        ? timelineBgValue.value<QColor>()
+        : cfg.timelineChartBgColor;
+    // Migrate the former dark built-in default to the new white default while
+    // preserving an explicitly chosen custom color.
+    if (cfg.timelineChartBgColor == QColor(14, 18, 24, 238)) {
+        cfg.timelineChartBgColor = QColor(255, 255, 255);
+    }
     cfg.timelineChartGridColor = s.value(
         "ui/timelineChartGridColor",
         cfg.timelineChartGridColor
@@ -903,6 +911,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         QStringLiteral("userAgent"),
         cfg.userAgent.trimmed().isEmpty() ? defaultChrome100UserAgent() : cfg.userAgent.trimmed()
     );
+    writeConfigValue(s, QStringLiteral("quoteApi"), normalizeQuoteApi(cfg.quoteApi));
 
     QString proxyType = cfg.proxyType.trimmed().toLower();
     if (proxyType == "socks") {

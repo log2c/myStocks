@@ -26,6 +26,9 @@ if(APPLE)
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
+if(NOT WIN32)
+    find_package(Iconv REQUIRED)
+endif()
 
 if(APPLE)
     # Qt's prebuilt macOS package exports the deprecated AGL framework through
@@ -204,6 +207,9 @@ target_link_libraries(MyStocks PRIVATE
     Qt6::Network
     $<IF:$<TARGET_EXISTS:yaml-cpp::yaml-cpp>,yaml-cpp::yaml-cpp,yaml-cpp>
 )
+if(NOT WIN32)
+    target_link_libraries(MyStocks PRIVATE Iconv::Iconv)
+endif()
 
 if(WIN32 OR APPLE)
     target_link_libraries(MyStocks PRIVATE QHotkey::QHotkey)

@@ -33,6 +33,7 @@ class EastMoneyQuoteProvider : public IQuoteProvider {
 public:
     explicit EastMoneyQuoteProvider(QObject* parent = nullptr);
 
+    void applyConfig(const AppConfig& cfg) override;
     void fetchQuotes(const QVector<StockItem>& stocks) override;
 
 private:
@@ -70,15 +71,34 @@ private:
         const QByteArray& body,
         const QString& errorText
     );
+    void requestAhFun(
+        const QHash<QString, StockItem>& requestMap,
+        QHash<QString, StockItem> fallbackMap = {}
+    );
+    void handleAhFunResponse(
+        const QHash<QString, StockItem>& batchMap,
+        QHash<QString, StockItem> remainingMap,
+        QHash<QString, StockItem> fallbackMap,
+        const QByteArray& body,
+        const QString& errorText
+    );
     QHash<QString, StockItem> unresolvedFrom(
         const QHash<QString, StockItem>& requestMap
     ) const;
+    void completePrimaryRequest();
+    void fallbackFromTencent(const QHash<QString, StockItem>& requestMap);
+    void fallbackFromSina(const QHash<QString, StockItem>& requestMap);
     void finishFetch();
 
 private:
     QNetworkAccessManager m_nam;
     QNetworkReply* m_activeReply = nullptr;
     QString m_activeRequestKey;
+    QString m_quoteApi = QStringLiteral("default");
+    QString m_currentApi = QStringLiteral("tencent");
+    int m_consecutiveFailures = 0;
+    QStringList m_primaryCodes;
+    bool m_primaryCompleted = false;
     QStringList m_errors;
     QHash<QString, QuoteItem> m_buffer;
 };

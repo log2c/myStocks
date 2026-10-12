@@ -25,6 +25,7 @@ class QNetworkAccessManager;
 class QNetworkReply;
 class QTableWidget;
 class QTimer;
+namespace network_utils { class PublicIpResolver; }
 
 class SettingsDialog : public QDialog {
 public:
@@ -90,6 +91,7 @@ private:
     QPushButton* m_marketBreadthHotkeyClearBtn = nullptr;
     QCheckBox* m_startupShowFloatingWindowCheck = nullptr;
     QLineEdit* m_userAgentEdit = nullptr;
+    QComboBox* m_quoteApiCombo = nullptr;
     QComboBox* m_proxyTypeCombo = nullptr;
     QLineEdit* m_proxyHostEdit = nullptr;
     QSpinBox* m_proxyPortSpin = nullptr;
@@ -105,6 +107,9 @@ private:
     QSlider* m_transparentOpacitySlider = nullptr;
     QLabel* m_transparentOpacityLabel = nullptr;
     QLineEdit* m_proxyPasswordEdit = nullptr;
+    QLabel* m_publicIpLabel = nullptr;
+    QPushButton* m_publicIpButton = nullptr;
+    network_utils::PublicIpResolver* m_publicIpResolver = nullptr;
     QComboBox* m_languageCombo = nullptr;
     QFontComboBox* m_fontFamilyCombo = nullptr;
     QSpinBox* m_fontSizeSpin = nullptr;
