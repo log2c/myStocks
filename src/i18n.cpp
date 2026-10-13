@@ -59,6 +59,16 @@ const TranslationMap& translations() {
                 {"settings.general.proxyPort", "Proxy port"},
                 {"settings.general.proxyUser", "Proxy username"},
                 {"settings.general.proxyPassword", "Proxy password"},
+                {"settings.general.quoteSource", "Quote data source"},
+                {"settings.quoteSource.tdx", "TongdaXin (default)"},
+                {"settings.quoteSource.eastmoney", "EastMoney"},
+                {"settings.tdx.login", "TongdaXin login (awaiting upstream support)"},
+                {"settings.tdx.userId", "TongdaXin user"},
+                {"settings.tdx.token", "TongdaXin session token"},
+                {"settings.tdx.userIdPlaceholder", "Optional; protocol currently has no account login"},
+                {"settings.tdx.tokenPlaceholder", "Optional session token"},
+                {"settings.tdx.rememberToken", "Save token locally (plain text)"},
+                {"settings.tdx.hint", "gotdx currently provides public quotation access and does not expose account/password login. These fields are reserved for authenticated endpoints and are passed to the bridge without claiming a logged-in state. TongdaXin uses direct TCP connections; HTTP proxy settings apply to the other interfaces."},
                 {"settings.other.debugMode", "Debug mode"},
                 {"settings.general.groupHotkey", "Shortcuts"},
                 {"settings.general.groupFont", "Floating Window Font"},
@@ -340,6 +350,16 @@ const TranslationMap& translations() {
                 {"settings.general.proxyPort", "代理端口"},
                 {"settings.general.proxyUser", "代理用户名"},
                 {"settings.general.proxyPassword", "代理密码"},
+                {"settings.general.quoteSource", "行情数据源"},
+                {"settings.quoteSource.tdx", "通达信（默认）"},
+                {"settings.quoteSource.eastmoney", "东方财富"},
+                {"settings.tdx.login", "通达信登录（待上游支持）"},
+                {"settings.tdx.userId", "通达信用户"},
+                {"settings.tdx.token", "通达信会话令牌"},
+                {"settings.tdx.userIdPlaceholder", "可选；当前协议没有账号登录接口"},
+                {"settings.tdx.tokenPlaceholder", "可选会话令牌"},
+                {"settings.tdx.rememberToken", "保存令牌到本地（明文）"},
+                {"settings.tdx.hint", "gotdx 当前提供公开行情访问，没有暴露账号密码登录接口。这里的字段为后续认证接口预留，并会传给桥接层，但不会把它显示为已登录。通达信使用 TCP 直连，HTTP 代理设置适用于其他接口。"},
                 {"settings.other.debugMode", "调试模式"},
                 {"settings.general.groupHotkey", "快捷键"},
                 {"settings.general.groupFont", "悬浮窗字体"},
@@ -646,9 +666,9 @@ QString t(const QString& key, const QString& language) {
 
 QStringList columnNames(const QString& language) {
     if (resolvedLanguageCode(language) == "zh_CN") {
-        return {"代码", "名称", "最新价", "涨跌幅", "涨跌额", "标识", "成本", "收益率", "回本涨幅"};
+        return {"代码", "名称", "最新价", "涨跌幅", "涨跌额", "标识", "成本", "收益率", "回本涨幅", "涨速"};
     }
-    return {"Code", "Name", "Price", "Change%", "Change", "Signal", "Cost", "Return%", "Breakeven gain"};
+    return {"Code", "Name", "Price", "Change%", "Change", "Signal", "Cost", "Return%", "Breakeven gain", "Rise speed"};
 }
 
 } // namespace i18n

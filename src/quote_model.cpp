@@ -239,6 +239,8 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
             return withHongKongNamePrefix(q.code, q.name);
         case ColPrice:
             return std::isnan(q.price) ? QString("--") : QString::number(q.price, 'f', 3);
+        case ColRiseSpeed:
+            return std::isnan(q.riseSpeed) ? QString("--") : formatSigned(q.riseSpeed, 2, true);
         case ColPct:
             return std::isnan(q.pct) ? QString("--") : formatSigned(q.pct, 2, true);
         case ColChange:
@@ -316,6 +318,10 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
         if (index.column() == ColBreakevenGain) {
             return hasBreakevenGain(q) ? m_cfg.upColor : defaultText;
         }
+        if (index.column() == ColRiseSpeed) {
+            if (!std::isfinite(q.riseSpeed)) return defaultText;
+            return q.riseSpeed > 0 ? m_cfg.upColor : q.riseSpeed < 0 ? m_cfg.downColor : m_cfg.flatColor;
+        }
         if (index.column() >= ColPrice) {
             if (std::isnan(q.pct)) {
                 return defaultText;
@@ -371,6 +377,7 @@ void QuoteModel::updateQuotes(const QVector<QuoteItem>& quotes) {
         m_rows[row].price = q.price;
         m_rows[row].pct = q.pct;
         m_rows[row].change = q.change;
+        m_rows[row].riseSpeed = q.riseSpeed;
 
         if (indicatorChanged && m_cfg.blinkReminderEnabled) {
             m_blinkCounters[row] = 4; // 4 half-periods = 2 full blinks

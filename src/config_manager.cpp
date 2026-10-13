@@ -613,6 +613,10 @@ AppConfig ConfigManager::loadConfig() {
     cfg.language = i18n::normalizeLanguage(
         readConfigValue(s, QStringLiteral("language"), cfg.language).toString()
     );
+    cfg.quoteSource = normalizeQuoteSource(readConfigValue(s, QStringLiteral("quoteSource"), cfg.quoteSource).toString());
+    cfg.tdxUserId = readConfigValue(s, QStringLiteral("tdxUserId"), cfg.tdxUserId).toString().trimmed();
+    cfg.tdxRememberToken = readConfigValue(s, QStringLiteral("tdxRememberToken"), false).toBool();
+    if (cfg.tdxRememberToken) cfg.tdxToken = readConfigValue(s, QStringLiteral("tdxToken"), QString()).toString();
     cfg.userAgent = readConfigValue(s, QStringLiteral("userAgent"), cfg.userAgent).toString();
     cfg.proxyType = readConfigValue(s, QStringLiteral("proxyType"), cfg.proxyType).toString();
     cfg.proxyHost = readConfigValue(s, QStringLiteral("proxyHost"), cfg.proxyHost).toString();
@@ -898,6 +902,11 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         cfg.startupShowFloatingWindow
     );
     writeConfigValue(s, QStringLiteral("language"), i18n::normalizeLanguage(cfg.language));
+    writeConfigValue(s, QStringLiteral("quoteSource"), normalizeQuoteSource(cfg.quoteSource));
+    writeConfigValue(s, QStringLiteral("tdxUserId"), cfg.tdxUserId.trimmed());
+    writeConfigValue(s, QStringLiteral("tdxRememberToken"), cfg.tdxRememberToken);
+    writeConfigValue(s, QStringLiteral("tdxToken"), cfg.tdxRememberToken ? cfg.tdxToken : QString());
+    s.remove(legacyConfigKey(QStringLiteral("tdxToken")));
     writeConfigValue(
         s,
         QStringLiteral("userAgent"),

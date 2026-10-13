@@ -3,6 +3,7 @@
 #include "app_constants.h"
 #include "i18n.h"
 #include "watchlist_utils.h"
+#include "tdx_bridge.h"
 
 #include <QDateTime>
 #include <QGuiApplication>
@@ -1285,11 +1286,19 @@ public:
     }
 
     void applyConfig(const AppConfig& cfg) {
+        const bool sourceChanged = normalizeQuoteSource(m_cfg.quoteSource) != normalizeQuoteSource(cfg.quoteSource)
+            || m_cfg.tdxUserId != cfg.tdxUserId || m_cfg.tdxToken != cfg.tdxToken;
+        if (sourceChanged) {
+            ++m_requestToken;
+            cancelPendingReply();
+            m_timelineCache.clear();
+        }
         m_cfg = cfg;
         m_chart->setConfig(cfg);
         if (!isVisible()) {
             return;
         }
+        if (sourceChanged && !m_code.isEmpty()) fetchTimeline(true);
         if (isCurrentMarketTradingTimeNow()) {
             startRefreshTimer();
         } else {
@@ -1352,6 +1361,7 @@ public:
         }
         enforceTimelinePopupWindowLevel(this);
         if (changed) {
+            ++m_requestToken;
             fetchTimeline(true);
         }
         if (isCurrentMarketTradingTimeNow()) {
@@ -1362,6 +1372,7 @@ public:
     }
 
     void hidePopup() {
+        ++m_requestToken;
         stopRefreshTimer();
         if (m_reply) {
             QNetworkReply* pendingReply = m_reply;
@@ -1495,8 +1506,43 @@ private:
         const TimelineMarket marketType = timelineMarketOfCode(m_code);
         cancelPendingReply();
 
-        const QString cacheKey = timelineRequestCacheKey(secId, days, keepLastTradingDayOnly);
+        const QString cacheKey = normalizeQuoteSource(m_cfg.quoteSource) + QLatin1Char(':')
+            + timelineRequestCacheKey(secId, days, keepLastTradingDayOnly);
         if (tryUseCachedTimeline(cacheKey, days, fallbackAllowed, token)) {
+            return;
+        }
+
+        if (normalizeQuoteSource(m_cfg.quoteSource) == QStringLiteral("tdx")) {
+            if (m_tdxPending) return;
+            m_tdxPending = true;
+            tdx_bridge::request(this, m_cfg,
+                {{QStringLiteral("operation"), QStringLiteral("timeline")},
+                 {QStringLiteral("code"), m_code}},
+                [this, token, cacheKey](const QJsonObject& object, const QString& error) {
+                    m_tdxPending = false;
+                    if (token != m_requestToken) {
+                        if (isVisible() && !m_code.isEmpty()) fetchTimeline(true);
+                        return;
+                    }
+                    if (!error.isEmpty()) { m_chart->setStatusText(QStringLiteral("TDX: %1").arg(error)); return; }
+                    QVector<TimelinePoint> points;
+                    for (const QJsonValue& value : object.value(QStringLiteral("points")).toArray()) {
+                        const QJsonObject row = value.toObject();
+                        const QDateTime time = QDateTime::fromString(row.value(QStringLiteral("time")).toString(), QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+                        const double price = row.value(QStringLiteral("price")).toDouble(qQNaN());
+                        if (!time.isValid() || !std::isfinite(price)) continue;
+                        TimelinePoint point;
+                        point.time = time;
+                        point.price = price;
+                        point.avgPrice = row.value(QStringLiteral("avg")).toDouble(qQNaN());
+                        point.volume = row.value(QStringLiteral("volume")).toDouble(qQNaN());
+                        points.push_back(point);
+                    }
+                    const double preClose = object.value(QStringLiteral("preClose")).toDouble(qQNaN());
+                    cacheTimelineResult(cacheKey, points, preClose, {});
+                    applyTimelineResult(points, preClose, {});
+                });
+            m_chart->setStatusText(QStringLiteral("Loading %1 ...").arg(m_name.isEmpty() ? m_code : m_name));
             return;
         }
 
@@ -1568,6 +1614,7 @@ private:
     }
 
     void fetchTimeline(bool fallbackAllowed) {
+        if (normalizeQuoteSource(m_cfg.quoteSource) == QStringLiteral("tdx") && m_tdxPending) return;
         ++m_requestToken;
         const QString title = m_name.isEmpty() ? m_code : QStringLiteral("%1  %2").arg(m_name, m_code);
         m_chart->setStatusText(QStringLiteral("Loading %1 ...").arg(title));
@@ -1586,6 +1633,7 @@ private:
     QDate m_hongKongHalfDayDate;
     QHash<QString, TimelineCacheEntry> m_timelineCache;
     int m_requestToken = 0;
+    bool m_tdxPending = false;
 };
 
 SharedTimelineChartPopup::SharedTimelineChartPopup(QWidget* parent)

@@ -89,6 +89,10 @@ private:
     QLabel* m_marketBreadthHotkeyIndicator = nullptr;
     QPushButton* m_marketBreadthHotkeyClearBtn = nullptr;
     QCheckBox* m_startupShowFloatingWindowCheck = nullptr;
+    QComboBox* m_quoteSourceCombo = nullptr;
+    QLineEdit* m_tdxUserIdEdit = nullptr;
+    QLineEdit* m_tdxTokenEdit = nullptr;
+    QCheckBox* m_tdxRememberTokenCheck = nullptr;
     QLineEdit* m_userAgentEdit = nullptr;
     QComboBox* m_proxyTypeCombo = nullptr;
     QLineEdit* m_proxyHostEdit = nullptr;

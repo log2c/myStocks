@@ -25,7 +25,7 @@ if(APPLE)
     endif()
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network Concurrent)
 
 if(APPLE)
     # Qt's prebuilt macOS package exports the deprecated AGL framework through
@@ -167,6 +167,8 @@ set(MYSTOCKS_SOURCES
     src/quote_model.cpp
     src/quote_provider.cpp
     src/settings_dialog.cpp
+    src/tdx_bridge.cpp
+    src/tdx_quote_provider.cpp
     src/timeline_popup.cpp
     src/updater.cpp
     src/watchlist_utils.cpp
@@ -186,6 +188,8 @@ set(MYSTOCKS_HEADERS
     include/quote_model.h
     include/quote_provider.h
     include/settings_dialog.h
+    include/tdx_bridge.h
+    include/tdx_quote_provider.h
     include/timeline_popup.h
     include/types.h
     include/updater.h
@@ -202,6 +206,7 @@ target_include_directories(MyStocks PRIVATE include)
 target_link_libraries(MyStocks PRIVATE
     Qt6::Widgets
     Qt6::Network
+    Qt6::Concurrent
     $<IF:$<TARGET_EXISTS:yaml-cpp::yaml-cpp>,yaml-cpp::yaml-cpp,yaml-cpp>
 )
 
@@ -329,3 +334,14 @@ install(TARGETS MyStocks
     BUNDLE DESTINATION .
     RUNTIME DESTINATION bin
 )
+
+include(CTest)
+include(cmake/Gotdx.cmake)
+if(BUILD_TESTING)
+    qt_add_executable(MyStocksQuoteModelTest
+        tests/quote_model_test.cpp src/quote_model.cpp src/i18n.cpp src/watchlist_utils.cpp
+        include/quote_model.h)
+    target_include_directories(MyStocksQuoteModelTest PRIVATE include)
+    target_link_libraries(MyStocksQuoteModelTest PRIVATE Qt6::Widgets)
+    add_test(NAME quote_model COMMAND MyStocksQuoteModelTest)
+endif()

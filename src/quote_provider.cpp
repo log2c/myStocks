@@ -1,4 +1,5 @@
 #include "quote_provider.h"
+#include "tdx_quote_provider.h"
 
 #include "app_constants.h"
 #include "network_logger.h"
@@ -783,6 +784,7 @@ void EastMoneyQuoteProvider::handleResponse(
                     const QString remoteName = firstNonEmptyStringFromObject(row, {"f14", "f58"});
                     q.name = remoteName.isEmpty() ? stock.name : remoteName;
                     q.price = last;
+                    q.riseSpeed = firstNumber(row, {"f22"});
                     q.change = std::isnan(changeRaw)
                         ? derivedChange
                         : (isFuture ? changeRaw : chooseRawOrDiv100(changeRaw, 30.0, derivedChange));
@@ -2116,6 +2118,29 @@ EastMoneyIndexQuoteProvider::EastMoneyIndexQuoteProvider(QObject* parent)
     : QObject(parent) {}
 
 void EastMoneyIndexQuoteProvider::applyConfig(const AppConfig& cfg) {
+    if (m_tdxProvider) {
+        disconnect(m_tdxProvider, nullptr, this, nullptr);
+        m_tdxProvider->deleteLater();
+        m_tdxProvider = nullptr;
+    }
+    if (normalizeQuoteSource(cfg.quoteSource) == QStringLiteral("tdx")) {
+        m_tdxProvider = new TdxQuoteProvider(this);
+        m_tdxProvider->applyConfig(cfg);
+        connect(m_tdxProvider, &IQuoteProvider::quotesReady, this, [this](const QVector<QuoteItem>& quotes) {
+            QHash<QString, QuoteItem> byCode;
+            for (const auto& quote : quotes) byCode.insert(quote.code, quote);
+            QVector<IndexQuoteItem> items;
+            for (const auto& preset : indexQuoteConfig()) {
+                const auto quote = byCode.value(preset.first);
+                items.push_back({preset.first, preset.second, quote.price, quote.change, quote.pct});
+            }
+            m_cachedItems = items;
+            m_cacheExpiresAtMs = QDateTime::currentMSecsSinceEpoch() + app_constants::kNetworkCacheTtlMs;
+            m_cacheValid = true;
+            emit dataReady(items);
+        });
+        connect(m_tdxProvider, &IQuoteProvider::error, this, &EastMoneyIndexQuoteProvider::error);
+    }
     m_userAgent = network_utils::effectiveUserAgent(cfg);
     m_proxy = network_utils::proxyFromConfig(cfg);
     m_cacheValid = false;
@@ -2154,6 +2179,12 @@ void EastMoneyIndexQuoteProvider::fetch(bool forceRefresh) {
     }
 
     const QVector<QPair<QString, QString>>& config = indexQuoteConfig();
+    if (m_tdxProvider) {
+        QVector<StockItem> stocks;
+        for (const auto& preset : config) stocks.push_back({preset.first, preset.second});
+        m_tdxProvider->fetchQuotes(stocks);
+        return;
+    }
     QStringList secIds;
     secIds.reserve(config.size());
     for (const auto& pair : config) {

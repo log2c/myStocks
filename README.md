@@ -27,6 +27,7 @@
 - 市场宽度详情弹窗，支持上涨/平盘/下跌、涨停/跌停、成交额和时间线概览
 - 热门板块与热门概念展示，方便观察盘中情绪和热点轮动
 - 高度可定制的界面配置：列显示、列顺序、列宽、字体、颜色、透明度、置顶、双击隐藏、鼠标穿透
+- 网络设置可选择通达信（默认）或东方财富，行情表支持涨速列
 - 可配置网络行为：`User-Agent`、代理、日志、轮询频率
 - 支持检查 GitHub Release 更新并下载当前平台安装包
 
@@ -55,7 +56,7 @@
 #### macOS
 
 ```bash
-brew install cmake qt ninja
+brew install cmake qt ninja go
 cmake --preset dev-debug
 cmake --build --preset dev-debug
 ```
@@ -65,11 +66,48 @@ cmake --build --preset dev-debug
 
 #### Windows
 
-安装 Qt 6、CMake 和 Ninja 后，执行：
+安装 Qt 6、CMake、Ninja、Go 1.27+ 和 MinGW-w64 GCC（供 cgo 使用）后，执行。Qt/C++ 可继续使用 MSVC，`CC` 应指向 MinGW GCC：
 
 ```bash
+# PowerShell；按实际安装路径调整
+$env:CC = "C:/msys64/mingw64/bin/gcc.exe"
+$env:PATH = "C:/msys64/mingw64/bin;" + $env:PATH
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DQt6_DIR="你的Qt6_DIR路径"
 cmake --build build --parallel
+```
+
+### 通达信数据源与更新
+
+构建时通过 CMake 拉取 [bensema/gotdx](https://github.com/bensema/gotdx)，编译项目自带的 Go 桥接层为 `c-shared`，Qt 通过 `QLibrary` 加载其 C ABI。默认拉取 `main`；首次构建需要网络、Go 1.27+ 和 C 编译器。发布版会携带动态库和期货交易日历，使用者无需安装 Go。
+
+在「设置 → 网络 → 行情数据源」切换通达信或东方财富，保存后生效。未配置数据源的旧配置也默认使用通达信。涨速列默认显示，列设置支持隐藏、调整顺序和限制宽度；原有列编号保持兼容。通达信实时行情、详情页指数报价和两处悬停分时均使用同一桥接层。桥接层提供 `klines` 操作返回 OHLC、成交量和成交额，可供后续蜡烛图使用；当前应用本身只有分时图，没有独立的蜡烛图界面。
+
+支持沪深北股票和指数、港股、恒生/恒生科技指数，以及已有自选代码中的大连、上海、郑州和中金所期货；期货主连 `0` 后缀会映射为通达信的 `L8`。东方财富 `BK` 板块代码、部分海外指数等没有已验证的通达信映射时，会明确报错，可选择东方财富读取。热门板块、热门概念、成分列表及市场宽度仍沿用原有接口。
+
+**登录限制：** 当前 gotdx 没有账号密码认证或将用户身份写入 TCP 行情包的接口。设置中的登录入口会标注「待上游支持」并禁用；用户 ID / 会话令牌会传入本地桥接请求，留作后续认证接口使用，当前不会改变服务器端权限，也不会显示为已登录。令牌默认仅保留在本次运行内，主动勾选后才以明文写入本地 `settings.ini`。通达信目前使用 TCP 直连，网络页的 HTTP/SOCKS 代理用于既有 Qt HTTP 接口。
+
+更新 gotdx 并重新编译：
+
+```bash
+cmake --build build/dev-debug --target update-gotdx
+cmake --build --preset dev-debug
+```
+
+更新后重启应用加载新动态库。仅需升级依赖时也会重新复制动态库，不依赖 Qt 主程序重新链接。
+
+固定到某个提交或使用本地检出目录：
+
+```bash
+cmake --preset dev-debug -DMYSTOCKS_GOTDX_REF=<commit-or-tag>
+# 使用本地源码时跳过下载，不提供 update-gotdx 目标
+cmake --preset dev-debug -DMYSTOCKS_GOTDX_SOURCE_DIR=/absolute/path/to/gotdx
+```
+
+验证桥接市场映射、缺失数据处理及涨速展示：
+
+```bash
+cmake --build --preset dev-debug
+ctest --preset dev-debug
 ```
 
 ## 配置说明
@@ -110,7 +148,8 @@ stocks:
 
 - 爱盯盘：产品形态与看盘体验灵感
 - 摸鱼看盘：轻量悬浮看盘思路参考
-- 东方财富：部分行情与搜索接口参考来源
+- gotdx / 通达信：默认实时行情、分时和 K 线数据
+- 东方财富：可选行情数据源、板块与搜索接口参考来源
 
 本项目与以上产品、服务或品牌均无官方关联。
 

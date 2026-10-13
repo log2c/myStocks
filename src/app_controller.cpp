@@ -9,6 +9,7 @@
 #include "network_utils.h"
 #include "quote_model.h"
 #include "quote_provider.h"
+#include "tdx_quote_provider.h"
 #include "settings_dialog.h"
 #include "updater.h"
 #include "watchlist_utils.h"
@@ -1550,9 +1551,11 @@ void AppController::rebuildProvider() {
         m_marketBreadthProvider = nullptr;
     }
 
-    m_provider = new EastMoneyQuoteProvider(this);
+    m_provider = normalizeQuoteSource(m_cfg.quoteSource) == QStringLiteral("tdx")
+        ? static_cast<IQuoteProvider*>(new TdxQuoteProvider(this))
+        : static_cast<IQuoteProvider*>(new EastMoneyQuoteProvider(this));
 
-    qInfo() << "Rebuild provider done. source=eastmoney";
+    qInfo() << "Rebuild provider done. source=" << m_cfg.quoteSource;
 
     m_provider->setLanguage(m_resolvedLanguage);
     m_provider->applyConfig(m_cfg);

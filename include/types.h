@@ -17,6 +17,7 @@ enum QuoteColumn {
     ColCost,
     ColCostPct,
     ColBreakevenGain,
+    ColRiseSpeed, // append to preserve saved column IDs
     ColCount
 };
 
@@ -42,6 +43,7 @@ struct QuoteItem {
     double pct = qQNaN();
     double change = qQNaN();
     double cost = qQNaN(); // cost basis
+    double riseSpeed = qQNaN();
 };
 
 struct HotRankItem {
@@ -164,6 +166,11 @@ inline QString normalizeHotRankSortOrder(const QString& rawOrder) {
     return QStringLiteral("desc");
 }
 
+inline QString normalizeQuoteSource(const QString& source) {
+    return source.trimmed().toLower() == QLatin1String("eastmoney")
+        ? QStringLiteral("eastmoney") : QStringLiteral("tdx");
+}
+
 struct AppConfig {
     int pollMs = 3000;
     double opacity = 0.9;
@@ -172,6 +179,10 @@ struct AppConfig {
     bool startupShowFloatingWindow = true;
     QString language = "auto";
 
+    QString quoteSource = "tdx";
+    QString tdxUserId;
+    QString tdxToken; // session token, only persisted on explicit opt-in
+    bool tdxRememberToken = false;
     QString userAgent = defaultChrome100UserAgent();
     QString proxyType = "none";
     QString proxyHost;
@@ -217,7 +228,8 @@ struct AppConfig {
         {ColIndicator, false},
         {ColCost, false},
         {ColCostPct, false},
-        {ColBreakevenGain, false}
+        {ColBreakevenGain, false},
+        {ColRiseSpeed, true}
     };
 
     QVector<int> columnOrder {
@@ -229,7 +241,8 @@ struct AppConfig {
         ColIndicator,
         ColCost,
         ColCostPct,
-        ColBreakevenGain
+        ColBreakevenGain,
+        ColRiseSpeed
     };
 
     // 0 means auto max width based on current column content/header.
@@ -242,7 +255,8 @@ struct AppConfig {
         {ColIndicator, 0},
         {ColCost, 0},
         {ColCostPct, 0},
-        {ColBreakevenGain, 0}
+        {ColBreakevenGain, 0},
+        {ColRiseSpeed, 0}
     };
 
     bool hoverReadingEnabled = true;

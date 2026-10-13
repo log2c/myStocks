@@ -544,6 +544,10 @@ AppConfig SettingsDialog::config() const {
         m_marketBreadthHotkeyEdit->keySequence()
     ).toString(QKeySequence::PortableText);
     out.startupShowFloatingWindow = m_startupShowFloatingWindowCheck->isChecked();
+    out.quoteSource = normalizeQuoteSource(m_quoteSourceCombo->currentData().toString());
+    out.tdxUserId = m_tdxUserIdEdit->text().trimmed();
+    out.tdxRememberToken = m_tdxRememberTokenCheck->isChecked();
+    out.tdxToken = m_tdxTokenEdit->text();
     out.userAgent = m_userAgentEdit->text().trimmed();
     out.proxyType = m_proxyTypeCombo->currentData().toString();
     out.proxyHost = m_proxyHostEdit->text().trimmed();
@@ -1191,6 +1195,20 @@ QWidget* SettingsDialog::buildNetworkTab() {
     QFormLayout* form = new QFormLayout(w);
     applyCompactFormLayout(form);
 
+    m_quoteSourceCombo = new QComboBox(w);
+    m_quoteSourceCombo->addItem(trText("settings.quoteSource.tdx"), "tdx");
+    m_quoteSourceCombo->addItem(trText("settings.quoteSource.eastmoney"), "eastmoney");
+    const int sourceIndex = m_quoteSourceCombo->findData(normalizeQuoteSource(m_cfg.quoteSource));
+    m_quoteSourceCombo->setCurrentIndex(sourceIndex < 0 ? 0 : sourceIndex);
+
+    m_tdxUserIdEdit = new QLineEdit(m_cfg.tdxUserId, w);
+    m_tdxUserIdEdit->setPlaceholderText(trText("settings.tdx.userIdPlaceholder"));
+    m_tdxTokenEdit = new QLineEdit(m_cfg.tdxToken, w);
+    m_tdxTokenEdit->setEchoMode(QLineEdit::Password);
+    m_tdxTokenEdit->setPlaceholderText(trText("settings.tdx.tokenPlaceholder"));
+    m_tdxRememberTokenCheck = new QCheckBox(trText("settings.tdx.rememberToken"), w);
+    m_tdxRememberTokenCheck->setChecked(m_cfg.tdxRememberToken);
+
     m_userAgentEdit = new QLineEdit(m_cfg.userAgent, w);
     if (m_userAgentEdit->text().trimmed().isEmpty()) {
         m_userAgentEdit->setText(defaultChrome100UserAgent());
@@ -1218,6 +1236,17 @@ QWidget* SettingsDialog::buildNetworkTab() {
     m_proxyPasswordEdit = new QLineEdit(m_cfg.proxyPassword, w);
     m_proxyPasswordEdit->setEchoMode(QLineEdit::Password);
 
+    form->addRow(trText("settings.general.quoteSource"), m_quoteSourceCombo);
+    QPushButton* tdxLoginButton = new QPushButton(trText("settings.tdx.login"), w);
+    tdxLoginButton->setEnabled(false);
+    tdxLoginButton->setToolTip(trText("settings.tdx.hint"));
+    form->addRow(QString(), tdxLoginButton);
+    form->addRow(trText("settings.tdx.userId"), m_tdxUserIdEdit);
+    form->addRow(trText("settings.tdx.token"), m_tdxTokenEdit);
+    form->addRow(QString(), m_tdxRememberTokenCheck);
+    QLabel* tdxHint = new QLabel(trText("settings.tdx.hint"), w);
+    tdxHint->setWordWrap(true);
+    form->addRow(QString(), tdxHint);
     form->addRow(trText("settings.general.userAgent"), m_userAgentEdit);
     form->addRow(trText("settings.general.proxyType"), m_proxyTypeCombo);
     form->addRow(trText("settings.general.proxyHost"), m_proxyHostEdit);

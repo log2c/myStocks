@@ -226,6 +226,7 @@ signals:
 private:
     void handleResponse(const QByteArray& body, const QString& errorText);
 
+    IQuoteProvider* m_tdxProvider = nullptr;
     QString m_userAgent = defaultChrome100UserAgent();
     QNetworkProxy m_proxy = QNetworkProxy(QNetworkProxy::NoProxy);
     QNetworkAccessManager m_nam;

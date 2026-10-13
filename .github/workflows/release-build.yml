@@ -40,6 +40,27 @@ jobs:
           arch: ${{ matrix.qt_arch }}
           cache: true
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache: false
+
+      - name: Setup MinGW for Go cgo
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc
+          path-type: inherit
+
+      - name: Select cgo compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "CC=C:/msys64/mingw64/bin/gcc.exe" >> $env:GITHUB_ENV
+          "C:/msys64/mingw64/bin" >> $env:GITHUB_PATH
+
       - name: Setup MSVC
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -105,6 +126,17 @@ jobs:
 
           if (Test-Path "data.yaml") {
             Copy-Item -Path "data.yaml" -Destination (Join-Path $bundleDir "data.yaml") -Force
+          }
+
+          $tdxDll = Join-Path (Split-Path $exePath) "mystocks_gotdx.dll"
+          if (!(Test-Path $tdxDll)) { throw "gotdx bridge DLL not found" }
+          Copy-Item -Path $tdxDll -Destination $bundleDir -Force
+          Copy-Item -Path (Join-Path (Split-Path $exePath) "gotdx-futures-calendar.db") -Destination $bundleDir -Force
+          Copy-Item -Path (Join-Path (Split-Path $exePath) "gotdx-LICENSE.txt") -Destination $bundleDir -Force
+          # MinGW's runtime dependencies, when linked dynamically by cgo.
+          foreach ($dll in @("libgcc_s_seh-1.dll", "libwinpthread-1.dll")) {
+            $runtimeDll = Join-Path "C:/msys64/mingw64/bin" $dll
+            if (Test-Path $runtimeDll) { Copy-Item -Path $runtimeDll -Destination $bundleDir -Force }
           }
 
           windeployqt --release --no-translations --no-compiler-runtime --dir $bundleDir $bundleExe
