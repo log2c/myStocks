@@ -463,16 +463,15 @@ const QVector<QPair<QString, QString>>& indexQuoteConfig() {
         {QStringLiteral("0.399001"),   QStringLiteral("深证成指")},
         {QStringLiteral("0.399006"),   QStringLiteral("创业板指")},
         {QStringLiteral("1.000688"),   QStringLiteral("科创50")},
-        {QStringLiteral("47.800005"),  QStringLiteral("A股均价")},
         {QStringLiteral("100.HSI"),    QStringLiteral("恒生指数")},
         {QStringLiteral("124.HSTECH"), QStringLiteral("恒生科技")},
-        {QStringLiteral("104.CN00Y"),   QStringLiteral("富时中国A50")},
         {QStringLiteral("133.USDCNH"), QStringLiteral("美元/人民币")},
-        {QStringLiteral("118.AUTD"),       QStringLiteral("黄金T+D")},
-        {QStringLiteral("100.NDX"), QStringLiteral("纳斯达克")},
-        {QStringLiteral("100.SPX"),    QStringLiteral("标普500")},
-        {QStringLiteral("100.N225"),   QStringLiteral("日经225")},
-        {QStringLiteral("100.KS11"),   QStringLiteral("韩国KOSPI")},
+        {QStringLiteral("tdx:ex:12:A_IXIC"), QStringLiteral("纳斯达克综合")},
+        {QStringLiteral("tdx:ex:74:DJIA"), QStringLiteral("道琼斯BuyWrite")},
+        {QStringLiteral("tdx:main:1:880003"), QStringLiteral("平均股价")},
+        {QStringLiteral("tdx:ex:30:AUL8"), QStringLiteral("黄金主连")},
+        {QStringLiteral("tdx:ex:12:CNY0"), QStringLiteral("富时A50期指连续")},
+        {QStringLiteral("tdx:ex:17:BZ00W"), QStringLiteral("布油金融主连")},
     };
     return kConfig;
 }
@@ -2336,7 +2335,9 @@ void EastMoneyIndexQuoteProvider::fetch(bool forceRefresh) {
     QStringList secIds;
     secIds.reserve(config.size());
     for (const auto& pair : config) {
-        secIds.push_back(pair.first);
+        if (!watchlist_utils::isTdxCode(pair.first)) {
+            secIds.push_back(pair.first);
+        }
     }
 
     QUrl url(QStringLiteral("https://push2delay.eastmoney.com/api/qt/ulist.np/get"));

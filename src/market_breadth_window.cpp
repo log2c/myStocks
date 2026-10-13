@@ -4445,7 +4445,7 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
         constexpr int kIdxRowH = 58;
         constexpr int kIdxRowGap = 6;
         constexpr int kIdxColumns = 7;
-        constexpr int kIdxCount = 14;
+        constexpr int kIdxCount = 13;
         constexpr int kIdxCellGap = 6;
 
         const int rowsTop = indexInner.top();
@@ -4453,9 +4453,9 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
         const int cellWidth = qMax(60, (indexInner.width() - totalCellGap) / kIdxColumns);
 
         static const char* const kIdxNames[kIdxCount] = {
-            "上证指数", "深证成指", "创业板指", "科创50", "A股均价",
-            "恒生指数", "恒生科技",
-            "富时中国A50", "美元/人民币", "黄金T+D", "纳斯达克", "标普500", "日经225", "韩国KOSPI"
+            "上证指数", "深证成指", "创业板指", "科创50",
+            "恒生指数", "恒生科技", "美元/人民币",
+            "纳斯达克综合", "道琼斯BuyWrite", "平均股价", "黄金主连", "富时A50期指连续", "布油金融主连"
         };
 
         QFont idxNameFont = subtitleFont;
@@ -4469,7 +4469,7 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
             if (item.displayName == QStringLiteral("美元/人民币")) {
                 return 4;
             }
-            if (item.displayName == QStringLiteral("黄金T+D")) {
+            if (item.displayName == QStringLiteral("黄金主连")) {
                 return 2;
             }
             const double absP = std::fabs(item.price);
