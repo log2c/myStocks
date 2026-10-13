@@ -694,10 +694,6 @@ AppConfig ConfigManager::loadConfig() {
         "ui/marketBreadthRefreshSecs",
         cfg.marketBreadthRefreshSecs
     ).toInt();
-    cfg.timelineChartFixedRangeEnabled = s.value(
-        "ui/timelineChartFixedRangeEnabled",
-        cfg.timelineChartFixedRangeEnabled
-    ).toBool();
     const QVariant timelineBgValue = s.value("ui/timelineChartBgColor");
     cfg.timelineChartBgColor = timelineBgValue.isValid()
         ? timelineBgValue.value<QColor>()
@@ -707,18 +703,6 @@ AppConfig ConfigManager::loadConfig() {
     if (cfg.timelineChartBgColor == QColor(14, 18, 24, 238)) {
         cfg.timelineChartBgColor = QColor(255, 255, 255);
     }
-    cfg.timelineChartGridColor = s.value(
-        "ui/timelineChartGridColor",
-        cfg.timelineChartGridColor
-    ).value<QColor>();
-    cfg.timelineChartPriceLineColor = s.value(
-        "ui/timelineChartPriceLineColor",
-        cfg.timelineChartPriceLineColor
-    ).value<QColor>();
-    cfg.timelineChartAvgLineColor = s.value(
-        "ui/timelineChartAvgLineColor",
-        cfg.timelineChartAvgLineColor
-    ).value<QColor>();
     cfg.timelineChartTextColor = s.value(
         "ui/timelineChartTextColor",
         cfg.timelineChartTextColor
@@ -981,11 +965,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue("ui/timelineChartRefreshSecs", qBound(10, cfg.timelineChartRefreshSecs, 3600));
     s.setValue("ui/marketBreadthEnabled", cfg.marketBreadthEnabled);
     s.setValue("ui/marketBreadthRefreshSecs", qBound(10, cfg.marketBreadthRefreshSecs, 3600));
-    s.setValue("ui/timelineChartFixedRangeEnabled", cfg.timelineChartFixedRangeEnabled);
     s.setValue("ui/timelineChartBgColor", cfg.timelineChartBgColor);
-    s.setValue("ui/timelineChartGridColor", cfg.timelineChartGridColor);
-    s.setValue("ui/timelineChartPriceLineColor", cfg.timelineChartPriceLineColor);
-    s.setValue("ui/timelineChartAvgLineColor", cfg.timelineChartAvgLineColor);
     s.setValue("ui/timelineChartTextColor", cfg.timelineChartTextColor);
     s.setValue("ui/timelineChartUpColor", cfg.timelineChartUpColor);
     s.setValue("ui/timelineChartDownColor", cfg.timelineChartDownColor);

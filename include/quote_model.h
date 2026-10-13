@@ -54,6 +54,7 @@ public:
     int firstVisibleLogicalColumn() const;
     int firstContentLogicalColumn() const;
     double costForCode(const QString& code) const;
+    double priceForCode(const QString& code) const;
 
 private:
     static QString formatSigned(double value, int precision, bool percent);

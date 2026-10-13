@@ -1,33 +1,28 @@
 #include "timeline_popup.h"
 
-#include "app_constants.h"
 #include "i18n.h"
+#include "network_logger.h"
 #include "network_utils.h"
 #include "watchlist_utils.h"
 
 #include <QDateTime>
+#include <QFontMetrics>
 #include <QGuiApplication>
-#include <QHash>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
+#include <QImageReader>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPainter>
-#include <QPainterPath>
 #include <QPixmap>
 #include <QScreen>
 #include <QTimer>
 #include <QTimeZone>
 #include <QUrl>
-#include <QUrlQuery>
 #include <QVBoxLayout>
 
 #include <cmath>
-#include <limits>
 
-#ifdef WIN32
+#ifdef Q_OS_WIN
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -40,1768 +35,380 @@
 
 namespace {
 
-inline constexpr int kTimelinePopupFixedWidth = 560;
-inline constexpr int kTimelinePopupFixedHeight = 360;
-inline constexpr int kTimelinePopupScreenMarginPx = 12;
+constexpr int kPopupWidth = 560;
+constexpr int kPopupHeight = 360;
+constexpr int kScreenMargin = 12;
 
-#if defined(Q_OS_MACOS)
-static void* macWindowHandleForWidget(const QWidget* widget) {
-    if (!widget) {
-        return nullptr;
-    }
-    void* nsView = reinterpret_cast<void*>(widget->winId());
-    if (!nsView) {
-        return nullptr;
-    }
-    auto sendObjectMessage = reinterpret_cast<void* (*)(void*, SEL)>(objc_msgSend);
-    return sendObjectMessage(nsView, sel_registerName("window"));
-}
-#endif
-
-static void enforceTimelinePopupWindowLevel(const QWidget* widget) {
-    if (!widget) {
-        return;
-    }
-
-#ifdef WIN32
+void enforcePopupWindowLevel(QWidget* widget) {
+#ifdef Q_OS_WIN
     const HWND hwnd = reinterpret_cast<HWND>(widget->winId());
     if (hwnd) {
-        SetWindowPos(
-            hwnd,
-            HWND_TOPMOST,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING
-        );
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING);
     }
 #elif defined(Q_OS_MACOS)
-    void* nsWindow = macWindowHandleForWidget(widget);
-    if (nsWindow) {
-        const long level = static_cast<long>(CGWindowLevelForKey(kCGPopUpMenuWindowLevelKey));
-        auto sendIntegerMessage = reinterpret_cast<void (*)(void*, SEL, long)>(objc_msgSend);
-        sendIntegerMessage(nsWindow, sel_registerName("setLevel:"), level);
+    void* nsView = reinterpret_cast<void*>(widget->winId());
+    if (nsView) {
+        const auto sendObject = reinterpret_cast<void* (*)(void*, SEL)>(objc_msgSend);
+        void* nsWindow = sendObject(nsView, sel_registerName("window"));
+        if (nsWindow) {
+            const auto sendInteger = reinterpret_cast<void (*)(void*, SEL, long)>(objc_msgSend);
+            sendInteger(nsWindow, sel_registerName("setLevel:"),
+                static_cast<long>(CGWindowLevelForKey(kCGPopUpMenuWindowLevelKey)));
+        }
     }
 #endif
-
-    const_cast<QWidget*>(widget)->raise();
+    widget->raise();
 }
 
-struct TimelinePoint {
-    QDateTime time;
-    double price = qQNaN();
-    double avgPrice = qQNaN();
-    double volume = qQNaN();
-    double amount = qQNaN();
-};
-
-struct TradePeriod {
-    QDateTime begin;
-    QDateTime end;
-};
-
-enum class TimelineMarket {
-    Unknown,
-    Ashare,
-    HongKong,
-    Sector,
-    Future,
-};
-
-struct TimelineSession {
-    QTime morningStart;
-    QTime morningEnd;
-    QTime afternoonStart;
-    QTime afternoonEnd;
-    QString midLabel;
-};
-
-struct TimelineCacheEntry {
-    QVector<TimelinePoint> points;
-    double preClose = qQNaN();
-    QVector<TradePeriod> tradePeriods;
-    QDateTime expiresAtUtc;
-};
-
-bool isAshareIndexCode(const QString& rawCode) {
-    return watchlist_utils::isPredefinedAshareIndexCode(rawCode);
+QString signedPercentage(double value) {
+    return (value > 0.0 ? QStringLiteral("+") : QString())
+        + QString::number(value, 'f', 2) + QLatin1Char('%');
 }
 
-QString extractSixDigitsSymbol(const QString& rawCode) {
-    QString code = rawCode.trimmed().toLower();
-    if (code.startsWith(QStringLiteral("sh"))
-        || code.startsWith(QStringLiteral("sz"))
-        || code.startsWith(QStringLiteral("bj"))) {
-        code = code.mid(2);
-    } else {
-        const int dot = code.indexOf(QLatin1Char('.'));
-        if (dot > 0 && dot < code.size() - 1) {
-            const QString market = code.left(dot);
-            const QString symbol = code.mid(dot + 1);
-            if ((market == QLatin1String("0") || market == QLatin1String("1"))
-                && symbol.size() == 6
-                && watchlist_utils::isDigitsOnly(symbol)) {
-                return symbol;
-            }
-            return {};
-        }
-    }
-    return (code.size() == 6 && watchlist_utils::isDigitsOnly(code)) ? code : QString();
-}
-
-bool isAshareStockCode(const QString& rawCode) {
-    const QString code = rawCode.trimmed().toLower();
-    if (code.isEmpty() || isAshareIndexCode(code)) {
-        return false;
-    }
-
-    if (code.startsWith(QStringLiteral("sh"))
-        || code.startsWith(QStringLiteral("sz"))
-        || code.startsWith(QStringLiteral("bj"))) {
-        const QString symbol = code.mid(2);
-        return symbol.size() == 6 && watchlist_utils::isDigitsOnly(symbol);
-    }
-
-    if (code.startsWith(QStringLiteral("0.")) || code.startsWith(QStringLiteral("1."))) {
-        const QString symbol = code.mid(2);
-        return symbol.size() == 6
-            && watchlist_utils::isDigitsOnly(symbol)
-            && !isAshareIndexCode(symbol);
-    }
-
-    return code.size() == 6
-        && watchlist_utils::isDigitsOnly(code)
-        && !isAshareIndexCode(code);
-}
-
-bool isAshareTimelineSupportedCode(const QString& rawCode) {
-    return isAshareStockCode(rawCode) || isAshareIndexCode(rawCode);
-}
-
-bool isHongKongTimelineSupportedCode(const QString& rawCode) {
-    const QString code = rawCode.trimmed();
-    if (code.isEmpty()) {
-        return false;
-    }
-
-    if (!watchlist_utils::normalizeHongKongIndexCode(code).isEmpty()) {
-        return true;
-    }
-    if (watchlist_utils::isHongKongCode(code)) {
-        return true;
-    }
-
-    const QString lower = code.toLower();
-    const int dot = lower.indexOf(QLatin1Char('.'));
-    if (dot > 0 && dot < lower.size() - 1) {
-        const QString market = lower.left(dot);
-        return market == QLatin1String("100")
-            || market == QLatin1String("124")
-            || market == QLatin1String("128")
-            || market == QLatin1String("116");
-    }
-
-    return lower.endsWith(QStringLiteral(".hk"));
-}
-
-bool isSectorTimelineSupportedCode(const QString& rawCode) {
-    return !watchlist_utils::normalizeSectorCode(rawCode).isEmpty();
-}
-
-bool isFutureTimelineSupportedCode(const QString& rawCode) {
-    return !watchlist_utils::normalizeFutureCode(rawCode).isEmpty();
-}
-
-TimelineMarket timelineMarketOfCode(const QString& rawCode) {
-    if (isAshareTimelineSupportedCode(rawCode)) {
-        return TimelineMarket::Ashare;
-    }
-    if (isHongKongTimelineSupportedCode(rawCode)) {
-        return TimelineMarket::HongKong;
-    }
-    if (isSectorTimelineSupportedCode(rawCode)) {
-        return TimelineMarket::Sector;
-    }
-    if (isFutureTimelineSupportedCode(rawCode)) {
-        return TimelineMarket::Future;
-    }
-    return TimelineMarket::Unknown;
-}
-
-TimelineSession timelineSessionForMarket(TimelineMarket market) {
-    if (market == TimelineMarket::Ashare || market == TimelineMarket::Sector) {
-        return {QTime(9, 30), QTime(11, 30), QTime(13, 0), QTime(15, 0), QStringLiteral("11:30/13:00")};
-    }
-    if (market == TimelineMarket::HongKong) {
-        return {QTime(9, 30), QTime(12, 0), QTime(13, 0), QTime(16, 0), QStringLiteral("12:00/13:00")};
-    }
-    return {};
-}
-
-bool hasValidTimelineSession(const TimelineSession& session) {
-    return session.morningStart.isValid()
-        && session.morningEnd.isValid()
-        && session.afternoonStart.isValid()
-        && session.afternoonEnd.isValid()
-        && session.morningStart < session.morningEnd
-        && session.afternoonStart < session.afternoonEnd;
-}
-
-double fixedRangeLimitPctForAshareStock(const QString& rawCode) {
-    const QString code = rawCode.trimmed().toLower();
-    const QString symbol = extractSixDigitsSymbol(code);
-    if (symbol.isEmpty()) {
-        return qQNaN();
-    }
-    if (code.startsWith(QStringLiteral("bj"))
-        || symbol.startsWith(QStringLiteral("920"))
-        || symbol.startsWith(QLatin1Char('8'))
-        || symbol.startsWith(QLatin1Char('4'))) {
-        return 30.0;
-    }
-    if (symbol.startsWith(QStringLiteral("300"))
-        || symbol.startsWith(QStringLiteral("301"))
-        || symbol.startsWith(QStringLiteral("688"))
-        || symbol.startsWith(QStringLiteral("689"))) {
-        return 20.0;
-    }
-    return 10.0;
-}
-
-QString toTimelineSecId(const QString& rawCode) {
-    const QString raw = rawCode.trimmed();
-    const QString code = raw.toLower();
-    const TimelineMarket marketType = timelineMarketOfCode(raw);
-    if (code.isEmpty() || marketType == TimelineMarket::Unknown) {
-        return {};
-    }
-
-    if (marketType == TimelineMarket::Sector) {
-        const QString sector = watchlist_utils::normalizeSectorCode(raw);
-        return sector.isEmpty() ? QString() : (QStringLiteral("90.") + sector);
-    }
-
-    if (marketType == TimelineMarket::Future) {
-        return watchlist_utils::normalizeFutureCode(raw);
-    }
-
-    const int dot = code.indexOf(QLatin1Char('.'));
-    if (dot > 0 && dot < code.size() - 1) {
-        const QString market = code.left(dot);
-        const QString symbol = raw.mid(dot + 1).trimmed();
-
-        if (marketType == TimelineMarket::Ashare) {
-            bool marketOk = false;
-            const int marketValue = market.toInt(&marketOk);
-            bool symbolOk = !symbol.isEmpty();
-            for (QChar ch : symbol) {
-                if (!ch.isLetterOrNumber()) {
-                    symbolOk = false;
-                    break;
-                }
-            }
-            if (marketOk && symbolOk) {
-                if ((marketValue == 0 || marketValue == 1)
-                    && symbol.size() == 6
-                    && watchlist_utils::isDigitsOnly(symbol)) {
-                    return QString::number(marketValue) + QStringLiteral(".") + symbol.toUpper();
-                }
-                return {};
-            }
-        }
-
-        if (marketType == TimelineMarket::HongKong) {
-            QString hkDigits;
-            for (QChar ch : symbol) {
-                if (ch.isDigit()) {
-                    hkDigits.append(ch);
-                }
-            }
-
-            if (market == QLatin1String("116")) {
-                if (hkDigits.isEmpty()) {
-                    return {};
-                }
-                if (hkDigits.size() > 5) {
-                    hkDigits = hkDigits.right(5);
-                }
-                return QStringLiteral("116.") + hkDigits.rightJustified(5, '0');
-            }
-
-            if (market == QLatin1String("100")
-                || market == QLatin1String("124")
-                || market == QLatin1String("128")) {
-                const QString hkIndexCode = watchlist_utils::normalizeHongKongIndexCode(
-                    market + QStringLiteral(".") + symbol
-                );
-                if (!hkIndexCode.isEmpty()) {
-                    return hkIndexCode;
-                }
-                const QString upperSymbol = symbol.toUpper();
-                if (!upperSymbol.isEmpty()) {
-                    return market + QStringLiteral(".") + upperSymbol;
-                }
-            }
-
-            return {};
-        }
-    }
-
-    if (marketType == TimelineMarket::HongKong) {
-        const QString hkIndexCode = watchlist_utils::normalizeHongKongIndexCode(raw);
-        if (!hkIndexCode.isEmpty()) {
-            return hkIndexCode;
-        }
-
-        const auto hkSecIdFromText = [](const QString& text) -> QString {
-            QString digits;
-            for (QChar ch : text) {
-                if (ch.isDigit()) {
-                    digits.append(ch);
-                }
-            }
-            if (digits.isEmpty()) {
-                return {};
-            }
-            if (digits.size() > 5) {
-                digits = digits.right(5);
-            }
-            return QStringLiteral("116.") + digits.rightJustified(5, '0');
-        };
-
-        if (code.endsWith(QStringLiteral(".hk"))) {
-            return hkSecIdFromText(code);
-        }
-        if (code.startsWith(QStringLiteral("hk"))) {
-            return hkSecIdFromText(code);
-        }
-        if (code.size() == 5 && watchlist_utils::isDigitsOnly(code)) {
-            return QStringLiteral("116.") + code;
-        }
-        return {};
-    }
-
-    QString digits;
-    digits.reserve(6);
-    for (QChar ch : code) {
-        if (ch.isDigit()) {
-            digits.append(ch);
-        }
-    }
-    if (digits.size() > 6) {
-        digits = digits.right(6);
-    }
-    if (digits.size() != 6) {
-        return {};
-    }
-
-    if (code.startsWith(QStringLiteral("sh"))) {
-        return QStringLiteral("1.") + digits;
-    }
-    if (code.startsWith(QStringLiteral("sz"))) {
-        return QStringLiteral("0.") + digits;
-    }
-
-    QString market;
-    if (isAshareIndexCode(code)) {
-        market = digits.startsWith(QStringLiteral("399")) ? QStringLiteral("0") : QStringLiteral("1");
-    } else {
-        const QChar head = digits[0];
-        market = (head == QLatin1Char('6') || head == QLatin1Char('5') || head == QLatin1Char('9'))
-            ? QStringLiteral("1")
-            : QStringLiteral("0");
-    }
-    return market + QStringLiteral(".") + digits;
-}
-
-QString timelineRequestCacheKey(const QString& secId, int days, bool keepLastTradingDayOnly) {
-    return QStringLiteral("%1|%2|%3")
-        .arg(secId, QString::number(days), keepLastTradingDayOnly ? QStringLiteral("1") : QStringLiteral("0"));
-}
-
-QString sinaTimelineImageUrl(const QString& rawCode) {
-    const QString raw = rawCode.trimmed();
-    const QString lower = raw.toLower();
-    if (lower.startsWith(QStringLiteral("bj"))) {
-        const QString digits = lower.mid(2);
-        if (digits.size() == 6 && watchlist_utils::isDigitsOnly(digits)) {
-            return QStringLiteral("https://image.sinajs.cn/newchart/min/n/%1.gif").arg(digits);
-        }
-    }
-
-    const TimelineMarket market = timelineMarketOfCode(raw);
-    if (market == TimelineMarket::HongKong) {
-        if (!watchlist_utils::normalizeHongKongIndexCode(raw).isEmpty()) {
-            return {};
-        }
-        const QString secId = toTimelineSecId(raw);
-        const int dot = secId.indexOf(QLatin1Char('.'));
-        const QString digits = dot >= 0 ? secId.mid(dot + 1) : QString();
-        if (digits.size() != 5 || !watchlist_utils::isDigitsOnly(digits)) {
-            return {};
-        }
-        return QStringLiteral("https://image.sinajs.cn/newchart/png/min/hk/%1.png").arg(digits);
-    }
-
-    if (market != TimelineMarket::Ashare) {
-        return {};
-    }
-
-    const QStringList parts = toTimelineSecId(raw).split(QLatin1Char('.'));
-    if (parts.size() != 2 || parts.at(1).size() != 6) {
-        return {};
-    }
-
-    QString symbol;
-    if (parts.at(0) == QLatin1String("1")) {
-        symbol = QStringLiteral("sh") + parts.at(1);
-    } else if (parts.at(0) == QLatin1String("0")) {
-        symbol = QStringLiteral("sz") + parts.at(1);
-    } else {
-        return {};
-    }
-    return QStringLiteral("https://image.sinajs.cn/newchart/min/n/%1.gif").arg(symbol);
-}
-
-bool isAshareTradingTimeNow() {
-    const QTimeZone bjZone("Asia/Shanghai");
-    const QDateTime now = QDateTime::currentDateTimeUtc().toTimeZone(bjZone);
-    const int dayOfWeek = now.date().dayOfWeek();
-    if (dayOfWeek < 1 || dayOfWeek > 5) {
-        return false;
-    }
-    const QTime time = now.time();
-    return (time >= QTime(9, 30) && time <= QTime(11, 30))
-        || (time >= QTime(13, 0) && time <= QTime(15, 0));
-}
-
-bool isHongKongTradingTimeNow(const QDate& halfDayDate = QDate()) {
-    const QTimeZone bjZone("Asia/Shanghai");
-    const QDateTime now = QDateTime::currentDateTimeUtc().toTimeZone(bjZone);
-    const int dayOfWeek = now.date().dayOfWeek();
-    if (dayOfWeek < 1 || dayOfWeek > 5) {
-        return false;
-    }
-    const bool isHalfDayToday = halfDayDate.isValid() && halfDayDate == now.date();
-    const QTime time = now.time();
-    return (time >= QTime(9, 30) && time <= QTime(12, 0))
-        || (!isHalfDayToday && time >= QTime(13, 0) && time <= QTime(16, 0));
-}
-
-QString stripJsonp(const QByteArray& body) {
-    const QString text = QString::fromUtf8(body).trimmed();
-    if (text.isEmpty()) {
-        return {};
-    }
-    if (text.startsWith(QLatin1Char('{')) || text.startsWith(QLatin1Char('['))) {
-        return text;
-    }
-    const int open = text.indexOf(QLatin1Char('('));
-    const int close = text.lastIndexOf(QLatin1Char(')'));
-    if (open <= 0 || close <= open) {
-        return {};
-    }
-    return text.mid(open + 1, close - open - 1).trimmed();
-}
-
-bool parseTimelinePayload(
-    const QByteArray& body,
-    QVector<TimelinePoint>* outPoints,
-    double* outPreClose,
-    bool keepLastTradingDayOnly,
-    QVector<TradePeriod>* outTradePeriods = nullptr
-) {
-    if (!outPoints || !outPreClose) {
-        return false;
-    }
-
-    *outPreClose = qQNaN();
-    outPoints->clear();
-    if (outTradePeriods) {
-        outTradePeriods->clear();
-    }
-
-    const QString jsonText = stripJsonp(body);
-    if (jsonText.isEmpty()) {
-        return false;
-    }
-
-    QJsonParseError parseError;
-    const QJsonDocument doc = QJsonDocument::fromJson(jsonText.toUtf8(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-        return false;
-    }
-
-    const QJsonObject root = doc.object();
-    if (!root.value(QStringLiteral("data")).isObject()) {
-        return false;
-    }
-    const QJsonObject data = root.value(QStringLiteral("data")).toObject();
-    *outPreClose = data.value(QStringLiteral("preClose")).toDouble(qQNaN());
-
-    if (outTradePeriods) {
-        const QJsonValue tpVal = data.value(QStringLiteral("tradePeriods"));
-        if (tpVal.isObject()) {
-            const QJsonArray periods = tpVal.toObject().value(QStringLiteral("periods")).toArray();
-            for (const QJsonValue& pv : periods) {
-                if (!pv.isObject()) {
-                    continue;
-                }
-                const QJsonObject p = pv.toObject();
-                const qint64 bVal = static_cast<qint64>(p.value(QStringLiteral("b")).toDouble());
-                const qint64 eVal = static_cast<qint64>(p.value(QStringLiteral("e")).toDouble());
-                const QString bStr = QString::number(bVal);
-                const QString eStr = QString::number(eVal);
-                if (bStr.size() != 12 || eStr.size() != 12) {
-                    continue;
-                }
-                const QDateTime bDt = QDateTime::fromString(bStr, QStringLiteral("yyyyMMddHHmm"));
-                const QDateTime eDt = QDateTime::fromString(eStr, QStringLiteral("yyyyMMddHHmm"));
-                if (bDt.isValid() && eDt.isValid() && bDt < eDt) {
-                    outTradePeriods->push_back({bDt, eDt});
-                }
-            }
-        }
-    }
-
-    const QJsonArray trends = data.value(QStringLiteral("trends")).toArray();
-    if (trends.isEmpty()) {
-        return true;
-    }
-
-    QString targetDate;
-    const auto hasDatePrefix = [](const QString& text) {
-        return text.size() >= 10
-            && text.at(4) == QLatin1Char('-')
-            && text.at(7) == QLatin1Char('-');
-    };
-
-    if (keepLastTradingDayOnly) {
-        for (int i = trends.size() - 1; i >= 0; --i) {
-            const QString row = trends.at(i).toString().trimmed();
-            if (hasDatePrefix(row)) {
-                targetDate = row.left(10);
-                break;
-            }
-        }
-    }
-
-    outPoints->reserve(trends.size());
-    for (const QJsonValue& value : trends) {
-        const QString row = value.toString();
-        if (row.isEmpty()) {
-            continue;
-        }
-
-        const QStringList parts = row.split(QLatin1Char(','));
-        if (parts.size() < 2) {
-            continue;
-        }
-
-        const QString timeText = parts.at(0).trimmed();
-        if (keepLastTradingDayOnly
-            && !targetDate.isEmpty()
-            && hasDatePrefix(timeText)
-            && !timeText.startsWith(targetDate)) {
-            continue;
-        }
-
-        QDateTime time = QDateTime::fromString(timeText, QStringLiteral("yyyy-MM-dd HH:mm"));
-        if (!time.isValid()) {
-            const QTime hhmm = QTime::fromString(timeText, QStringLiteral("HH:mm"));
-            if (hhmm.isValid()) {
-                time = QDateTime(QDate::currentDate(), hhmm);
-            }
-        }
-
-        bool priceOk = false;
-        bool avgPriceOk = false;
-        bool volumeOk = false;
-        bool amountOk = false;
-        double price = qQNaN();
-        double avgPrice = qQNaN();
-        double volume = qQNaN();
-        double amount = qQNaN();
-
-        if (parts.size() >= 8) {
-            price = parts.at(2).toDouble(&priceOk);
-            volume = parts.at(5).toDouble(&volumeOk);
-            amount = parts.at(6).toDouble(&amountOk);
-            avgPrice = parts.at(7).toDouble(&avgPriceOk);
-            if (!avgPriceOk && parts.size() >= 4) {
-                avgPrice = parts.at(3).toDouble(&avgPriceOk);
-            }
-        } else {
-            price = parts.at(1).toDouble(&priceOk);
-            if (parts.size() >= 3) {
-                volume = parts.at(2).toDouble(&volumeOk);
-            }
-            if (parts.size() >= 4) {
-                avgPrice = parts.at(3).toDouble(&avgPriceOk);
-            }
-            if (parts.size() >= 5) {
-                amount = parts.at(4).toDouble(&amountOk);
-            }
-        }
-
-        if (!time.isValid() || !priceOk) {
-            continue;
-        }
-        if (avgPriceOk && (!std::isfinite(avgPrice) || avgPrice <= 0.0)) {
-            avgPriceOk = false;
-        }
-
-        TimelinePoint point;
-        point.time = time;
-        point.price = price;
-        point.avgPrice = avgPriceOk ? avgPrice : qQNaN();
-        point.volume = volumeOk ? volume : qQNaN();
-        point.amount = amountOk ? amount : qQNaN();
-        outPoints->push_back(point);
-    }
-
-    return true;
-}
-
-class TimelineChartWidget : public QWidget {
+class TimelineImageWidget : public QWidget {
 public:
-    explicit TimelineChartWidget(QWidget* parent = nullptr) : QWidget(parent) {
+    explicit TimelineImageWidget(QWidget* parent) : QWidget(parent) {
         setMinimumSize(280, 180);
     }
 
-    void setConfig(const AppConfig& cfg) {
+    void applyConfig(const AppConfig& cfg) {
         m_cfg = cfg;
-        m_resolvedLanguage = i18n::resolveLanguage(m_cfg.language);
         update();
     }
 
-    void setSeries(
-        const QString& title,
-        const QString& code,
-        const QVector<TimelinePoint>& points,
-        double preClose,
-        const QVector<TradePeriod>& tradePeriods = {},
-        double cost = qQNaN()
-    ) {
-        m_title = title;
+    void setStock(const QString& code, const QString& name, double cost, double price) {
+        if (m_code.compare(code, Qt::CaseInsensitive) != 0) {
+            m_image = {};
+            m_status.clear();
+        }
         m_code = code;
-        m_points = points;
-        m_preClose = preClose;
-        m_tradePeriods = tradePeriods;
+        m_name = name;
+        setQuote(cost, price);
+    }
+
+    void setQuote(double cost, double price) {
         m_cost = cost;
-        m_status.clear();
+        m_price = price;
         update();
     }
 
-    void setImage(const QString& title, const QString& code, const QPixmap& image) {
-        m_title = title;
-        m_code = code;
+    void setImage(const QPixmap& image) {
         m_image = image;
         m_status.clear();
         update();
     }
 
-    void clearImage() {
-        m_image = {};
-        update();
-    }
-
-    void setStatusText(const QString& status) {
-        // A curve refresh runs after the Sina image is shown. Its failure must
-        // not replace an already valid image with an error message.
-        if (status.isEmpty() || m_image.isNull()) {
+    void setStatus(const QString& status) {
+        // Keep the last successfully downloaded image during a refresh or a
+        // transient network failure. A different stock clears it in setStock.
+        if (m_image.isNull()) {
             m_status = status;
         }
         update();
     }
 
 protected:
-    void paintEvent(QPaintEvent* event) override {
-        Q_UNUSED(event);
-
+    void paintEvent(QPaintEvent*) override {
         QPainter painter(this);
-        painter.setRenderHint(QPainter::Antialiasing, true);
         painter.fillRect(rect(), m_cfg.timelineChartBgColor);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
 
-        const QRect r = rect().adjusted(12, 12, -12, -12);
-        if (r.width() < 80 || r.height() < 80) {
-            return;
-        }
+        const QString language = i18n::resolveLanguage(m_cfg.language);
+        const bool hasCost = std::isfinite(m_cost) && m_cost > 0.0;
+        const bool hasPrice = std::isfinite(m_price) && m_price > 0.0;
+        const bool belowCost = hasCost && hasPrice && m_price < m_cost;
+        const int lineHeight = qMax(22, painter.fontMetrics().height() + 4);
+        const int headerHeight = lineHeight * (belowCost ? 2 : 1) + 8;
+        const QRect header(8, 4, width() - 16, lineHeight);
+        const QRect imageRect(0, headerHeight, width(), qMax(0, height() - headerHeight));
 
-        const int headerLineHeight = 22;
-        const double headerLastPrice = m_points.isEmpty() ? qQNaN() : m_points.last().price;
-        const bool showBreakevenGain = std::isfinite(m_cost)
-            && m_cost > 0.0
-            && std::isfinite(headerLastPrice)
-            && headerLastPrice > 0.0
-            && headerLastPrice < m_cost;
-        const int headerHeight = showBreakevenGain ? headerLineHeight * 2 : headerLineHeight;
-        const int headerToPlotGap = showBreakevenGain ? 14 : 6;
-        const bool imageMode = !m_image.isNull();
-        const int leftMargin = imageMode ? 0 : 56;
-        const int rightMargin = imageMode ? 0 : 56;
-        const int bottomMargin = imageMode ? 0 : 28;
-        QRect headerRect(r.left(), r.top(), r.width(), headerLineHeight);
-        QRect breakevenGainRect(r.left(), r.top() + headerLineHeight, r.width(), headerLineHeight);
-        QRect plot(
-            r.left() + leftMargin,
-            r.top() + headerHeight + headerToPlotGap,
-            r.width() - leftMargin - rightMargin,
-            r.height() - headerHeight - bottomMargin - headerToPlotGap
-        );
-        if (plot.width() < 20 || plot.height() < 20) {
-            return;
-        }
-
-        painter.setPen(QPen(m_cfg.timelineChartTextColor));
-        if (!m_title.isEmpty()) {
-            painter.drawText(headerRect, Qt::AlignLeft | Qt::AlignVCenter, m_title);
-        }
-        if (!m_status.isEmpty()) {
-            painter.drawText(plot, Qt::AlignCenter, m_status);
-            return;
-        }
-        if (imageMode) {
-            const QPixmap scaled = m_image.scaled(
-                plot.size(),
-                Qt::KeepAspectRatioByExpanding,
-                Qt::SmoothTransformation
-            );
-            const QPoint topLeft(
-                plot.center().x() - scaled.width() / 2,
-                plot.center().y() - scaled.height() / 2
-            );
-            painter.save();
-            painter.setClipRect(plot);
-            painter.drawPixmap(topLeft, scaled);
-            painter.restore();
-        }
-        if (m_points.isEmpty()) {
-            if (!imageMode) {
-                painter.drawText(plot, Qt::AlignCenter, QStringLiteral("No timeline data"));
-            }
-            return;
-        }
-
-        const auto toPct = [](double value, double base) -> double {
-            if (!std::isfinite(value) || !std::isfinite(base) || qFuzzyIsNull(base)) {
-                return qQNaN();
-            }
-            return (value - base) / base * 100.0;
-        };
-        const auto signedNumber = [](double value, int prec) -> QString {
-            if (!std::isfinite(value)) {
-                return QStringLiteral("--");
-            }
-            const QString num = QString::number(std::abs(value), 'f', prec);
-            if (value > 0.0) {
-                return QStringLiteral("+%1").arg(num);
-            }
-            if (value < 0.0) {
-                return QStringLiteral("-%1").arg(num);
-            }
-            return QStringLiteral("0.%1").arg(QStringLiteral("0").repeated(prec));
-        };
-
-        if (imageMode) {
-            const TimelinePoint& lastPoint = m_points.last();
-            if (std::isfinite(m_cost) && m_cost > 0.0
-                && std::isfinite(lastPoint.price) && lastPoint.price > 0.0) {
-                const double profitPct = (lastPoint.price - m_cost) / m_cost * 100.0;
-                const QString profitLabel = i18n::t("popup.timeline.profit", m_resolvedLanguage)
-                    + QStringLiteral(": ");
-                const QString profitValue = QStringLiteral("%1%").arg(signedNumber(profitPct, 2));
-                QColor profitColor = m_cfg.timelineChartTextColor;
-                if (profitPct > 0.0) {
-                    profitColor = m_cfg.timelineChartUpColor;
-                } else if (profitPct < 0.0) {
-                    profitColor = m_cfg.timelineChartDownColor;
-                }
-
-                QFont normalFont = painter.font();
-                QFont boldFont = normalFont;
-                boldFont.setBold(true);
-                const QFontMetrics normalMetrics(normalFont);
-                const QFontMetrics boldMetrics(boldFont);
-                const int profitLabelWidth = normalMetrics.horizontalAdvance(profitLabel);
-                const int profitWidth = profitLabelWidth + boldMetrics.horizontalAdvance(profitValue);
-                int startX = headerRect.right() - profitWidth + 1;
-                painter.setPen(profitColor);
-                painter.setFont(normalFont);
-                painter.drawText(startX, headerRect.top(), profitLabelWidth, headerRect.height(),
-                    Qt::AlignLeft | Qt::AlignVCenter, profitLabel);
-                painter.setFont(boldFont);
-                painter.drawText(startX + profitLabelWidth, headerRect.top(),
-                    boldMetrics.horizontalAdvance(profitValue), headerRect.height(),
-                    Qt::AlignLeft | Qt::AlignVCenter, profitValue);
-
-                if (profitPct < 0.0) {
-                    const double breakevenPct = (m_cost / lastPoint.price - 1.0) * 100.0;
-                    const QString breakevenLabel = i18n::t(
-                        "popup.timeline.breakevenGain", m_resolvedLanguage
-                    ) + QStringLiteral(": ");
-                    const QString breakevenValue = QStringLiteral("%1%").arg(signedNumber(breakevenPct, 2));
-                    const int breakevenLabelWidth = normalMetrics.horizontalAdvance(breakevenLabel);
-                    const int breakevenWidth = breakevenLabelWidth
-                        + boldMetrics.horizontalAdvance(breakevenValue);
-                    startX = breakevenGainRect.right() - breakevenWidth + 1;
-                    painter.setPen(m_cfg.timelineChartDownColor);
-                    painter.setFont(normalFont);
-                    painter.drawText(startX, breakevenGainRect.top(), breakevenLabelWidth,
-                        breakevenGainRect.height(), Qt::AlignLeft | Qt::AlignVCenter, breakevenLabel);
-                    painter.setFont(boldFont);
-                    painter.drawText(startX + breakevenLabelWidth, breakevenGainRect.top(),
-                        boldMetrics.horizontalAdvance(breakevenValue), breakevenGainRect.height(),
-                        Qt::AlignLeft | Qt::AlignVCenter, breakevenValue);
-                }
-                painter.setFont(normalFont);
-            }
-            return;
-        }
-
-        double baseline = m_preClose;
-        if (!std::isfinite(baseline) || qFuzzyIsNull(baseline)) {
-            for (const TimelinePoint& point : m_points) {
-                if (std::isfinite(point.price) && !qFuzzyIsNull(point.price)) {
-                    baseline = point.price;
-                    break;
-                }
-            }
-        }
-        if (!std::isfinite(baseline) || qFuzzyIsNull(baseline)) {
-            painter.drawText(plot, Qt::AlignCenter, QStringLiteral("No timeline data"));
-            return;
-        }
-
-        double minPct = std::numeric_limits<double>::max();
-        double maxPct = std::numeric_limits<double>::lowest();
-        for (const TimelinePoint& point : m_points) {
-            const double pricePct = toPct(point.price, baseline);
-            if (std::isfinite(pricePct)) {
-                minPct = qMin(minPct, pricePct);
-                maxPct = qMax(maxPct, pricePct);
-            }
-            const double avgPct = toPct(point.avgPrice, baseline);
-            if (std::isfinite(avgPct)) {
-                minPct = qMin(minPct, avgPct);
-                maxPct = qMax(maxPct, avgPct);
-            }
-        }
-        minPct = qMin(minPct, 0.0);
-        maxPct = qMax(maxPct, 0.0);
-
-        if (!std::isfinite(minPct) || !std::isfinite(maxPct)) {
-            painter.drawText(plot, Qt::AlignCenter, QStringLiteral("No timeline data"));
-            return;
-        }
-
-        const TimelineMarket market = timelineMarketOfCode(m_code);
-        const TimelineSession session = timelineSessionForMarket(market);
-        const bool hasSessionAxis = hasValidTimelineSession(session);
-        const bool hasTradePeriodAxis = !m_tradePeriods.isEmpty();
-        const bool isAshareStock = isAshareStockCode(m_code);
-        const double ashareLimitPct = isAshareStock ? fixedRangeLimitPctForAshareStock(m_code) : qQNaN();
-        double yMinPct = 0.0;
-        double yMaxPct = 0.0;
-        if (qFuzzyCompare(minPct, maxPct)) {
-            minPct -= 0.5;
-            maxPct += 0.5;
-        }
-        const double dataAbsMaxPct = qMax(std::abs(minPct), std::abs(maxPct));
-        double halfSpanPct = qMax(0.5, dataAbsMaxPct * 1.08);
-        if (m_cfg.timelineChartFixedRangeEnabled
-            && std::isfinite(ashareLimitPct)
-            && ashareLimitPct > 0.0) {
-            // A board limit is the default fixed range, but valid timeline data takes precedence.
-            halfSpanPct = qMax(ashareLimitPct, halfSpanPct);
-        }
-        yMinPct = -halfSpanPct;
-        yMaxPct = halfSpanPct;
-        const double ySpanPct = qMax(0.000001, yMaxPct - yMinPct);
-
-        const auto yOfPct = [&](double pct) {
-            return plot.bottom() - qRound(((pct - yMinPct) / ySpanPct) * static_cast<double>(plot.height()));
-        };
-        const auto xOfIndex = [&](int index) {
-            if (m_points.size() <= 1) {
-                return plot.left();
-            }
-            const double t = static_cast<double>(index) / static_cast<double>(m_points.size() - 1);
-            return plot.left() + qRound(t * static_cast<double>(plot.width()));
-        };
-        const auto xOfSessionTime = [&](const QTime& t) {
-            if (!hasSessionAxis) {
-                return plot.left();
-            }
-            const int xLeft = plot.left();
-            const int xMid = xLeft + qRound(static_cast<double>(plot.width()) * 0.5);
-            const int xRight = plot.right();
-            if (t <= session.morningStart) {
-                return xLeft;
-            }
-            if (t < session.morningEnd) {
-                const int morningSpan = qMax(1, session.morningStart.secsTo(session.morningEnd));
-                const int elapsed = qBound(0, session.morningStart.secsTo(t), morningSpan);
-                return xLeft + qRound((static_cast<double>(elapsed) / morningSpan) * (xMid - xLeft));
-            }
-            if (t < session.afternoonStart) {
-                return xMid;
-            }
-            if (t < session.afternoonEnd) {
-                const int afternoonSpan = qMax(1, session.afternoonStart.secsTo(session.afternoonEnd));
-                const int elapsed = qBound(0, session.afternoonStart.secsTo(t), afternoonSpan);
-                return xMid + qRound((static_cast<double>(elapsed) / afternoonSpan) * (xRight - xMid));
-            }
-            return xRight;
-        };
-
-        qint64 tradePeriodTotalSecs = 0;
-        for (const TradePeriod& p : m_tradePeriods) {
-            tradePeriodTotalSecs += qMax(static_cast<qint64>(0), p.begin.secsTo(p.end));
-        }
-        const auto xOfTradePeriodTime = [&](const QDateTime& dt) {
-            if (tradePeriodTotalSecs <= 0) {
-                return plot.left();
-            }
-            qint64 cumSecs = 0;
-            for (const TradePeriod& p : m_tradePeriods) {
-                const qint64 periodSecs = qMax(static_cast<qint64>(0), p.begin.secsTo(p.end));
-                if (dt <= p.begin) {
-                    return plot.left() + qRound(static_cast<double>(cumSecs) / tradePeriodTotalSecs * plot.width());
-                }
-                if (dt <= p.end) {
-                    const qint64 elapsed = qBound(static_cast<qint64>(0), p.begin.secsTo(dt), periodSecs);
-                    return plot.left() + qRound(static_cast<double>(cumSecs + elapsed) / tradePeriodTotalSecs * plot.width());
-                }
-                cumSecs += periodSecs;
-            }
-            return plot.right();
-        };
-
-        bool hasHongKongAfternoonMarker = false;
-        int hongKongAfternoonMarkerX = 0;
-        bool hasHongKongMorningMarker = false;
-        int hongKongMorningMarkerX = 0;
-        if (hasTradePeriodAxis && market == TimelineMarket::HongKong) {
-            QDate tradeDate;
-            for (auto it = m_points.crbegin(); it != m_points.crend(); ++it) {
-                if (it->time.isValid()) {
-                    tradeDate = it->time.date();
-                    break;
-                }
-            }
-            if (tradeDate.isValid()) {
-                const QDateTime afternoonMarkerTime(tradeDate, QTime(15, 0));
-                for (const TradePeriod& p : m_tradePeriods) {
-                    if (p.begin <= afternoonMarkerTime && afternoonMarkerTime < p.end) {
-                        hasHongKongAfternoonMarker = true;
-                        hongKongAfternoonMarkerX = xOfTradePeriodTime(afternoonMarkerTime);
-                        break;
-                    }
-                }
-                const QDateTime morningMarkerTime(tradeDate, QTime(11, 30));
-                for (const TradePeriod& p : m_tradePeriods) {
-                    if (p.begin <= morningMarkerTime && morningMarkerTime < p.end) {
-                        hasHongKongMorningMarker = true;
-                        hongKongMorningMarkerX = xOfTradePeriodTime(morningMarkerTime);
-                        break;
-                    }
-                }
-            }
-        }
-
-        const QPen gridPen(m_cfg.timelineChartGridColor, 0.3, Qt::SolidLine);
-        QPen periodEndPen(m_cfg.timelineChartGridColor, 1.0, Qt::CustomDashLine);
-        periodEndPen.setDashPattern({3.0, 2.0});
-        painter.setPen(gridPen);
-        for (int i = 0; i <= 4; ++i) {
-            const int y = plot.top() + (plot.height() * i) / 4;
-            painter.drawLine(plot.left(), y, plot.right(), y);
-        }
-        if (hasTradePeriodAxis) {
-            for (int i = 0; i < m_tradePeriods.size(); ++i) {
-                const TradePeriod& p = m_tradePeriods.at(i);
-                if (i > 0) {
-                    painter.setPen(gridPen);
-                    const int xB = xOfTradePeriodTime(p.begin);
-                    painter.drawLine(xB, plot.top(), xB, plot.bottom());
-                }
-                painter.setPen(periodEndPen);
-                const int xE = xOfTradePeriodTime(p.end);
-                painter.drawLine(xE, plot.top(), xE, plot.bottom());
-            }
-            if (hasHongKongAfternoonMarker) {
-                painter.setPen(periodEndPen);
-                painter.drawLine(
-                    hongKongAfternoonMarkerX,
-                    plot.top(),
-                    hongKongAfternoonMarkerX,
-                    plot.bottom()
-                );
-            }
-            if (hasHongKongMorningMarker) {
-                painter.setPen(periodEndPen);
-                painter.drawLine(
-                    hongKongMorningMarkerX,
-                    plot.top(),
-                    hongKongMorningMarkerX,
-                    plot.bottom()
-                );
-            }
-        } else if (hasSessionAxis) {
-            painter.setPen(gridPen);
-            const QTime midMorning = session.morningStart.addSecs(session.morningStart.secsTo(session.morningEnd) / 2);
-            const QTime midAfternoon = session.afternoonStart.addSecs(session.afternoonStart.secsTo(session.afternoonEnd) / 2);
-            const QTime vTimes[] = {session.morningStart, midMorning, session.morningEnd, midAfternoon, session.afternoonEnd};
-            for (const QTime& t : vTimes) {
-                const int x = xOfSessionTime(t);
-                painter.drawLine(x, plot.top(), x, plot.bottom());
-            }
+        if (!m_image.isNull()) {
+            // Use the whole body without cropping the chart's axes or prices.
+            painter.drawPixmap(imageRect, m_image, m_image.rect());
         } else {
-            painter.setPen(gridPen);
-            for (int i = 0; i <= 4; ++i) {
-                const int x = plot.left() + (plot.width() * i) / 4;
-                painter.drawLine(x, plot.top(), x, plot.bottom());
-            }
+            painter.setPen(m_cfg.timelineChartTextColor);
+            painter.drawText(imageRect.adjusted(8, 8, -8, -8),
+                Qt::AlignCenter | Qt::TextWordWrap, m_status);
         }
 
-        const int yZero = yOfPct(0.0);
-        if (yZero >= plot.top() && yZero <= plot.bottom()) {
-            QPen zeroPen(m_cfg.timelineChartGridColor.lighter(150), 1.0, Qt::CustomDashLine);
-            zeroPen.setDashPattern({3.0, 2.0});
-            painter.setPen(zeroPen);
-            painter.drawLine(plot.left(), yZero, plot.right(), yZero);
+        int titleWidth = header.width();
+        if (hasCost) {
+            const double profit = hasPrice ? (m_price - m_cost) / m_cost * 100.0 : qQNaN();
+            const QString profitText = i18n::t("popup.timeline.profit", language)
+                + QStringLiteral(": ")
+                + (hasPrice ? signedPercentage(profit) : QStringLiteral("--"));
+            QFont metricFont = painter.font();
+            metricFont.setBold(true);
+            painter.setFont(metricFont);
+            titleWidth = qMax(0, header.width() - QFontMetrics(metricFont).horizontalAdvance(profitText) - 12);
+            painter.setPen(hasPrice && profit != 0.0
+                ? (profit > 0.0 ? m_cfg.timelineChartUpColor : m_cfg.timelineChartDownColor)
+                : m_cfg.timelineChartTextColor);
+            painter.drawText(header, Qt::AlignRight | Qt::AlignVCenter, profitText);
+            if (belowCost) {
+                const QString breakevenText = i18n::t("popup.timeline.breakevenGain", language)
+                    + QStringLiteral(": ") + signedPercentage((m_cost / m_price - 1.0) * 100.0);
+                painter.setPen(m_cfg.timelineChartDownColor);
+                painter.drawText(header.translated(0, lineHeight),
+                    Qt::AlignRight | Qt::AlignVCenter, breakevenText);
+            }
+            metricFont.setBold(false);
+            painter.setFont(metricFont);
         }
-
-        painter.setPen(QPen(m_cfg.timelineChartTextColor));
-        for (int i = 0; i <= 4; ++i) {
-            const double pct = yMaxPct - (ySpanPct * static_cast<double>(i) / 4.0);
-            const int y = plot.top() + (plot.height() * i) / 4;
-            painter.drawText(r.left(), y - 10, leftMargin - 6, 20, Qt::AlignRight | Qt::AlignVCenter,
-                             QStringLiteral("%1%").arg(QString::number(pct, 'f', 2)));
-        }
-
-        const int xLabelY = plot.bottom() + 8;
-        const QDate firstDate = m_tradePeriods.isEmpty() ? QDate() : m_tradePeriods.first().begin.date();
-        const auto tradePeriodTimeLabel = [&](const QDateTime& dt) {
-            return (dt.date() == firstDate) ? dt.toString(QStringLiteral("H:mm")) : dt.toString(QStringLiteral("M/d H:mm"));
-        };
-        if (hasTradePeriodAxis) {
-            const QString openLabel = tradePeriodTimeLabel(m_tradePeriods.first().begin);
-            const QString closeLabel = tradePeriodTimeLabel(m_tradePeriods.last().end);
-            painter.drawText(plot.left() - 6, xLabelY, 64, 18, Qt::AlignLeft | Qt::AlignTop, openLabel);
-            painter.drawText(plot.right() - 58, xLabelY, 64, 18, Qt::AlignRight | Qt::AlignTop, closeLabel);
-            for (int i = 0; i < m_tradePeriods.size() - 1; ++i) {
-                const TradePeriod& cur = m_tradePeriods.at(i);
-                const TradePeriod& next = m_tradePeriods.at(i + 1);
-                const int xBreak = xOfTradePeriodTime(cur.end);
-                const QString breakLabel = QStringLiteral("%1/%2")
-                    .arg(tradePeriodTimeLabel(cur.end))
-                    .arg(tradePeriodTimeLabel(next.begin));
-                painter.drawText(xBreak - 54, xLabelY, 108, 18, Qt::AlignHCenter | Qt::AlignTop, breakLabel);
-            }
-            if (hasHongKongAfternoonMarker) {
-                painter.drawText(
-                    hongKongAfternoonMarkerX - 30,
-                    xLabelY,
-                    60,
-                    18,
-                    Qt::AlignHCenter | Qt::AlignTop,
-                    QStringLiteral("15:00")
-                );
-            }
-            if (hasHongKongMorningMarker) {
-                painter.drawText(
-                    hongKongMorningMarkerX - 30,
-                    xLabelY,
-                    60,
-                    18,
-                    Qt::AlignHCenter | Qt::AlignTop,
-                    QStringLiteral("11:30")
-                );
-            }
-        } else if (hasSessionAxis) {
-            const int xOpen = xOfSessionTime(session.morningStart);
-            const int xMid = xOfSessionTime(session.morningEnd);
-            const int xClose = xOfSessionTime(session.afternoonEnd);
-            painter.drawText(xOpen - 6, xLabelY, 64, 18, Qt::AlignLeft | Qt::AlignTop, session.morningStart.toString(QStringLiteral("H:mm")));
-            painter.drawText(xMid - 54, xLabelY, 108, 18, Qt::AlignHCenter | Qt::AlignTop, session.midLabel);
-            painter.drawText(xClose - 58, xLabelY, 64, 18, Qt::AlignRight | Qt::AlignTop, session.afternoonEnd.toString(QStringLiteral("H:mm")));
-        } else {
-            const int midIndex = m_points.size() / 2;
-            const QString leftTime = m_points.first().time.isValid() ? m_points.first().time.toString(QStringLiteral("HH:mm")) : QStringLiteral("--:--");
-            const QString midTime = m_points.at(midIndex).time.isValid() ? m_points.at(midIndex).time.toString(QStringLiteral("HH:mm")) : QStringLiteral("--:--");
-            const QString rightTime = m_points.last().time.isValid() ? m_points.last().time.toString(QStringLiteral("HH:mm")) : QStringLiteral("--:--");
-            painter.drawText(plot.left() - 6, xLabelY, 60, 18, Qt::AlignLeft | Qt::AlignTop, leftTime);
-            painter.drawText(xOfIndex(midIndex) - 30, xLabelY, 60, 18, Qt::AlignHCenter | Qt::AlignTop, midTime);
-            painter.drawText(plot.right() - 54, xLabelY, 60, 18, Qt::AlignRight | Qt::AlignTop, rightTime);
-        }
-
-        QPainterPath pricePath;
-        QPainterPath avgPath;
-        bool hasPricePath = false;
-        bool hasAvgPath = false;
-        int firstPriceX = 0;
-        int lastPriceX = 0;
-        for (int i = 0; i < m_points.size(); ++i) {
-            const int x = (hasTradePeriodAxis && m_points.at(i).time.isValid())
-                ? xOfTradePeriodTime(m_points.at(i).time)
-                : (hasSessionAxis && m_points.at(i).time.isValid())
-                    ? xOfSessionTime(m_points.at(i).time.time())
-                    : xOfIndex(i);
-            const double pricePct = toPct(m_points.at(i).price, baseline);
-            if (std::isfinite(pricePct)) {
-                const int yPrice = yOfPct(pricePct);
-                if (!hasPricePath) {
-                    pricePath.moveTo(x, yPrice);
-                    hasPricePath = true;
-                    firstPriceX = x;
-                } else {
-                    pricePath.lineTo(x, yPrice);
-                }
-                lastPriceX = x;
-            }
-            if (std::isfinite(m_points.at(i).avgPrice)) {
-                const double avgPct = toPct(m_points.at(i).avgPrice, baseline);
-                if (!std::isfinite(avgPct)) {
-                    continue;
-                }
-                const int yAvg = yOfPct(avgPct);
-                if (!hasAvgPath) {
-                    avgPath.moveTo(x, yAvg);
-                    hasAvgPath = true;
-                } else {
-                    avgPath.lineTo(x, yAvg);
-                }
-            }
-        }
-
-        const TimelinePoint& lastPoint = m_points.last();
-        const double latestPct = toPct(lastPoint.price, baseline);
-        const double latestChange = std::isfinite(lastPoint.price) ? (lastPoint.price - baseline) : qQNaN();
-
-        QColor trendColor = m_cfg.timelineChartPriceLineColor;
-        if (std::isfinite(latestPct)) {
-            if (latestPct > 0.0) {
-                trendColor = m_cfg.timelineChartUpColor;
-            } else if (latestPct < 0.0) {
-                trendColor = m_cfg.timelineChartDownColor;
-            }
-        }
-
-        const auto colorByChange = [&](double pct) {
-            if (!std::isfinite(pct)) {
-                return m_cfg.timelineChartTextColor;
-            }
-            if (pct > 0.0) {
-                return m_cfg.timelineChartUpColor;
-            }
-            if (pct < 0.0) {
-                return m_cfg.timelineChartDownColor;
-            }
-            return m_cfg.timelineChartTextColor;
-        };
-
-        bool hasCostProfitText = false;
-        QString costProfitPrefix;
-        QString costProfitPct;
-        QString breakevenGainPrefix;
-        QString breakevenGainPct;
-        int costProfitTotalWidth = 0;
-        int breakevenGainTotalWidth = 0;
-        QColor costProfitColor = m_cfg.timelineChartTextColor;
-        QColor breakevenGainColor = m_cfg.timelineChartTextColor;
-        if (std::isfinite(m_cost) && m_cost > 0.0 && std::isfinite(lastPoint.price)) {
-            const double costProfitPctValue = (lastPoint.price - m_cost) / m_cost * 100.0;
-            costProfitPrefix = i18n::t("popup.timeline.profit", m_resolvedLanguage) + QStringLiteral(": ");
-            costProfitPct = QStringLiteral("%1%").arg(signedNumber(costProfitPctValue, 2));
-            costProfitColor = colorByChange(costProfitPctValue);
-            if (costProfitPctValue < 0.0 && lastPoint.price > 0.0) {
-                const double breakevenGainPctValue = (m_cost / lastPoint.price - 1.0) * 100.0;
-                breakevenGainPrefix = i18n::t("popup.timeline.breakevenGain", m_resolvedLanguage)
-                    + QStringLiteral(": ");
-                breakevenGainPct = QStringLiteral("%1%").arg(signedNumber(breakevenGainPctValue, 2));
-                breakevenGainColor = colorByChange(breakevenGainPctValue);
-            }
-
-            QFont normalFont = painter.font();
-            QFont boldFont = normalFont;
-            boldFont.setBold(true);
-            const QFontMetrics normalFm(normalFont);
-            const QFontMetrics boldFm(boldFont);
-            costProfitTotalWidth = normalFm.horizontalAdvance(costProfitPrefix)
-                + boldFm.horizontalAdvance(costProfitPct);
-            breakevenGainTotalWidth = normalFm.horizontalAdvance(breakevenGainPrefix)
-                + boldFm.horizontalAdvance(breakevenGainPct);
-            hasCostProfitText = costProfitTotalWidth > 0;
-        }
-
-        if (hasPricePath) {
-            QPainterPath fillPath = pricePath;
-            fillPath.lineTo(lastPriceX, plot.bottom());
-            fillPath.lineTo(firstPriceX, plot.bottom());
-            fillPath.closeSubpath();
-
-            QLinearGradient gradient(0, plot.top(), 0, plot.bottom());
-            gradient.setColorAt(0.0, QColor(0, 180, 255, 13));
-            gradient.setColorAt(0.5, QColor(0, 180, 255, 46));
-            gradient.setColorAt(1.0, QColor(0, 180, 255, 102));
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(QBrush(gradient));
-            painter.drawPath(fillPath);
-            painter.setBrush(Qt::NoBrush);
-            painter.setPen(QPen(m_cfg.timelineChartPriceLineColor, 0.8));
-            painter.drawPath(pricePath);
-        }
-
-        if (hasAvgPath) {
-            painter.setPen(QPen(m_cfg.timelineChartAvgLineColor, 0.8));
-            painter.drawPath(avgPath);
-        }
-
-        // Draw cost line if cost is set and within chart range
-        if (std::isfinite(m_cost) && m_cost > 0.0 && std::isfinite(baseline)) {
-            const double costPct = (m_cost - baseline) / baseline * 100.0;
-            const bool withinAshareLimit = !std::isfinite(ashareLimitPct) || ashareLimitPct <= 0.0
-                || (costPct >= -ashareLimitPct && costPct <= ashareLimitPct);
-            if (withinAshareLimit) {
-                const int yCost = yOfPct(costPct);
-                if (yCost >= plot.top() && yCost <= plot.bottom()) {
-                    QPen costPen(m_cfg.costLineColor, 1.0, Qt::CustomDashLine);
-                    costPen.setDashPattern({4.0, 3.0});
-                    painter.setPen(costPen);
-                    painter.drawLine(plot.left(), yCost, plot.right(), yCost);
-                }
-            }
-        }
-
-        if (std::isfinite(latestPct) && std::isfinite(latestChange)) {
-            double latestAvgPrice = qQNaN();
-            for (int i = m_points.size() - 1; i >= 0; --i) {
-                if (std::isfinite(m_points.at(i).avgPrice)) {
-                    latestAvgPrice = m_points.at(i).avgPrice;
-                    break;
-                }
-            }
-            const auto priceStr = [](double v) { return std::isfinite(v) ? QString::number(v, 'f', 2) : QStringLiteral("--"); };
-            const QString s0 = priceStr(lastPoint.price);
-            const QString s1 = QStringLiteral("%1%").arg(signedNumber(latestPct, 2));
-            const QString s2 = signedNumber(latestChange, 3);
-            const QString s3 = std::isfinite(latestAvgPrice) ? priceStr(latestAvgPrice) : QString();
-            QFontMetrics fm(painter.font());
-            const int gap = fm.horizontalAdvance(QStringLiteral("  "));
-            const int w0 = fm.horizontalAdvance(s0);
-            const int w1 = fm.horizontalAdvance(s1);
-            const int w2 = fm.horizontalAdvance(s2);
-            const int w3 = s3.isEmpty() ? 0 : fm.horizontalAdvance(s3);
-            const int totalW = w0 + gap + w1 + gap + w2 + (w3 > 0 ? gap + w3 : 0);
-            const bool hasBreakevenGainText = breakevenGainTotalWidth > 0;
-            const QRect& marketInfoRect = hasBreakevenGainText ? breakevenGainRect : headerRect;
-            const int titleAdvance = fm.horizontalAdvance(m_title + QStringLiteral("  "));
-            const int rightReserve = hasBreakevenGainText
-                ? (breakevenGainTotalWidth + gap)
-                : (hasCostProfitText ? (costProfitTotalWidth + gap) : 0);
-            const int availableWidth = qMax(0, marketInfoRect.width() - rightReserve);
-            const int contentRight = marketInfoRect.right() - rightReserve;
-            int x = hasBreakevenGainText
-                ? marketInfoRect.left()
-                : ((titleAdvance + totalW + 4 <= marketInfoRect.width())
-                    && (titleAdvance + totalW + 4 <= availableWidth)
-                    ? marketInfoRect.left() + titleAdvance
-                    : qMax(marketInfoRect.left(), contentRight - totalW + 1));
-            const int y = marketInfoRect.top();
-            const int h = marketInfoRect.height();
-            painter.setPen(QPen(trendColor));
-            painter.drawText(x, y, w0, h, Qt::AlignLeft | Qt::AlignVCenter, s0);
-            x += w0 + gap;
-            painter.drawText(x, y, w1, h, Qt::AlignLeft | Qt::AlignVCenter, s1);
-            x += w1 + gap;
-            painter.drawText(x, y, w2, h, Qt::AlignLeft | Qt::AlignVCenter, s2);
-            if (w3 > 0) {
-                x += w2 + gap;
-                painter.setPen(QPen(m_cfg.timelineChartAvgLineColor));
-                painter.drawText(x, y, w3, h, Qt::AlignLeft | Qt::AlignVCenter, s3);
-            }
-        }
-
-        if (hasCostProfitText) {
-            const int y = headerRect.top();
-            const int startX = headerRect.right() - costProfitTotalWidth + 1;
-
-            QFont normalFont = painter.font();
-            QFont boldFont = normalFont;
-            boldFont.setBold(true);
-            const QFontMetrics normalFm(normalFont);
-            const int prefixWidth = normalFm.horizontalAdvance(costProfitPrefix);
-            const int profitPctWidth = QFontMetrics(boldFont).horizontalAdvance(costProfitPct);
-
-            painter.setPen(QPen(costProfitColor));
-            painter.setFont(normalFont);
-            painter.drawText(startX, y, prefixWidth, headerRect.height(), Qt::AlignLeft | Qt::AlignVCenter, costProfitPrefix);
-
-            painter.setFont(boldFont);
-            painter.drawText(
-                startX + prefixWidth,
-                y,
-                profitPctWidth,
-                headerRect.height(),
-                Qt::AlignLeft | Qt::AlignVCenter,
-                costProfitPct
-            );
-            painter.setFont(normalFont);
-
-            if (breakevenGainTotalWidth > 0) {
-                const int breakevenStartX = breakevenGainRect.right() - breakevenGainTotalWidth + 1;
-                const int breakevenPrefixWidth = normalFm.horizontalAdvance(breakevenGainPrefix);
-                painter.setPen(QPen(breakevenGainColor));
-                painter.drawText(
-                    breakevenStartX,
-                    breakevenGainRect.top(),
-                    breakevenPrefixWidth,
-                    breakevenGainRect.height(),
-                    Qt::AlignLeft | Qt::AlignVCenter,
-                    breakevenGainPrefix
-                );
-                painter.setFont(boldFont);
-                painter.drawText(
-                    breakevenStartX + breakevenPrefixWidth,
-                    breakevenGainRect.top(),
-                    QFontMetrics(boldFont).horizontalAdvance(breakevenGainPct),
-                    breakevenGainRect.height(),
-                    Qt::AlignLeft | Qt::AlignVCenter,
-                    breakevenGainPct
-                );
-                painter.setFont(normalFont);
-            }
-        }
+        painter.setPen(m_cfg.timelineChartTextColor);
+        const QString title = m_name.isEmpty() ? m_code : QStringLiteral("%1  %2").arg(m_name, m_code);
+        painter.drawText(QRect(header.topLeft(), QSize(titleWidth, header.height())),
+            Qt::AlignLeft | Qt::AlignVCenter,
+            painter.fontMetrics().elidedText(title, Qt::ElideRight, titleWidth));
     }
 
 private:
     AppConfig m_cfg;
-    QString m_resolvedLanguage = QStringLiteral("zh_CN");
-    QString m_title;
     QString m_code;
+    QString m_name;
     QString m_status;
     QPixmap m_image;
-    QVector<TimelinePoint> m_points;
-    QVector<TradePeriod> m_tradePeriods;
-    double m_preClose = qQNaN();
     double m_cost = qQNaN();
+    double m_price = qQNaN();
 };
 
 } // namespace
 
-bool isTimelinePopupSupportedCode(const QString& rawCode) {
-    return timelineMarketOfCode(rawCode) != TimelineMarket::Unknown;
+QUrl timelineImageUrlForCode(const QString& rawCode) {
+    QString code = rawCode.trimmed().toLower();
+    if (code.endsWith(QStringLiteral(".hk"))) {
+        code = QStringLiteral("hk") + code.left(code.size() - 3);
+    }
+    if (code.startsWith(QStringLiteral("bj"))) {
+        const QString digits = code.mid(2);
+        return digits.size() == 6 && watchlist_utils::isDigitsOnly(digits)
+            ? QUrl(QStringLiteral("https://image.sinajs.cn/newchart/min/n/%1.gif").arg(digits))
+            : QUrl();
+    }
+    const QString normalized = watchlist_utils::normalizeApiWatchCode(code);
+    const QStringList parts = normalized.split(QLatin1Char('.'));
+    if (parts.size() != 2 || !watchlist_utils::isDigitsOnly(parts.at(1))) {
+        return {};
+    }
+    const QString market = parts.at(0);
+    const QString digits = parts.at(1);
+    if ((market == QLatin1String("116") || market == QLatin1String("128")) && digits.size() == 5) {
+        return QUrl(QStringLiteral("https://image.sinajs.cn/newchart/png/min/hk/%1.png").arg(digits));
+    }
+    if ((market != QLatin1String("0") && market != QLatin1String("1")) || digits.size() != 6) {
+        return {};
+    }
+    const bool beijing = market == QLatin1String("0")
+        && (digits.startsWith(QLatin1Char('8')) || digits.startsWith(QLatin1Char('4'))
+            || digits.startsWith(QStringLiteral("920")));
+    const QString symbol = beijing ? digits
+        : (market == QLatin1String("1") ? QStringLiteral("sh") : QStringLiteral("sz")) + digits;
+    return QUrl(QStringLiteral("https://image.sinajs.cn/newchart/min/n/%1.gif").arg(symbol));
 }
 
-class SharedTimelineChartPopupPrivate : public QWidget {
+bool isTimelinePopupSupportedCode(const QString& rawCode) {
+    return !timelineImageUrlForCode(rawCode).isEmpty();
+}
+
+class SharedTimelineChartPopupPrivate : public QObject {
 public:
-    explicit SharedTimelineChartPopupPrivate(QWidget* parentWindow)
-        : QWidget(nullptr)
-        , m_parentWindow(parentWindow) {
-        setWindowFlags(Qt::FramelessWindowHint | Qt::Tool | Qt::WindowStaysOnTopHint);
-        setAttribute(Qt::WA_ShowWithoutActivating, true);
-
-        QVBoxLayout* layout = new QVBoxLayout(this);
+    explicit SharedTimelineChartPopupPrivate(SharedTimelineChartPopup* popup)
+        : QObject(popup), m_popup(popup) {
+        auto* layout = new QVBoxLayout(popup);
         layout->setContentsMargins(0, 0, 0, 0);
-        m_chart = new TimelineChartWidget(this);
-        layout->addWidget(m_chart);
-
+        layout->setSpacing(0);
+        m_imageWidget = new TimelineImageWidget(popup);
+        layout->addWidget(m_imageWidget);
         m_refreshTimer = new QTimer(this);
         connect(m_refreshTimer, &QTimer::timeout, this, [this]() {
-            if (!isVisible() || !isCurrentMarketTradingTimeNow()) {
+            if (!m_popup->isVisible() || !isTradingTime()) {
                 m_refreshTimer->stop();
                 return;
             }
-            fetchTimeline(true);
+            fetchImage();
         });
+    }
+
+    ~SharedTimelineChartPopupPrivate() override {
+        cancelPendingReply();
     }
 
     void applyConfig(const AppConfig& cfg) {
         m_cfg = cfg;
         m_nam.setProxy(network_utils::proxyFromConfig(cfg));
-        m_chart->setConfig(cfg);
-        if (!isVisible()) {
-            return;
-        }
-        if (isCurrentMarketTradingTimeNow()) {
-            startRefreshTimer();
-        } else {
-            stopRefreshTimer();
-        }
+        m_imageWidget->applyConfig(cfg);
+        updateRefreshTimer();
     }
 
-    void showForStock(const QString& code, const QString& name, const QRect& anchorRect, int baseWidth, double cost = qQNaN()) {
-        Q_UNUSED(baseWidth);
-        if (code.trimmed().isEmpty() || !isTimelinePopupSupportedCode(code)) {
+    void showForStock(const QString& code, const QString& name,
+        const QRect& anchorRect, double cost, double price) {
+        if (!isTimelinePopupSupportedCode(code)) {
             hidePopup();
             return;
         }
-
-        const bool changed = (m_code.compare(code, Qt::CaseInsensitive) != 0);
+        const bool changed = m_code.compare(code.trimmed(), Qt::CaseInsensitive) != 0;
+        if (changed) {
+            cancelPendingReply();
+        }
         m_code = code.trimmed();
-        m_name = name.trimmed();
-        m_cost = cost;
+        m_imageWidget->setStock(m_code, name.trimmed(), cost, price);
+        m_popup->resize(kPopupWidth, kPopupHeight);
+        QRect target(anchorRect.topRight() + QPoint(12, 0), m_popup->size());
+        QScreen* screen = QGuiApplication::screenAt(anchorRect.center());
+        if (!screen) {
+            screen = QGuiApplication::primaryScreen();
+        }
+        if (screen) {
+            const QRect available = screen->availableGeometry().adjusted(
+                kScreenMargin, kScreenMargin, -kScreenMargin, -kScreenMargin);
+            if (target.right() > available.right()) {
+                target.moveLeft(anchorRect.left() - kPopupWidth - 12);
+            }
+            target.moveLeft(qMax(available.left(), target.left()));
+            target.moveTop(qMax(available.top(),
+                qMin(target.top(), available.bottom() - target.height() + 1)));
+        }
+        m_popup->setGeometry(target);
+        m_popup->show();
+        enforcePopupWindowLevel(m_popup);
         if (changed) {
-            m_hongKongHalfDayDate = QDate();
+            fetchImage();
         }
+        updateRefreshTimer();
+    }
 
-        const int popupWidth = kTimelinePopupFixedWidth;
-        const int popupHeight = kTimelinePopupFixedHeight;
-        resize(popupWidth, popupHeight);
-
-        QRect targetRect(anchorRect.topRight() + QPoint(12, 0), size());
-        QRect screenRect;
-        for (QScreen* screen : QGuiApplication::screens()) {
-            if (screen && screen->geometry().contains(anchorRect.center())) {
-                screenRect = screen->availableGeometry();
-                break;
-            }
-        }
-        if (!screenRect.isValid()) {
-            if (QScreen* screen = QGuiApplication::primaryScreen()) {
-                screenRect = screen->availableGeometry();
-            }
-        }
-
-        if (screenRect.isValid()) {
-            if (targetRect.right() + kTimelinePopupScreenMarginPx > screenRect.right()) {
-                targetRect.moveLeft(anchorRect.left() - popupWidth - 12);
-            }
-            if (targetRect.left() < screenRect.left() + kTimelinePopupScreenMarginPx) {
-                targetRect.moveLeft(screenRect.left() + kTimelinePopupScreenMarginPx);
-            }
-            if (targetRect.bottom() + kTimelinePopupScreenMarginPx > screenRect.bottom()) {
-                targetRect.moveTop(screenRect.bottom() - popupHeight - kTimelinePopupScreenMarginPx);
-            }
-            if (targetRect.top() < screenRect.top() + kTimelinePopupScreenMarginPx) {
-                targetRect.moveTop(screenRect.top() + kTimelinePopupScreenMarginPx);
-            }
-        }
-        setGeometry(targetRect);
-
-        if (!isVisible()) {
-            show();
-            raise();
-        }
-        enforceTimelinePopupWindowLevel(this);
-        if (changed) {
-            fetchTimeline(true);
-        }
-        if (isCurrentMarketTradingTimeNow()) {
-            startRefreshTimer();
-        } else {
-            stopRefreshTimer();
+    void updateQuote(const QString& code, double cost, double price) {
+        if (m_popup->isVisible() && m_code.compare(code, Qt::CaseInsensitive) == 0) {
+            m_imageWidget->setQuote(cost, price);
         }
     }
 
     void hidePopup() {
-        stopRefreshTimer();
-        if (m_reply) {
-            QNetworkReply* pendingReply = m_reply;
-            m_reply = nullptr;
-            pendingReply->abort();
-            pendingReply->deleteLater();
-        }
+        m_refreshTimer->stop();
+        cancelPendingReply();
         m_code.clear();
-        m_name.clear();
-        m_hongKongHalfDayDate = QDate();
-        hide();
+        m_imageWidget->setStock({}, {}, qQNaN(), qQNaN());
+        m_popup->hide();
     }
 
 private:
-    bool isCurrentMarketTradingTimeNow() const {
-        const TimelineMarket market = timelineMarketOfCode(m_code);
-        if (market == TimelineMarket::Ashare || market == TimelineMarket::Sector) {
-            return isAshareTradingTimeNow();
-        }
-        if (market == TimelineMarket::HongKong) {
-            return isHongKongTradingTimeNow(m_hongKongHalfDayDate);
-        }
-        if (market == TimelineMarket::Future) {
+    bool isTradingTime() const {
+        if (m_cfg.debugIgnoreTradingTime) {
             return true;
         }
-        return false;
+        const auto now = QDateTime::currentDateTimeUtc().toTimeZone(QTimeZone("Asia/Shanghai"));
+        if (now.date().dayOfWeek() > 5) {
+            return false;
+        }
+        const bool hongKong = watchlist_utils::isHongKongCode(m_code)
+            || m_code.endsWith(QStringLiteral(".hk"), Qt::CaseInsensitive);
+        const QTime morningEnd = hongKong ? QTime(12, 0) : QTime(11, 30);
+        const QTime afternoonEnd = hongKong ? QTime(16, 0) : QTime(15, 0);
+        return (now.time() >= QTime(9, 30) && now.time() <= morningEnd)
+            || (now.time() >= QTime(13, 0) && now.time() <= afternoonEnd);
     }
 
-    void updateHongKongHalfDayState(const QVector<TimelinePoint>& points) {
-        m_hongKongHalfDayDate = QDate();
-        if (timelineMarketOfCode(m_code) != TimelineMarket::HongKong || points.isEmpty()) {
-            return;
-        }
-        bool hasAfternoon = false;
-        QDate tradeDate;
-        QTime lastTime;
-        for (const TimelinePoint& point : points) {
-            if (!point.time.isValid()) {
-                continue;
+    void updateRefreshTimer() {
+        if (m_popup->isVisible() && !m_code.isEmpty() && isTradingTime()) {
+            const int interval = qBound(10, m_cfg.timelineChartRefreshSecs, 3600) * 1000;
+            if (!m_refreshTimer->isActive() || m_refreshTimer->interval() != interval) {
+                m_refreshTimer->start(interval);
             }
-            tradeDate = point.time.date();
-            lastTime = point.time.time();
-            if (lastTime >= QTime(13, 0)) {
-                hasAfternoon = true;
-                break;
-            }
+        } else {
+            m_refreshTimer->stop();
         }
-        if (hasAfternoon || !tradeDate.isValid() || lastTime < QTime(12, 0)) {
-            return;
-        }
-        const QTimeZone bjZone("Asia/Shanghai");
-        const QDateTime now = QDateTime::currentDateTimeUtc().toTimeZone(bjZone);
-        if (!now.isValid() || now.date() != tradeDate) {
-            return;
-        }
-        if (now.time() >= QTime(13, 5)) {
-            m_hongKongHalfDayDate = tradeDate;
-        }
-    }
-
-    void startRefreshTimer() {
-        const int intervalMs = qBound(10, m_cfg.timelineChartRefreshSecs, 3600) * 1000;
-        m_refreshTimer->start(intervalMs);
-    }
-
-    void stopRefreshTimer() {
-        m_refreshTimer->stop();
     }
 
     void cancelPendingReply() {
         if (!m_reply) {
             return;
         }
-        QNetworkReply* pendingReply = m_reply;
+        QNetworkReply* reply = m_reply;
         m_reply = nullptr;
-        pendingReply->abort();
-        pendingReply->deleteLater();
+        disconnect(reply, nullptr, this, nullptr);
+        reply->abort();
+        reply->deleteLater();
     }
 
-    void applyTimelineResult(const QVector<TimelinePoint>& points, double preClose, const QVector<TradePeriod>& tradePeriods = {}) {
-        updateHongKongHalfDayState(points);
-        if (!isCurrentMarketTradingTimeNow()) {
-            stopRefreshTimer();
-        }
-        const QString title = m_name.isEmpty() ? m_code : QStringLiteral("%1  %2").arg(m_name, m_code);
-        m_chart->setSeries(title, m_code, points, preClose, tradePeriods, m_cost);
-    }
-
-    bool tryUseCachedTimeline(const QString& cacheKey, int days, bool fallbackAllowed, int token) {
-        auto it = m_timelineCache.find(cacheKey);
-        if (it == m_timelineCache.end()) {
-            return false;
-        }
-        const QDateTime nowUtc = QDateTime::currentDateTimeUtc();
-        if (!it->expiresAtUtc.isValid() || it->expiresAtUtc <= nowUtc) {
-            m_timelineCache.erase(it);
-            return false;
-        }
-        const QVector<TimelinePoint> points = it->points;
-        const double preClose = it->preClose;
-        const QVector<TradePeriod> tradePeriods = it->tradePeriods;
-        if (points.isEmpty() && days == 1 && fallbackAllowed) {
-            requestTimeline(2, false, true, token);
-            return true;
-        }
-        applyTimelineResult(points, preClose, tradePeriods);
-        return true;
-    }
-
-    void cacheTimelineResult(
-        const QString& cacheKey,
-        const QVector<TimelinePoint>& points,
-        double preClose,
-        const QVector<TradePeriod>& tradePeriods
-    ) {
-        TimelineCacheEntry entry;
-        entry.points = points;
-        entry.preClose = preClose;
-        entry.tradePeriods = tradePeriods;
-        entry.expiresAtUtc = QDateTime::currentDateTimeUtc().addMSecs(app_constants::kNetworkCacheTtlMs);
-        m_timelineCache.insert(cacheKey, entry);
-    }
-
-    void requestTimeline(int days, bool fallbackAllowed, bool keepLastTradingDayOnly, int token) {
-        const QString secId = toTimelineSecId(m_code);
-        if (secId.isEmpty()) {
-            m_chart->setStatusText(QStringLiteral("Unsupported code: %1").arg(m_code));
+    void fetchImage() {
+        if (m_reply) {
             return;
         }
-
-        const TimelineMarket marketType = timelineMarketOfCode(m_code);
-        cancelPendingReply();
-
-        const QString cacheKey = timelineRequestCacheKey(secId, days, keepLastTradingDayOnly);
-        if (tryUseCachedTimeline(cacheKey, days, fallbackAllowed, token)) {
+        const QUrl url = timelineImageUrlForCode(m_code);
+        if (url.isEmpty()) {
             return;
         }
-
-        QUrl url(QStringLiteral("https://push2delay.eastmoney.com/api/qt/stock/trends2/get"));
-        QUrlQuery query;
-        const QString callback = QStringLiteral("jQuery%1_%2")
-            .arg(QDateTime::currentMSecsSinceEpoch() % 1000000)
-            .arg(QDateTime::currentMSecsSinceEpoch());
-        const QString fields1 = (marketType == TimelineMarket::Ashare)
-            ? QStringLiteral("f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14")
-            : QStringLiteral("f1,f2,f8,f10,f14");
-        const QString fields2 = (marketType == TimelineMarket::Ashare)
-            ? QStringLiteral("f51,f52,f53,f54,f55,f56,f57,f58")
-            : QStringLiteral("f51,f53,f56,f58");
-        query.addQueryItem(QStringLiteral("cb"), callback);
-        query.addQueryItem(QStringLiteral("secid"), secId);
-        query.addQueryItem(QStringLiteral("ut"), QStringLiteral("fa5fd1943c7b386f172d6893dbfba10b"));
-        query.addQueryItem(QStringLiteral("fields1"), fields1);
-        query.addQueryItem(QStringLiteral("fields2"), fields2);
-        query.addQueryItem(QStringLiteral("iscr"), QStringLiteral("0"));
-        query.addQueryItem(QStringLiteral("iscca"), QStringLiteral("0"));
-        query.addQueryItem(QStringLiteral("ndays"), QString::number(days));
-        query.addQueryItem(QStringLiteral("_"), QString::number(QDateTime::currentMSecsSinceEpoch()));
-        url.setQuery(query);
-
-        QNetworkRequest req(url);
-        const QString userAgent = m_cfg.userAgent.trimmed().isEmpty()
-            ? defaultChrome100UserAgent()
-            : m_cfg.userAgent.trimmed();
-        req.setRawHeader("User-Agent", userAgent.toUtf8());
-        req.setRawHeader("Referer", "https://quote.eastmoney.com/");
-        req.setTransferTimeout(10000);
-
-        QNetworkReply* reply = m_nam.get(req);
+        m_imageWidget->setStatus(QStringLiteral("Loading..."));
+        QNetworkRequest request(url);
+        request.setRawHeader("User-Agent", network_utils::effectiveUserAgent(m_cfg).toUtf8());
+        request.setRawHeader("Referer", "https://finance.sina.com.cn/");
+        request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::PreferNetwork);
+        request.setTransferTimeout(20000);
+        const auto trace = network_logger::logRequestStart(
+            QStringLiteral("sina-timeline-image"), QStringLiteral("GET"), request, m_nam.proxy());
+        QNetworkReply* reply = m_nam.get(request);
         m_reply = reply;
-        connect(reply, &QNetworkReply::finished, this, [this, reply, token, days, fallbackAllowed, keepLastTradingDayOnly, cacheKey]() {
-            if (reply == m_reply) {
-                m_reply = nullptr;
-            }
-            if (token != m_requestToken) {
+        connect(reply, &QNetworkReply::finished, this, [this, reply, trace]() {
+            if (m_reply != reply) {
                 reply->deleteLater();
                 return;
             }
-
-            const QString error = reply->error() == QNetworkReply::NoError ? QString() : reply->errorString();
+            m_reply = nullptr;
             const QByteArray body = reply->readAll();
-            reply->deleteLater();
-
-            if (!error.isEmpty()) {
-                m_chart->setStatusText(QStringLiteral("Request failed: %1").arg(error));
-                return;
-            }
-
-            QVector<TimelinePoint> points;
-            double preClose = qQNaN();
-            QVector<TradePeriod> tradePeriods;
-            if (!parseTimelinePayload(body, &points, &preClose, keepLastTradingDayOnly, &tradePeriods)) {
-                m_chart->setStatusText(QStringLiteral("Timeline parse failed"));
-                return;
-            }
-
-            cacheTimelineResult(cacheKey, points, preClose, tradePeriods);
-            if (points.isEmpty() && days == 1 && fallbackAllowed) {
-                requestTimeline(2, false, true, token);
-                return;
-            }
-            applyTimelineResult(points, preClose, tradePeriods);
-        });
-    }
-
-    void requestSinaTimelineImage(const QUrl& url, bool fallbackAllowed, int token) {
-        cancelPendingReply();
-
-        QNetworkRequest req(url);
-        const QString userAgent = m_cfg.userAgent.trimmed().isEmpty()
-            ? defaultChrome100UserAgent()
-            : m_cfg.userAgent.trimmed();
-        req.setRawHeader("User-Agent", userAgent.toUtf8());
-        req.setRawHeader("Referer", "https://finance.sina.com.cn/");
-        req.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::PreferNetwork);
-        req.setTransferTimeout(20000);
-
-        QNetworkReply* reply = m_nam.get(req);
-        m_reply = reply;
-        connect(reply, &QNetworkReply::finished, this, [this, reply, token, fallbackAllowed]() {
-            if (reply == m_reply) {
-                m_reply = nullptr;
-            }
-            if (token != m_requestToken) {
-                reply->deleteLater();
-                return;
-            }
-
+            network_logger::logRequestFinish(trace, reply, body.size(), {});
             const QString error = reply->error() == QNetworkReply::NoError
-                ? QString()
-                : reply->errorString();
-            const QByteArray body = reply->readAll();
+                ? QString() : reply->errorString();
             reply->deleteLater();
-
-            QPixmap image;
-            if (error.isEmpty() && image.loadFromData(body) && !image.isNull()) {
-                const QString title = m_name.isEmpty()
-                    ? m_code
-                    : QStringLiteral("%1  %2").arg(m_name, m_code);
-                m_chart->setImage(title, m_code, image);
-                requestTimeline(1, false, false, token);
+            if (!error.isEmpty()) {
+                m_imageWidget->setStatus(QStringLiteral("Request failed: %1").arg(error));
                 return;
             }
-
-            requestTimeline(1, fallbackAllowed, false, token);
+            QPixmap image;
+            if (body.isEmpty() || !image.loadFromData(body) || image.isNull()) {
+                qWarning() << "Timeline image decode failed" << trace.url
+                    << "supported formats=" << QImageReader::supportedImageFormats();
+                m_imageWidget->setStatus(QStringLiteral("Unable to load timeline image"));
+                return;
+            }
+            m_imageWidget->setImage(image);
         });
     }
 
-    void fetchTimeline(bool fallbackAllowed) {
-        ++m_requestToken;
-        const QString title = m_name.isEmpty() ? m_code : QStringLiteral("%1  %2").arg(m_name, m_code);
-        m_chart->clearImage();
-        m_chart->setStatusText(QStringLiteral("Loading %1 ...").arg(title));
-        const QUrl imageUrl(sinaTimelineImageUrl(m_code));
-        if (imageUrl.isValid() && !imageUrl.isEmpty()) {
-            requestSinaTimelineImage(imageUrl, fallbackAllowed, m_requestToken);
-        } else {
-            requestTimeline(1, fallbackAllowed, false, m_requestToken);
-        }
-    }
-
-    QWidget* m_parentWindow = nullptr;
-    AppConfig m_cfg;
-    TimelineChartWidget* m_chart = nullptr;
+    SharedTimelineChartPopup* m_popup = nullptr;
+    TimelineImageWidget* m_imageWidget = nullptr;
     QTimer* m_refreshTimer = nullptr;
     QNetworkAccessManager m_nam;
     QNetworkReply* m_reply = nullptr;
+    AppConfig m_cfg;
     QString m_code;
-    QString m_name;
-    double m_cost = qQNaN();
-    QDate m_hongKongHalfDayDate;
-    QHash<QString, TimelineCacheEntry> m_timelineCache;
-    int m_requestToken = 0;
 };
 
 SharedTimelineChartPopup::SharedTimelineChartPopup(QWidget* parent)
-    : QWidget(parent)
-    , d(new SharedTimelineChartPopupPrivate(parent)) {}
+    : QWidget(nullptr), d(new SharedTimelineChartPopupPrivate(this)) {
+    Q_UNUSED(parent);
+    setWindowFlags(Qt::FramelessWindowHint | Qt::Tool | Qt::WindowStaysOnTopHint);
+    setAttribute(Qt::WA_ShowWithoutActivating, true);
+}
 
 SharedTimelineChartPopup::~SharedTimelineChartPopup() {
     delete d;
-    d = nullptr;
 }
 
 void SharedTimelineChartPopup::applyConfig(const AppConfig& cfg) {
-    if (d) {
-        d->applyConfig(cfg);
-    }
+    d->applyConfig(cfg);
 }
 
-void SharedTimelineChartPopup::showForStock(
-    const QString& code,
-    const QString& name,
-    const QRect& anchorRect,
-    int baseWidth,
-    double cost
-) {
-    if (d) {
-        d->showForStock(code, name, anchorRect, baseWidth, cost);
-    }
+void SharedTimelineChartPopup::showForStock(const QString& code, const QString& name,
+    const QRect& anchorRect, int baseWidth, double cost, double price) {
+    Q_UNUSED(baseWidth);
+    d->showForStock(code, name, anchorRect, cost, price);
+}
+
+void SharedTimelineChartPopup::updateQuoteForStock(const QString& code, double cost, double price) {
+    d->updateQuote(code, cost, price);
 }
 
 void SharedTimelineChartPopup::hidePopup() {
-    if (d) {
-        d->hidePopup();
-    }
+    d->hidePopup();
 }

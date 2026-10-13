@@ -13,7 +13,7 @@
 
 #include <functional>
 
-class TimelineChartPopup;
+class SharedTimelineChartPopup;
 class MarketBreadthDetailWindow;
 
 class FloatingWindow : public QWidget {
@@ -90,7 +90,7 @@ private:
     QFrame* m_panel = nullptr;
     QTableView* m_table = nullptr;       // top section: index rows + header
     QTableView* m_stockTable = nullptr;  // bottom section: stock rows (group-filtered)
-    TimelineChartPopup* m_timelinePopup = nullptr;
+    SharedTimelineChartPopup* m_timelinePopup = nullptr;
     MarketBreadthDetailWindow* m_marketBreadthDetailPopup = nullptr;
     QString m_timelineHoverCode;
     QString m_timelineHoverName;

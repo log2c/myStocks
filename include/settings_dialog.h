@@ -148,11 +148,7 @@ private:
     QSpinBox* m_timelineChartRefreshSecsSpin = nullptr;
     QCheckBox* m_marketBreadthEnabledCheck = nullptr;
     QSpinBox* m_marketBreadthRefreshSecsSpin = nullptr;
-    QCheckBox* m_timelineChartFixedRangeCheck = nullptr;
     QPushButton* m_timelineChartBgBtn = nullptr;
-    QPushButton* m_timelineChartGridBtn = nullptr;
-    QPushButton* m_timelineChartPriceLineBtn = nullptr;
-    QPushButton* m_timelineChartAvgLineBtn = nullptr;
     QPushButton* m_timelineChartTextBtn = nullptr;
     QPushButton* m_timelineChartUpBtn = nullptr;
     QPushButton* m_timelineChartDownBtn = nullptr;

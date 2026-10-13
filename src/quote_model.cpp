@@ -734,3 +734,9 @@ double QuoteModel::costForCode(const QString& code) const {
     if (row < 0 || row >= m_rows.size()) return qQNaN();
     return m_rows[row].cost;
 }
+
+double QuoteModel::priceForCode(const QString& code) const {
+    const int row = m_rowByCode.value(code, -1);
+    if (row < 0 || row >= m_rows.size()) return qQNaN();
+    return m_rows[row].price;
+}

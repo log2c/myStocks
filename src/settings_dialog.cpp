@@ -617,21 +617,9 @@ AppConfig SettingsDialog::config() const {
     out.marketBreadthRefreshSecs = m_marketBreadthRefreshSecsSpin
         ? qBound(10, m_marketBreadthRefreshSecsSpin->value(), 3600)
         : out.marketBreadthRefreshSecs;
-    out.timelineChartFixedRangeEnabled = m_timelineChartFixedRangeCheck
-        ? m_timelineChartFixedRangeCheck->isChecked()
-        : out.timelineChartFixedRangeEnabled;
     out.timelineChartBgColor = m_timelineChartBgBtn
         ? buttonColor(m_timelineChartBgBtn)
         : out.timelineChartBgColor;
-    out.timelineChartGridColor = m_timelineChartGridBtn
-        ? buttonColor(m_timelineChartGridBtn)
-        : out.timelineChartGridColor;
-    out.timelineChartPriceLineColor = m_timelineChartPriceLineBtn
-        ? buttonColor(m_timelineChartPriceLineBtn)
-        : out.timelineChartPriceLineColor;
-    out.timelineChartAvgLineColor = m_timelineChartAvgLineBtn
-        ? buttonColor(m_timelineChartAvgLineBtn)
-        : out.timelineChartAvgLineColor;
     out.timelineChartTextColor = m_timelineChartTextBtn
         ? buttonColor(m_timelineChartTextBtn)
         : out.timelineChartTextColor;
@@ -1623,29 +1611,10 @@ QWidget* SettingsDialog::buildDisplayTab() {
     applyNumericSpinBoxWidth(m_timelineChartRefreshSecsSpin);
     timelineForm->addRow(trText("settings.display.timelineRefresh"), m_timelineChartRefreshSecsSpin);
 
-    m_timelineChartFixedRangeCheck = new QCheckBox(trText("settings.display.timelineFixedRange"), w);
-    m_timelineChartFixedRangeCheck->setChecked(m_cfg.timelineChartFixedRangeEnabled);
-    addCompactFormRow(timelineForm, m_timelineChartFixedRangeCheck);
-
     const QString timelinePickColorTitle = trText("settings.color.pick");
     m_timelineChartBgBtn = createColorButton(
         w,
         m_cfg.timelineChartBgColor,
-        timelinePickColorTitle
-    );
-    m_timelineChartGridBtn = createColorButton(
-        w,
-        m_cfg.timelineChartGridColor,
-        timelinePickColorTitle
-    );
-    m_timelineChartPriceLineBtn = createColorButton(
-        w,
-        m_cfg.timelineChartPriceLineColor,
-        timelinePickColorTitle
-    );
-    m_timelineChartAvgLineBtn = createColorButton(
-        w,
-        m_cfg.timelineChartAvgLineColor,
         timelinePickColorTitle
     );
     m_timelineChartTextBtn = createColorButton(
@@ -1665,9 +1634,6 @@ QWidget* SettingsDialog::buildDisplayTab() {
     );
 
     timelineForm->addRow(trText("settings.display.timelineBg"), m_timelineChartBgBtn);
-    timelineForm->addRow(trText("settings.display.timelineGrid"), m_timelineChartGridBtn);
-    timelineForm->addRow(trText("settings.display.timelinePriceLine"), m_timelineChartPriceLineBtn);
-    timelineForm->addRow(trText("settings.display.timelineAvgLine"), m_timelineChartAvgLineBtn);
     timelineForm->addRow(trText("settings.display.timelineText"), m_timelineChartTextBtn);
     timelineForm->addRow(trText("settings.display.timelineUp"), m_timelineChartUpBtn);
     timelineForm->addRow(trText("settings.display.timelineDown"), m_timelineChartDownBtn);
@@ -1679,17 +1645,11 @@ QWidget* SettingsDialog::buildDisplayTab() {
     const AppConfig timelineDefaultCfg;
     connect(resetTimelineColorsButton, &QPushButton::clicked, this, [this, timelineDefaultCfg]() {
         m_timelineChartBgBtn->setProperty("pickColor", timelineDefaultCfg.timelineChartBgColor);
-        m_timelineChartGridBtn->setProperty("pickColor", timelineDefaultCfg.timelineChartGridColor);
-        m_timelineChartPriceLineBtn->setProperty("pickColor", timelineDefaultCfg.timelineChartPriceLineColor);
-        m_timelineChartAvgLineBtn->setProperty("pickColor", timelineDefaultCfg.timelineChartAvgLineColor);
         m_timelineChartTextBtn->setProperty("pickColor", timelineDefaultCfg.timelineChartTextColor);
         m_timelineChartUpBtn->setProperty("pickColor", timelineDefaultCfg.timelineChartUpColor);
         m_timelineChartDownBtn->setProperty("pickColor", timelineDefaultCfg.timelineChartDownColor);
 
         paintColorButton(m_timelineChartBgBtn, timelineDefaultCfg.timelineChartBgColor);
-        paintColorButton(m_timelineChartGridBtn, timelineDefaultCfg.timelineChartGridColor);
-        paintColorButton(m_timelineChartPriceLineBtn, timelineDefaultCfg.timelineChartPriceLineColor);
-        paintColorButton(m_timelineChartAvgLineBtn, timelineDefaultCfg.timelineChartAvgLineColor);
         paintColorButton(m_timelineChartTextBtn, timelineDefaultCfg.timelineChartTextColor);
         paintColorButton(m_timelineChartUpBtn, timelineDefaultCfg.timelineChartUpColor);
         paintColorButton(m_timelineChartDownBtn, timelineDefaultCfg.timelineChartDownColor);
@@ -1708,9 +1668,6 @@ QWidget* SettingsDialog::buildDisplayTab() {
         if (m_marketBreadthRefreshSecsSpin) {
             m_marketBreadthRefreshSecsSpin->setEnabled(marketBreadthEnabled);
         }
-        if (m_timelineChartFixedRangeCheck) {
-            m_timelineChartFixedRangeCheck->setEnabled(enabled);
-        }
         if (timelineRefreshLabel) {
             timelineRefreshLabel->setEnabled(enabled);
         }
@@ -1719,15 +1676,6 @@ QWidget* SettingsDialog::buildDisplayTab() {
         }
         if (m_timelineChartBgBtn) {
             m_timelineChartBgBtn->setEnabled(enabled);
-        }
-        if (m_timelineChartGridBtn) {
-            m_timelineChartGridBtn->setEnabled(enabled);
-        }
-        if (m_timelineChartPriceLineBtn) {
-            m_timelineChartPriceLineBtn->setEnabled(enabled);
-        }
-        if (m_timelineChartAvgLineBtn) {
-            m_timelineChartAvgLineBtn->setEnabled(enabled);
         }
         if (m_timelineChartTextBtn) {
             m_timelineChartTextBtn->setEnabled(enabled);
