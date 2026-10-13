@@ -112,6 +112,13 @@ if(APPLE)
     )
 endif()
 
+function(mystocks_enable_agl_stub target)
+    if(APPLE AND TARGET AGL_stub)
+        add_dependencies(${target} AGL_stub)
+        target_link_options(${target} BEFORE PRIVATE "-F${_agl_stub_dir}")
+    endif()
+endfunction()
+
 if(APPLE AND NOT DEFINED yaml-cpp_DIR)
     set(_yaml_cpp_prefix_candidates
         "/opt/homebrew/opt/yaml-cpp"
@@ -272,10 +279,7 @@ if(APPLE)
     # Ensure the AGL stub framework is built before we link, and put its
     # directory on the framework search path so any leftover "-framework AGL"
     # flag from Qt or its dependencies resolves against the stub.
-    if(TARGET AGL_stub)
-        add_dependencies(MyStocks AGL_stub)
-        target_link_options(MyStocks BEFORE PRIVATE "-F${_agl_stub_dir}")
-    endif()
+    mystocks_enable_agl_stub(MyStocks)
 
     set(MYSTOCKS_MAC_ICON_NAME "MyStocks.icns")
     set(MYSTOCKS_MAC_ICON_SOURCE "${CMAKE_SOURCE_DIR}/assets/icons/icon.png")
@@ -344,6 +348,7 @@ if(BUILD_TESTING)
         include/quote_model.h)
     target_include_directories(MyStocksQuoteModelTest PRIVATE include)
     target_link_libraries(MyStocksQuoteModelTest PRIVATE Qt6::Widgets)
+    mystocks_enable_agl_stub(MyStocksQuoteModelTest)
     add_test(NAME quote_model COMMAND MyStocksQuoteModelTest)
     qt_add_executable(MyStocksTdxConfigTest
         tests/tdx_config_test.cpp src/config_manager.cpp src/app_logging.cpp
@@ -351,6 +356,10 @@ if(BUILD_TESTING)
     target_include_directories(MyStocksTdxConfigTest PRIVATE include)
     target_link_libraries(MyStocksTdxConfigTest PRIVATE Qt6::Widgets
         $<IF:$<TARGET_EXISTS:yaml-cpp::yaml-cpp>,yaml-cpp::yaml-cpp,yaml-cpp>)
+    if(WIN32)
+        target_link_libraries(MyStocksTdxConfigTest PRIVATE Dbghelp)
+    endif()
+    mystocks_enable_agl_stub(MyStocksTdxConfigTest)
     add_test(NAME tdx_config COMMAND MyStocksTdxConfigTest)
     set_tests_properties(tdx_config PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
