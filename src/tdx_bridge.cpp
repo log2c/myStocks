@@ -5,6 +5,7 @@
 #include <QFutureWatcher>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonParseError>
 #include <QLibrary>
 #include <QMutex>
@@ -82,6 +83,18 @@ void request(QObject* context, const AppConfig& config, QJsonObject payload, Cal
     payload.insert(QStringLiteral("user"), QJsonObject{
         {QStringLiteral("userId"), config.tdxUserId},
         {QStringLiteral("token"), config.tdxToken}
+    });
+    payload.insert(QStringLiteral("servers"), QJsonObject{
+        {QStringLiteral("main"), QJsonObject{
+            {QStringLiteral("mode"), config.tdxMainAutoSelect ? QStringLiteral("auto") : QStringLiteral("manual")},
+            {QStringLiteral("address"), config.tdxMainServer.trimmed()},
+            {QStringLiteral("addresses"), QJsonArray::fromStringList(config.tdxMainServerPool)}
+        }},
+        {QStringLiteral("ex"), QJsonObject{
+            {QStringLiteral("mode"), config.tdxExAutoSelect ? QStringLiteral("auto") : QStringLiteral("manual")},
+            {QStringLiteral("address"), config.tdxExServer.trimmed()},
+            {QStringLiteral("addresses"), QJsonArray::fromStringList(config.tdxExServerPool)}
+        }}
     });
     auto* watcher = new QFutureWatcher<Result>(context);
     QObject::connect(watcher, &QFutureWatcher<Result>::finished, context,

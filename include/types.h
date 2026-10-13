@@ -4,6 +4,7 @@
 #include <QMap>
 #include <QRect>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <QtGlobal>
 
@@ -183,6 +184,12 @@ struct AppConfig {
     QString tdxUserId;
     QString tdxToken; // session token, only persisted on explicit opt-in
     bool tdxRememberToken = false;
+    bool tdxMainAutoSelect = true;
+    bool tdxExAutoSelect = true;
+    QString tdxMainServer;
+    QString tdxExServer;
+    QStringList tdxMainServerPool; // empty uses the SDK's built-in MAC servers
+    QStringList tdxExServerPool;
     QString userAgent = defaultChrome100UserAgent();
     QString proxyType = "none";
     QString proxyHost;

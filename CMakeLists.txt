@@ -167,6 +167,7 @@ set(MYSTOCKS_SOURCES
     src/quote_model.cpp
     src/quote_provider.cpp
     src/settings_dialog.cpp
+    src/settings_tdx.cpp
     src/tdx_bridge.cpp
     src/tdx_quote_provider.cpp
     src/timeline_popup.cpp
@@ -344,4 +345,12 @@ if(BUILD_TESTING)
     target_include_directories(MyStocksQuoteModelTest PRIVATE include)
     target_link_libraries(MyStocksQuoteModelTest PRIVATE Qt6::Widgets)
     add_test(NAME quote_model COMMAND MyStocksQuoteModelTest)
+    qt_add_executable(MyStocksTdxConfigTest
+        tests/tdx_config_test.cpp src/config_manager.cpp src/app_logging.cpp
+        src/crash_logging.cpp src/i18n.cpp src/watchlist_utils.cpp)
+    target_include_directories(MyStocksTdxConfigTest PRIVATE include)
+    target_link_libraries(MyStocksTdxConfigTest PRIVATE Qt6::Widgets
+        $<IF:$<TARGET_EXISTS:yaml-cpp::yaml-cpp>,yaml-cpp::yaml-cpp,yaml-cpp>)
+    add_test(NAME tdx_config COMMAND MyStocksTdxConfigTest)
+    set_tests_properties(tdx_config PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()

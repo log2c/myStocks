@@ -617,6 +617,12 @@ AppConfig ConfigManager::loadConfig() {
     cfg.tdxUserId = readConfigValue(s, QStringLiteral("tdxUserId"), cfg.tdxUserId).toString().trimmed();
     cfg.tdxRememberToken = readConfigValue(s, QStringLiteral("tdxRememberToken"), false).toBool();
     if (cfg.tdxRememberToken) cfg.tdxToken = readConfigValue(s, QStringLiteral("tdxToken"), QString()).toString();
+    cfg.tdxMainAutoSelect = readConfigValue(s, QStringLiteral("tdxMainAutoSelect"), true).toBool();
+    cfg.tdxExAutoSelect = readConfigValue(s, QStringLiteral("tdxExAutoSelect"), true).toBool();
+    cfg.tdxMainServer = readConfigValue(s, QStringLiteral("tdxMainServer"), QString()).toString().trimmed();
+    cfg.tdxExServer = readConfigValue(s, QStringLiteral("tdxExServer"), QString()).toString().trimmed();
+    cfg.tdxMainServerPool = readConfigValue(s, QStringLiteral("tdxMainServerPool"), QStringList()).toStringList();
+    cfg.tdxExServerPool = readConfigValue(s, QStringLiteral("tdxExServerPool"), QStringList()).toStringList();
     cfg.userAgent = readConfigValue(s, QStringLiteral("userAgent"), cfg.userAgent).toString();
     cfg.proxyType = readConfigValue(s, QStringLiteral("proxyType"), cfg.proxyType).toString();
     cfg.proxyHost = readConfigValue(s, QStringLiteral("proxyHost"), cfg.proxyHost).toString();
@@ -907,6 +913,12 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     writeConfigValue(s, QStringLiteral("tdxRememberToken"), cfg.tdxRememberToken);
     writeConfigValue(s, QStringLiteral("tdxToken"), cfg.tdxRememberToken ? cfg.tdxToken : QString());
     s.remove(legacyConfigKey(QStringLiteral("tdxToken")));
+    writeConfigValue(s, QStringLiteral("tdxMainAutoSelect"), cfg.tdxMainAutoSelect);
+    writeConfigValue(s, QStringLiteral("tdxExAutoSelect"), cfg.tdxExAutoSelect);
+    writeConfigValue(s, QStringLiteral("tdxMainServer"), cfg.tdxMainServer.trimmed());
+    writeConfigValue(s, QStringLiteral("tdxExServer"), cfg.tdxExServer.trimmed());
+    writeConfigValue(s, QStringLiteral("tdxMainServerPool"), cfg.tdxMainServerPool);
+    writeConfigValue(s, QStringLiteral("tdxExServerPool"), cfg.tdxExServerPool);
     writeConfigValue(
         s,
         QStringLiteral("userAgent"),

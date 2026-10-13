@@ -43,6 +43,7 @@ type request struct {
 	SortField    string          `json:"sortField"`
 	SortOrder    string          `json:"sortOrder"`
 	Force        bool            `json:"force"`
+	Servers      serverConfig    `json:"servers"`
 }
 type symbol struct {
 	market   uint8
@@ -85,11 +86,11 @@ func client(extended bool) *gotdx.Client {
 		slot = &exClient
 	}
 	if *slot == nil {
-		opts := []gotdx.Option{gotdx.WithTimeoutSec(3), gotdx.WithAutoSelectFastest(true), gotdx.WithFuturesCalendarPath(calendarPath)}
+		opts := []gotdx.Option{gotdx.WithTimeoutSec(3), gotdx.WithFuturesCalendarPath(calendarPath)}
 		if activeProxy.enabled() {
 			opts = append(opts, gotdx.WithTimeoutSec(20))
 		}
-		opts = append(opts, proxyOptions()...)
+		opts = append(opts, serverOptions(extended)...)
 		if extended {
 			*slot = gotdx.NewMACEx(opts...)
 		} else {
@@ -99,14 +100,7 @@ func client(extended bool) *gotdx.Client {
 	return *slot
 }
 func reset(extended bool) {
-	slot := &mainClient
-	if extended {
-		slot = &exClient
-	}
-	if *slot != nil {
-		(*slot).Disconnect()
-		*slot = nil
-	}
+	dropClient(extended, true)
 }
 func number(n float64) *float64 {
 	if math.IsNaN(n) || math.IsInf(n, 0) {
@@ -324,7 +318,11 @@ func klines(req request) (any, error) {
 func dispatch(req request) (any, error) {
 	switch req.Operation {
 	case "capabilities":
-		return map[string]any{"abi": 1, "authentication": false, "operations": []string{"quotes", "timeline", "klines", "search", "hot_boards", "members", "breadth"}}, nil
+		return map[string]any{"abi": 1, "authentication": false, "operations": []string{"quotes", "timeline", "klines", "search", "hot_boards", "members", "breadth", "server_list", "server_probe"}}, nil
+	case "server_list":
+		return listServers(), nil
+	case "server_probe":
+		return testServers(req)
 	case "search":
 		return search(req)
 	case "hot_boards":
@@ -360,16 +358,7 @@ func MyStocksTdxRequest(input *C.char) (output *C.char) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if err := configureProxy(req.Proxy); err != nil {
-		data, _ := json.Marshal(map[string]any{"error": err.Error()})
-		return C.CString(string(data))
-	}
-	if req.CalendarPath != calendarPath {
-		reset(false)
-		reset(true)
-		calendarPath = req.CalendarPath
-	}
-	result, err := dispatch(req)
+	result, err := processRequest(req)
 	if err != nil {
 		result = map[string]any{"error": err.Error()}
 	}
@@ -378,6 +367,25 @@ func MyStocksTdxRequest(input *C.char) (output *C.char) {
 		data = []byte(`{"error":"invalid numeric response"}`)
 	}
 	return C.CString(string(data))
+}
+
+func processRequest(req request) (any, error) {
+	// Settings previews never alter active connections or account/proxy state.
+	if req.Operation == "server_list" || req.Operation == "server_probe" || req.Operation == "capabilities" {
+		return dispatch(req)
+	}
+	if err := configureProxy(req.Proxy); err != nil {
+		return nil, err
+	}
+	if err := configureServers(req.Servers); err != nil {
+		return nil, err
+	}
+	if req.CalendarPath != calendarPath {
+		dropClient(false, false)
+		dropClient(true, false)
+		calendarPath = req.CalendarPath
+	}
+	return dispatchWithFailover(req)
 }
 
 //export MyStocksTdxFree

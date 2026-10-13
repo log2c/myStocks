@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bensema/gotdx"
 	"github.com/bensema/gotdx/proto"
 )
 
@@ -247,8 +246,6 @@ func (t *proxyTunnel) close() {
 }
 
 var activeProxy proxyConfig
-var tunnels []*proxyTunnel
-var tunnelAddresses []string
 
 func configureProxy(p proxyConfig) error {
 	if err := p.validate(); err != nil {
@@ -257,41 +254,14 @@ func configureProxy(p proxyConfig) error {
 	if p == activeProxy {
 		return nil
 	}
-	reset(false)
-	reset(true)
-	for _, t := range tunnels {
-		t.close()
-	}
-	tunnels = nil
-	tunnelAddresses = nil
+	dropClient(false, false)
+	dropClient(true, false)
+	mainRoute.ordered, mainRoute.failed, mainRoute.expires = nil, nil, time.Time{}
+	exRoute.ordered, exRoute.failed, exRoute.expires = nil, nil, time.Time{}
 	activeProxy = p
 	catalog = nil
 	boardLists = make(map[uint16][]proto.MACBoardListItem)
 	breadthCache = nil
 	breadthHistory = nil
-	if !p.enabled() {
-		return nil
-	}
-	pools := [][]string{gotdx.MainHostAddresses(), gotdx.ExHostAddresses(), gotdx.MACHostAddresses(), gotdx.MACExHostAddresses()}
-	for _, pool := range pools {
-		t, err := newTunnel(p, pool)
-		if err != nil {
-			for _, t := range tunnels {
-				t.close()
-			}
-			tunnels = nil
-			tunnelAddresses = nil
-			activeProxy = proxyConfig{}
-			return err
-		}
-		tunnels = append(tunnels, t)
-		tunnelAddresses = append(tunnelAddresses, t.listener.Addr().String())
-	}
 	return nil
-}
-func proxyOptions() []gotdx.Option {
-	if !activeProxy.enabled() {
-		return nil
-	}
-	return []gotdx.Option{gotdx.WithAutoSelectFastest(false), gotdx.WithTCPAddress(tunnelAddresses[0]), gotdx.WithTCPAddressPool(tunnelAddresses[0]), gotdx.WithExTCPAddress(tunnelAddresses[1]), gotdx.WithExTCPAddressPool(tunnelAddresses[1]), gotdx.WithMacTCPAddress(tunnelAddresses[2]), gotdx.WithMacTCPAddressPool(tunnelAddresses[2]), gotdx.WithMacExTCPAddress(tunnelAddresses[3]), gotdx.WithMacExTCPAddressPool(tunnelAddresses[3])}
 }

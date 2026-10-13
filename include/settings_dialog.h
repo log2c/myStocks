@@ -55,6 +55,11 @@ private:
 
     QWidget* buildGeneralTab();
     QWidget* buildNetworkTab();
+    QWidget* buildTdxTab();
+    void loadTdxServers();
+    void populateTdxServers(bool extended, const QStringList& addresses);
+    QStringList tdxServerAddresses(bool extended) const;
+    void testTdxServers(bool extended, bool selectedOnly = false);
     QWidget* buildDisplayTab();
     QWidget* buildOtherTab();
     QWidget* buildStocksTab();
@@ -93,6 +98,16 @@ private:
     QLineEdit* m_tdxUserIdEdit = nullptr;
     QLineEdit* m_tdxTokenEdit = nullptr;
     QCheckBox* m_tdxRememberTokenCheck = nullptr;
+    QCheckBox* m_tdxAutoSelect[2] = {};
+    QTableWidget* m_tdxServerTables[2] = {};
+    QLabel* m_tdxServerStatus[2] = {};
+    QLabel* m_tdxSelectedServer[2] = {};
+    QPushButton* m_tdxTestButtons[2] = {};
+    QString m_tdxServerSelection[2];
+    QHash<QString, QString> m_tdxBuiltinServerNames[2];
+    QStringList m_tdxBuiltinServerPools[2];
+    bool m_tdxServersLoading = false;
+    bool m_tdxProbePending = false;
     QLineEdit* m_userAgentEdit = nullptr;
     QComboBox* m_proxyTypeCombo = nullptr;
     QLineEdit* m_proxyHostEdit = nullptr;

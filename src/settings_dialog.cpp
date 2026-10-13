@@ -485,6 +485,7 @@ SettingsDialog::SettingsDialog(
     tabs->setDocumentMode(true);
     tabs->addTab(makeScrollableTab(buildGeneralTab(), tabs), trText("settings.tab.general"));
     tabs->addTab(makeScrollableTab(buildNetworkTab(), tabs), trText("settings.tab.network"));
+    tabs->addTab(makeScrollableTab(buildTdxTab(), tabs), trText("settings.tab.tdx"));
     tabs->addTab(makeScrollableTab(buildDisplayTab(), tabs), trText("settings.tab.display"));
     tabs->addTab(makeScrollableTab(buildStocksTab(), tabs), trText("settings.tab.data"));
     tabs->addTab(buildIndexSectorTab(), trText("settings.tab.indexSector"));
@@ -506,7 +507,16 @@ SettingsDialog::SettingsDialog(
         cancelBtn->setAutoDefault(false);
         cancelBtn->setDefault(false);
     }
-    connect(box, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(box, &QDialogButtonBox::accepted, this, [this]() {
+        for (int i = 0; i < 2; ++i) {
+            if (!m_tdxAutoSelect[i]->isChecked()
+                && !tdxServerAddresses(i == 1).contains(m_tdxServerSelection[i])) {
+                QMessageBox::warning(this, trText("settings.tab.tdx"), trText("settings.tdx.selectRequired"));
+                return;
+            }
+        }
+        accept();
+    });
     connect(box, &QDialogButtonBox::rejected, this, &QDialog::reject);
     root->addWidget(box);
 
@@ -538,6 +548,17 @@ AppConfig SettingsDialog::config() const {
     out.tdxUserId = m_tdxUserIdEdit->text().trimmed();
     out.tdxRememberToken = m_tdxRememberTokenCheck->isChecked();
     out.tdxToken = m_tdxTokenEdit->text();
+    out.tdxMainAutoSelect = m_tdxAutoSelect[0]->isChecked();
+    out.tdxExAutoSelect = m_tdxAutoSelect[1]->isChecked();
+    out.tdxMainServer = m_tdxServerSelection[0];
+    out.tdxExServer = m_tdxServerSelection[1];
+    out.tdxMainServerPool = m_tdxServersLoading ? m_cfg.tdxMainServerPool : tdxServerAddresses(false);
+    out.tdxExServerPool = m_tdxServersLoading ? m_cfg.tdxExServerPool : tdxServerAddresses(true);
+    // Keep the default pool implicit so SDK updates can supply replacement nodes.
+    if (!m_tdxServersLoading) {
+        if (out.tdxMainServerPool == m_tdxBuiltinServerPools[0]) out.tdxMainServerPool.clear();
+        if (out.tdxExServerPool == m_tdxBuiltinServerPools[1]) out.tdxExServerPool.clear();
+    }
     out.userAgent = m_userAgentEdit->text().trimmed();
     out.proxyType = m_proxyTypeCombo->currentData().toString();
     out.proxyHost = m_proxyHostEdit->text().trimmed();
@@ -1196,14 +1217,6 @@ QWidget* SettingsDialog::buildNetworkTab() {
         if (m_stockSuggestList) { m_stockSuggestList->clear(); m_stockSuggestList->hide(); }
     });
 
-    m_tdxUserIdEdit = new QLineEdit(m_cfg.tdxUserId, w);
-    m_tdxUserIdEdit->setPlaceholderText(trText("settings.tdx.userIdPlaceholder"));
-    m_tdxTokenEdit = new QLineEdit(m_cfg.tdxToken, w);
-    m_tdxTokenEdit->setEchoMode(QLineEdit::Password);
-    m_tdxTokenEdit->setPlaceholderText(trText("settings.tdx.tokenPlaceholder"));
-    m_tdxRememberTokenCheck = new QCheckBox(trText("settings.tdx.rememberToken"), w);
-    m_tdxRememberTokenCheck->setChecked(m_cfg.tdxRememberToken);
-
     m_userAgentEdit = new QLineEdit(m_cfg.userAgent, w);
     if (m_userAgentEdit->text().trimmed().isEmpty()) {
         m_userAgentEdit->setText(defaultChrome100UserAgent());
@@ -1232,16 +1245,6 @@ QWidget* SettingsDialog::buildNetworkTab() {
     m_proxyPasswordEdit->setEchoMode(QLineEdit::Password);
 
     form->addRow(trText("settings.general.quoteSource"), m_quoteSourceCombo);
-    QPushButton* tdxLoginButton = new QPushButton(trText("settings.tdx.login"), w);
-    tdxLoginButton->setEnabled(false);
-    tdxLoginButton->setToolTip(trText("settings.tdx.hint"));
-    form->addRow(QString(), tdxLoginButton);
-    form->addRow(trText("settings.tdx.userId"), m_tdxUserIdEdit);
-    form->addRow(trText("settings.tdx.token"), m_tdxTokenEdit);
-    form->addRow(QString(), m_tdxRememberTokenCheck);
-    QLabel* tdxHint = new QLabel(trText("settings.tdx.hint"), w);
-    tdxHint->setWordWrap(true);
-    form->addRow(QString(), tdxHint);
     form->addRow(trText("settings.general.userAgent"), m_userAgentEdit);
     form->addRow(trText("settings.general.proxyType"), m_proxyTypeCombo);
     form->addRow(trText("settings.general.proxyHost"), m_proxyHostEdit);
