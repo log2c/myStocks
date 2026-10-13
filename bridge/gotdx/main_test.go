@@ -2,9 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/bensema/gotdx/proto"
+	"github.com/bensema/gotdx/types"
 	"math"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolveMarketMappings(t *testing.T) {
@@ -72,5 +75,69 @@ func TestUnknownCodesProduceExplicitPartialErrors(t *testing.T) {
 	result := quotes(request{Stocks: []stock{{Code: "90.BK0420"}, {Code: "100.SPX"}}})
 	if len(result["quotes"].([]quote)) != 0 || len(result["errors"].([]string)) != 2 {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestNativeCodesDoNotReuseEastMoneyMarkets(t *testing.T) {
+	for _, test := range []struct {
+		code     string
+		market   uint8
+		symbol   string
+		extended bool
+	}{
+		{"tdx:main:1:881319", 1, "881319", false},
+		{"tdx:ex:49:02800", 49, "02800", true},
+		{"TDX:EX:48:08300", 48, "08300", true},
+		{"tdx:ex:12:A_NDX", 12, "A_NDX", true},
+	} {
+		got, err := resolve(test.code)
+		if err != nil || got.market != test.market || got.code != test.symbol || got.extended != test.extended {
+			t.Fatalf("invalid native mapping: %+v %v", got, err)
+		}
+	}
+	for _, code := range []string{"tdx:ex:256:00700", "tdx:main:x:881319", "tdx:foo:1:600519", "tdx:ex:31:", "tdx:ex:31:00700\nCONNECT"} {
+		if _, err := resolve(code); err == nil {
+			t.Fatalf("accepted malformed native symbol %q", code)
+		}
+	}
+}
+func TestLegacyBoardMappingRequiresUniqueName(t *testing.T) {
+	old := boardLists
+	oldExpiry := boardsExpires
+	defer func() { boardLists = old; boardsExpires = oldExpiry }()
+	boardsExpires = time.Now().Add(time.Hour)
+	boardLists = map[uint16][]proto.MACBoardListItem{types.BoardTypeAll: {{Market: 1, Code: "881319", Name: "半导体"}}}
+	got, err := resolveNamed("90.BK1036", "半导体")
+	if err != nil || got.code != "881319" {
+		t.Fatalf("legacy named match failed %v", err)
+	}
+	boardLists[types.BoardTypeAll] = append(boardLists[types.BoardTypeAll], proto.MACBoardListItem{Market: 1, Code: "880491", Name: "半导体"})
+	if _, err := resolveNamed("90.BK1036", "半导体"); err == nil {
+		t.Fatal("ambiguous board name must not choose arbitrary code")
+	}
+}
+func TestSearchUsesCachedNativeBoardCode(t *testing.T) {
+	old := catalog
+	oldExpiry := catalogExpires
+	defer func() { catalog = old; catalogExpires = oldExpiry }()
+	catalog = []catalogItem{{Code: "tdx:main:1:881319", Name: "半导体", Kind: "板块"}, {Code: "tdx:ex:31:00700", Name: "腾讯控股", Kind: "扩展市场"}}
+	catalogExpires = time.Now().Add(time.Hour)
+	result, err := search(request{Keyword: "半导体"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := result.(map[string]any)["items"].([]catalogItem)
+	if len(items) != 1 || items[0].Code != "tdx:main:1:881319" {
+		t.Fatal("search emitted an incompatible code")
+	}
+}
+func TestDistributionBinBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		pct float64
+		bin int
+	}{{-10, 0}, {-9, 0}, {-8, 1}, {-6, 2}, {-4, 3}, {-0.1, 4}, {0, 5}, {0.1, 6}, {3, 7}, {5, 8}, {7, 9}, {9, 10}} {
+		if distributionBin(test.pct) != test.bin {
+			t.Fatalf("wrong distribution bucket %v", test)
+		}
 	}
 }

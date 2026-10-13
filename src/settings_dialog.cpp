@@ -5,6 +5,7 @@
 #include "i18n.h"
 #include "network_logger.h"
 #include "network_utils.h"
+#include "tdx_bridge.h"
 #include "updater.h"
 #include "watchlist_utils.h"
 
@@ -96,18 +97,7 @@ bool isPredefinedIndexCode(const QString& rawCode) {
     return watchlist_utils::isPredefinedIndexCode(rawCode);
 }
 
-namespace headers {
 
-inline constexpr auto kUserAgent = "User-Agent";
-inline constexpr auto kReferer = "Referer";
-inline constexpr auto kAccept = "Accept";
-inline constexpr auto kConnection = "Connection";
-inline constexpr auto kContentType = "Content-Type";
-
-inline constexpr auto kEastMoneyReferer = "https://quote.eastmoney.com/";
-inline constexpr auto kEastMoneyContentType = "application/json;charset=UTF-8";
-
-} // namespace headers
 
 inline constexpr int kStockSearchDebounceMs = 400;
 inline constexpr int kStockSearchMinLength = 2;
@@ -1200,6 +1190,11 @@ QWidget* SettingsDialog::buildNetworkTab() {
     m_quoteSourceCombo->addItem(trText("settings.quoteSource.eastmoney"), "eastmoney");
     const int sourceIndex = m_quoteSourceCombo->findData(normalizeQuoteSource(m_cfg.quoteSource));
     m_quoteSourceCombo->setCurrentIndex(sourceIndex < 0 ? 0 : sourceIndex);
+    connect(m_quoteSourceCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        ++m_stockSearchGeneration;
+        if (m_stockSearchReply) { m_stockSearchReply->abort(); m_stockSearchReply->deleteLater(); m_stockSearchReply = nullptr; }
+        if (m_stockSuggestList) { m_stockSuggestList->clear(); m_stockSuggestList->hide(); }
+    });
 
     m_tdxUserIdEdit = new QLineEdit(m_cfg.tdxUserId, w);
     m_tdxUserIdEdit->setPlaceholderText(trText("settings.tdx.userIdPlaceholder"));
@@ -2482,6 +2477,10 @@ QWidget* SettingsDialog::buildStocksTab() {
             return;
         }
 
+        if (watchlist_utils::isTdxCode(code)) {
+            const int tdxIndex = m_quoteSourceCombo->findData(QStringLiteral("tdx"));
+            if (tdxIndex >= 0) m_quoteSourceCombo->setCurrentIndex(tdxIndex);
+        }
         StockTableWidget* tbl = static_cast<StockTableWidget*>(m_stockTable);
         if (tbl->containsCode(code)) {
             showIconMessageBox(
@@ -2748,55 +2747,41 @@ void SettingsDialog::doStockSearch(bool forceSearch) {
         m_stockSearchReply = nullptr;
     }
 
-    QUrl url(QStringLiteral("https://searchapi.eastmoney.com/api/Info/Search"));
-    QUrlQuery query;
-    query.addQueryItem(QStringLiteral("type"), QStringLiteral("14"));
-    query.addQueryItem(
-        QStringLiteral("and14"),
-        QStringLiteral("MultiMatch/Name,Code,PinYin/%1/true").arg(keyword)
-    );
-    query.addQueryItem(QStringLiteral("pageIndex14"), QStringLiteral("1"));
-    query.addQueryItem(QStringLiteral("pageSize14"), QString::number(kStockSearchResultLimit));
-    url.setQuery(query);
-
-    QNetworkRequest req(url);
-    req.setRawHeader(headers::kUserAgent, network_utils::effectiveUserAgent(m_cfg).toUtf8());
-    req.setRawHeader(headers::kReferer, headers::kEastMoneyReferer);
-    req.setRawHeader(headers::kAccept, "*/*");
-    req.setRawHeader(headers::kConnection, "keep-alive");
-    req.setRawHeader(headers::kContentType, headers::kEastMoneyContentType);
-    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
-
-    const network_logger::RequestTrace trace = network_logger::logRequestStart(
-        QStringLiteral("eastmoney-search"),
-        QStringLiteral("GET"),
-        req,
-        m_stockSearchNam->proxy()
-    );
-
-    m_stockSearchReply = m_stockSearchNam->get(req);
-    connect(m_stockSearchReply, &QNetworkReply::finished, this, [this, trace]() {
-        if (!m_stockSearchReply) {
-            return;
-        }
-
-        const QNetworkReply::NetworkError netErr = m_stockSearchReply->error();
-        const QByteArray data = m_stockSearchReply->readAll();
-
-        network_logger::logRequestFinish(trace, m_stockSearchReply, data.size(), data);
-
-        m_stockSearchReply->deleteLater();
-        m_stockSearchReply = nullptr;
-
-        if (netErr != QNetworkReply::NoError) {
-            qWarning() << "[StockSearch] network error" << netErr;
-            m_stockSuggestList->clear();
-            m_stockSuggestList->hide();
-            return;
-        }
-
-        parseSearchResult(data);
-    });
+    {
+        if (m_tdxSearchPending) return;
+        m_tdxSearchPending = true;
+        const int generation = ++m_stockSearchGeneration;
+        AppConfig searchConfig = m_cfg;
+        searchConfig.proxyType = m_proxyTypeCombo->currentData().toString();
+        searchConfig.proxyHost = m_proxyHostEdit->text().trimmed();
+        searchConfig.proxyPort = m_proxyPortSpin->value();
+        searchConfig.proxyUser = m_proxyUserEdit->text();
+        searchConfig.proxyPassword = m_proxyPasswordEdit->text();
+        m_stockSearchEdit->setToolTip(trText("settings.tdx.searchLoading"));
+        tdx_bridge::request(this, searchConfig,
+            {{QStringLiteral("operation"), QStringLiteral("search")}, {QStringLiteral("keyword"), keyword},
+             {QStringLiteral("count"), kStockSearchResultLimit}},
+            [this, keyword, generation](const QJsonObject& response, const QString& error) {
+                m_tdxSearchPending = false;
+                if (generation != m_stockSearchGeneration) { doStockSearch(false); return; }
+                if (keyword != m_stockSearchEdit->text().trimmed()) { doStockSearch(false); return; }
+                if (!error.isEmpty()) {
+                    m_stockSuggestList->clear(); m_stockSuggestList->hide();
+                    m_stockSearchEdit->setToolTip(error);
+                    return;
+                }
+                QJsonArray items;
+                for (const auto& value : response.value(QStringLiteral("items")).toArray()) {
+                    const auto item = value.toObject();
+                    items.append(QJsonObject{{QStringLiteral("QuoteID"), item.value(QStringLiteral("code"))},
+                        {QStringLiteral("Name"), item.value(QStringLiteral("name"))},
+                        {QStringLiteral("SecurityTypeName"), item.value(QStringLiteral("kind"))}});
+                }
+                m_stockSearchEdit->setToolTip(QString());
+                parseSearchResult(QJsonDocument(QJsonObject{{QStringLiteral("Data"), items}}).toJson());
+            });
+        return;
+    }
 }
 
 QString SettingsDialog::groupMemberDisplayName(const QString& code) const {

@@ -16,8 +16,11 @@ set(_tdx_bridge "${CMAKE_BINARY_DIR}/gotdx-bridge")
 file(MAKE_DIRECTORY "${_tdx_bridge}")
 configure_file("${CMAKE_SOURCE_DIR}/bridge/gotdx/go.mod" "${_tdx_bridge}/go.mod" COPYONLY)
 file(APPEND "${_tdx_bridge}/go.mod" "\nreplace github.com/bensema/gotdx => \"${gotdx_SOURCE_DIR}\"\n")
-configure_file("${CMAKE_SOURCE_DIR}/bridge/gotdx/main.go" "${_tdx_bridge}/main.go" COPYONLY)
-configure_file("${CMAKE_SOURCE_DIR}/bridge/gotdx/main_test.go" "${_tdx_bridge}/main_test.go" COPYONLY)
+file(GLOB _tdx_bridge_sources CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/bridge/gotdx/*.go")
+foreach(_tdx_source IN LISTS _tdx_bridge_sources)
+    get_filename_component(_tdx_name "${_tdx_source}" NAME)
+    configure_file("${_tdx_source}" "${_tdx_bridge}/${_tdx_name}" COPYONLY)
+endforeach()
 set(_tdx_calendar "${gotdx_SOURCE_DIR}/data/futures-trade-calendar.db")
 # Go uses its own C compiler for cgo (MinGW GCC on Windows, clang on macOS).
 # Setting CC to the MSVC compiler would break Go's c-shared build.
@@ -33,7 +36,7 @@ add_custom_command(OUTPUT "${_tdx_library}"
     COMMAND "${CMAKE_COMMAND}" -E env CGO_ENABLED=1 "${MYSTOCKS_GO_EXECUTABLE}" mod tidy
     COMMAND "${CMAKE_COMMAND}" -E env CGO_ENABLED=1 "${MYSTOCKS_GO_EXECUTABLE}" build -buildmode=c-shared -o "${_tdx_library}" .
     WORKING_DIRECTORY "${_tdx_bridge}"
-    DEPENDS "${_tdx_bridge}/main.go" "${_tdx_bridge}/go.mod"
+    DEPENDS ${_tdx_bridge_sources} "${_tdx_bridge}/go.mod"
         "${gotdx_SOURCE_DIR}/go.mod" ${_tdx_sources}
     COMMENT "Building gotdx Go c-shared bridge"
     VERBATIM

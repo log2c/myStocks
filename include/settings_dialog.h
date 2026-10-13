@@ -180,6 +180,8 @@ private:
     QTimer* m_stockSearchDebounce = nullptr;
     QNetworkAccessManager* m_stockSearchNam = nullptr;
     QNetworkReply* m_stockSearchReply = nullptr;
+    int m_stockSearchGeneration = 0;
+    bool m_tdxSearchPending = false;
     QListWidget* m_stockSuggestList = nullptr;
     QTableWidget* m_stockTable = nullptr;
 

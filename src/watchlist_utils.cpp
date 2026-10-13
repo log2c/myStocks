@@ -1,6 +1,7 @@
 #include "watchlist_utils.h"
 
 #include <QSet>
+#include <QRegularExpression>
 
 namespace {
 
@@ -104,12 +105,27 @@ QVector<int> normalizedColumnOrder(const QVector<int>& order) {
     return out;
 }
 
+bool isTdxCode(const QString& code) {
+    static const QRegularExpression pattern(QStringLiteral("^tdx:(main|ex):([0-9]{1,3}):([A-Za-z0-9_.-]{1,22})$"), QRegularExpression::CaseInsensitiveOption);
+    const auto match = pattern.match(code.trimmed());
+    return match.hasMatch() && match.captured(2).toInt() <= 255;
+}
+bool isTdxExtendedCode(const QString& code) {
+    return isTdxCode(code) && code.trimmed().startsWith(QStringLiteral("tdx:ex:"), Qt::CaseInsensitive);
+}
+QString tdxSymbol(const QString& code) {
+    return isTdxCode(code) ? code.trimmed().section(QLatin1Char(':'), 3).toUpper() : QString();
+}
 QString normalizeApiWatchCode(const QString& rawCode) {
     const QString raw = rawCode.trimmed();
     if (raw.isEmpty()) {
         return {};
     }
 
+    if (isTdxCode(raw)) {
+        const auto parts = raw.split(QLatin1Char(':'));
+        return QStringLiteral("tdx:%1:%2:%3").arg(parts[1].toLower(), QString::number(parts[2].toInt()), parts[3].toUpper());
+    }
     const QString key = watchCodeKey(raw);
     if (key == QStringLiteral("xin9") || key == QStringLiteral("100.xin9")) {
         return QStringLiteral("100.XIN9");
@@ -221,6 +237,8 @@ QString normalizeApiWatchCode(const QString& rawCode) {
 }
 
 QString normalizeSectorCode(const QString& rawCode) {
+    if (isTdxCode(rawCode) && !isTdxExtendedCode(rawCode) && tdxSymbol(rawCode).startsWith(QStringLiteral("88")))
+        return normalizeApiWatchCode(rawCode);
     QString code = rawCode.trimmed();
     if (code.isEmpty()) {
         return {};
@@ -238,6 +256,7 @@ QString normalizeSectorCode(const QString& rawCode) {
 }
 
 QString normalizeFutureCode(const QString& rawCode) {
+    if (isTdxExtendedCode(rawCode)) return normalizeApiWatchCode(rawCode);
     const QString raw = rawCode.trimmed();
     if (raw.isEmpty()) {
         return {};
@@ -322,6 +341,10 @@ bool isPredefinedIndexCode(const QString& rawCode) {
 }
 
 bool isHongKongCode(const QString& rawCode) {
+    if (isTdxExtendedCode(rawCode)) {
+        const int market = rawCode.trimmed().section(QLatin1Char(':'), 2, 2).toInt();
+        return market == 27 || market == 31 || market == 48 || market == 49 || market == 71;
+    }
     const QString code = watchCodeKey(rawCode);
     if (code.isEmpty()) {
         return false;
@@ -346,6 +369,10 @@ QVector<StockItem> defaultWatchStocks() {
 }
 
 bool isCostEditableCode(const QString& rawCode) {
+    if (isTdxExtendedCode(rawCode)) {
+        const int market = rawCode.trimmed().section(QLatin1Char(':'), 2, 2).toInt();
+        return market == 31 || market == 48 || market == 49 || market == 71;
+    }
     const QString code = watchCodeKey(rawCode);
     if (code.isEmpty()) {
         return false;
@@ -356,7 +383,7 @@ bool isCostEditableCode(const QString& rawCode) {
     if (dot > 0 && dot < code.size() - 1) {
         const QString market = code.left(dot);
         const QString symbol = code.mid(dot + 1);
-        if ((market == QLatin1String("0") || market == QLatin1String("1"))
+        if ((market == QLatin1String("0") || market == QLatin1String("1") || market == QLatin1String("2"))
             && symbol.size() == 6
             && isDigitsOnly(symbol)
             && !isPredefinedAshareIndexCode(rawCode)) {

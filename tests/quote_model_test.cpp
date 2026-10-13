@@ -17,6 +17,12 @@ int main(int argc, char** argv) {
     check(ColBreakevenGain == 8 && ColRiseSpeed == 9, "Persisted column IDs changed");
     check(i18n::columnNames("zh_CN").size() == ColCount, "Missing translated column");
     check(watchlist_utils::normalizedColumnOrder({0, 1, 2, 3, 4, 5, 6, 7, 8}).last() == ColRiseSpeed, "Old column layout must append new column");
+    check(watchlist_utils::normalizeApiWatchCode("TDX:MAIN:001:881319") == "tdx:main:1:881319", "Native TDX board code was rewritten as EastMoney");
+    check(watchlist_utils::normalizeSectorCode("tdx:main:1:881319") == "tdx:main:1:881319", "Native board classification failed");
+    check(watchlist_utils::normalizeApiWatchCode("tdx:ex:49:02800") == "tdx:ex:49:02800", "Extended market ID was lost");
+    check(watchlist_utils::isHongKongCode("tdx:ex:49:02800"), "Native HK instrument classification failed");
+    check(watchlist_utils::isCostEditableCode("2.920002"), "Beijing stock cost editing was lost");
+    check(!watchlist_utils::isTdxCode("tdx:ex:256:00700"), "Invalid market was accepted");
     QuoteModel model;
     model.setConfig(cfg);
     model.setStocks({{"1.600519", "贵州茅台"}});

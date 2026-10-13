@@ -72,6 +72,13 @@ QJsonObject requestBlocking(const QJsonObject& payload, QString* error) {
 }
 
 void request(QObject* context, const AppConfig& config, QJsonObject payload, Callback callback) {
+    payload.insert(QStringLiteral("proxy"), QJsonObject{
+        {QStringLiteral("type"), config.proxyType},
+        {QStringLiteral("host"), config.proxyHost.trimmed()},
+        {QStringLiteral("port"), config.proxyPort},
+        {QStringLiteral("user"), config.proxyUser},
+        {QStringLiteral("password"), config.proxyPassword}
+    });
     payload.insert(QStringLiteral("user"), QJsonObject{
         {QStringLiteral("userId"), config.tdxUserId},
         {QStringLiteral("token"), config.tdxToken}

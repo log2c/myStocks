@@ -213,6 +213,11 @@ bool isFutureTimelineSupportedCode(const QString& rawCode) {
 }
 
 TimelineMarket timelineMarketOfCode(const QString& rawCode) {
+    if (watchlist_utils::isTdxCode(rawCode)) {
+        if (watchlist_utils::isHongKongCode(rawCode)) return TimelineMarket::HongKong;
+        if (watchlist_utils::isTdxExtendedCode(rawCode)) return TimelineMarket::Future;
+        return watchlist_utils::tdxSymbol(rawCode).startsWith(QStringLiteral("88")) ? TimelineMarket::Sector : TimelineMarket::Ashare;
+    }
     if (isAshareTimelineSupportedCode(rawCode)) {
         return TimelineMarket::Ashare;
     }
@@ -271,6 +276,7 @@ double fixedRangeLimitPctForAshareStock(const QString& rawCode) {
 QString toTimelineSecId(const QString& rawCode) {
     const QString raw = rawCode.trimmed();
     const QString code = raw.toLower();
+    if (watchlist_utils::isTdxCode(raw)) return watchlist_utils::normalizeApiWatchCode(raw);
     const TimelineMarket marketType = timelineMarketOfCode(raw);
     if (code.isEmpty() || marketType == TimelineMarket::Unknown) {
         return {};
@@ -1287,7 +1293,9 @@ public:
 
     void applyConfig(const AppConfig& cfg) {
         const bool sourceChanged = normalizeQuoteSource(m_cfg.quoteSource) != normalizeQuoteSource(cfg.quoteSource)
-            || m_cfg.tdxUserId != cfg.tdxUserId || m_cfg.tdxToken != cfg.tdxToken;
+            || m_cfg.tdxUserId != cfg.tdxUserId || m_cfg.tdxToken != cfg.tdxToken
+            || m_cfg.proxyType != cfg.proxyType || m_cfg.proxyHost != cfg.proxyHost || m_cfg.proxyPort != cfg.proxyPort
+            || m_cfg.proxyUser != cfg.proxyUser || m_cfg.proxyPassword != cfg.proxyPassword;
         if (sourceChanged) {
             ++m_requestToken;
             cancelPendingReply();
@@ -1517,7 +1525,7 @@ private:
             m_tdxPending = true;
             tdx_bridge::request(this, m_cfg,
                 {{QStringLiteral("operation"), QStringLiteral("timeline")},
-                 {QStringLiteral("code"), m_code}},
+                 {QStringLiteral("code"), m_code}, {QStringLiteral("name"), m_name}},
                 [this, token, cacheKey](const QJsonObject& object, const QString& error) {
                     m_tdxPending = false;
                     if (token != m_requestToken) {
@@ -1546,6 +1554,10 @@ private:
             return;
         }
 
+        if (watchlist_utils::isTdxCode(m_code)) {
+            m_chart->setStatusText(QStringLiteral("This symbol requires the TongdaXin data source"));
+            return;
+        }
         QUrl url(QStringLiteral("https://push2delay.eastmoney.com/api/qt/stock/trends2/get"));
         QUrlQuery query;
         const QString callback = QStringLiteral("jQuery%1_%2")

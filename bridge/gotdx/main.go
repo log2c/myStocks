@@ -36,6 +36,13 @@ type request struct {
 	// gotdx currently has no account authentication API; never claim login.
 	User         json.RawMessage `json:"user"`
 	CalendarPath string          `json:"calendarPath"`
+	Proxy        proxyConfig     `json:"proxy"`
+	Keyword      string          `json:"keyword"`
+	Name         string          `json:"name"`
+	Kind         string          `json:"kind"`
+	SortField    string          `json:"sortField"`
+	SortOrder    string          `json:"sortOrder"`
+	Force        bool            `json:"force"`
 }
 type symbol struct {
 	market   uint8
@@ -79,6 +86,10 @@ func client(extended bool) *gotdx.Client {
 	}
 	if *slot == nil {
 		opts := []gotdx.Option{gotdx.WithTimeoutSec(3), gotdx.WithAutoSelectFastest(true), gotdx.WithFuturesCalendarPath(calendarPath)}
+		if activeProxy.enabled() {
+			opts = append(opts, gotdx.WithTimeoutSec(20))
+		}
+		opts = append(opts, proxyOptions()...)
 		if extended {
 			*slot = gotdx.NewMACEx(opts...)
 		} else {
@@ -120,6 +131,9 @@ func field(values map[string]any, key string) *float64 {
 // EastMoney identifiers are not TDX market IDs. Only explicit mappings are
 // accepted; an unknown symbol must never return a different instrument's data.
 func resolve(code string) (symbol, error) {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(code)), "tdx:") {
+		return parseCanonical(code)
+	}
 	parts := strings.SplitN(strings.ToUpper(strings.TrimSpace(code)), ".", 2)
 	if len(parts) != 2 || parts[1] == "" {
 		return symbol{}, fmt.Errorf("invalid watch code: %s", code)
@@ -181,7 +195,7 @@ func quotes(req request) map[string]any {
 		codes := make([]string, 0)
 		originals := make(map[string][]stock)
 		for _, item := range req.Stocks {
-			s, err := resolve(item.Code)
+			s, err := resolveNamed(item.Code, item.Name)
 			if err != nil {
 				if !extended {
 					errors = append(errors, err.Error())
@@ -239,7 +253,7 @@ func quotes(req request) map[string]any {
 	return map[string]any{"quotes": result, "errors": errors}
 }
 func timeline(req request) (any, error) {
-	s, err := resolve(req.Code)
+	s, err := resolveNamed(req.Code, req.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +296,7 @@ func timeline(req request) (any, error) {
 	return map[string]any{"points": points, "preClose": number(day.PreClose)}, nil
 }
 func klines(req request) (any, error) {
-	s, err := resolve(req.Code)
+	s, err := resolveNamed(req.Code, req.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -310,7 +324,15 @@ func klines(req request) (any, error) {
 func dispatch(req request) (any, error) {
 	switch req.Operation {
 	case "capabilities":
-		return map[string]any{"abi": 1, "authentication": false, "operations": []string{"quotes", "timeline", "klines"}}, nil
+		return map[string]any{"abi": 1, "authentication": false, "operations": []string{"quotes", "timeline", "klines", "search", "hot_boards", "members", "breadth"}}, nil
+	case "search":
+		return search(req)
+	case "hot_boards":
+		return hotBoards(req)
+	case "members":
+		return members(req)
+	case "breadth":
+		return marketBreadth(req)
 	case "quotes":
 		return quotes(req), nil
 	case "timeline":
@@ -338,6 +360,10 @@ func MyStocksTdxRequest(input *C.char) (output *C.char) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	if err := configureProxy(req.Proxy); err != nil {
+		data, _ := json.Marshal(map[string]any{"error": err.Error()})
+		return C.CString(string(data))
+	}
 	if req.CalendarPath != calendarPath {
 		reset(false)
 		reset(true)
