@@ -71,11 +71,13 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then
             cmake -S . -B build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_TESTING=OFF \
               -DQt6_DIR="${Qt6_DIR}" \
               -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           else
             cmake -S . -B build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_TESTING=OFF \
               -DQt6_DIR="${Qt6_DIR}"
           fi
 
