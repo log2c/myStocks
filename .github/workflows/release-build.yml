@@ -54,16 +54,16 @@ jobs:
           install: mingw-w64-x86_64-gcc
           path-type: inherit
 
+      - name: Setup MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Select cgo compiler
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           "CC=C:/msys64/mingw64/bin/gcc.exe" >> $env:GITHUB_ENV
           "C:/msys64/mingw64/bin" >> $env:GITHUB_PATH
-
-      - name: Setup MSVC
-        if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Configure (Release)
         shell: bash
@@ -84,7 +84,7 @@ jobs:
       - name: Build (Release)
         shell: bash
         run: |
-          cmake --build build --config Release --parallel
+          cmake --build build --config Release --parallel --verbose
 
       - name: Package macOS bundle
         if: runner.os == 'macOS'
