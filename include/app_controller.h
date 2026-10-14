@@ -5,6 +5,7 @@
 
 #include <QDate>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QIcon>
 #include <QNetworkAccessManager>
@@ -103,6 +104,7 @@ private:
     bool m_reloadQueued = false;
     bool m_coldStart = true;
     bool m_routesReady = false;
+    QElapsedTimer m_splashShownTimer;
     QStringList m_routeErrors;
     QStringList m_routeWarnings;
     AppConfig m_cfg;

@@ -41,6 +41,7 @@
 #include <QUrlQuery>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -2137,7 +2138,14 @@ public:
             }
 
             if (kind == QuoteModel::RowKindMarketBreadth) {
-                setSpan(row, visibleColumns.first(), 1, visibleColumns.size());
+                // QTableView's span count is a logical-column range, not a
+                // count of visible sections. Include the complete range through
+                // the last visible column so the bar reaches newly appended
+                // columns such as rise speed even when columns in between are
+                // hidden.
+                const int first = *std::min_element(visibleColumns.cbegin(), visibleColumns.cend());
+                const int last = *std::max_element(visibleColumns.cbegin(), visibleColumns.cend());
+                setSpan(row, first, 1, last - first + 1);
                 continue;
             }
 

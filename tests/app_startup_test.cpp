@@ -139,7 +139,7 @@ public:
                 check(settings->value(app_constants::kWatchIndexesKey).toStringList().contains("1.000001\tLegacy index"),
                     "Saving index edits must retain compatible legacy indexes");
             }
-            events(1900);
+            events(static_cast<int>(app_constants::kStartupSplashMinimumDisplayMs + 200));
             check(!controller.m_loading && !controller.m_splash->isVisible() && quoteRequests > 0,
                 "Completed startup must close splash and start quotations");
 
@@ -157,7 +157,7 @@ public:
             check(quoteRequests == beforeReload, "Reload must not request quotations before route confirmation");
             finishRoute();
             finishRoute();
-            events(300);
+            events(static_cast<int>(app_constants::kStartupSplashMinimumDisplayMs + 200));
             check(controller.m_window->isVisible() && controller.m_window->geometry() == position,
                 "Reload must preserve floating-window visibility and position");
             check(controller.m_window->isEnabled() && !controller.m_splash->isVisible(),
@@ -172,7 +172,7 @@ public:
                 "Unusable routes must retain an actionable splash and pause polling");
             check(!controller.m_window->isVisible(), "Failure must not show a hidden floating window");
             controller.loadAfterRoutes();
-            events(300);
+            events(static_cast<int>(app_constants::kStartupSplashMinimumDisplayMs + 200));
             check(!controller.m_loading && !controller.m_routesReady && !controller.m_timer->isActive(),
                 "Offline load must finish local configuration without starting network polling");
             const int beforeOffline = quoteRequests;
@@ -182,7 +182,7 @@ public:
             events();
             finishRoute();
             finishRoute();
-            events(300);
+            events(static_cast<int>(app_constants::kStartupSplashMinimumDisplayMs + 200));
             check(controller.m_routesReady && controller.m_timer->isActive(), "Reload must recover from offline mode");
         }
         {
@@ -199,7 +199,7 @@ public:
             check(routes.size() == 1, "Retry button must begin a fresh probe rather than queue behind failure");
             finishRoute();
             finishRoute();
-            events(300);
+            events(static_cast<int>(app_constants::kStartupSplashMinimumDisplayMs + 200));
             check(controller.m_initialized && controller.m_routesReady && !controller.m_loading,
                 "Cold startup must recover after a retry");
         }
@@ -210,12 +210,12 @@ public:
             controller.reloadStocksFromYaml();
             finishRoute();
             finishRoute();
-            events(300);
+            events(static_cast<int>(app_constants::kStartupSplashMinimumDisplayMs + 200));
             check(controller.m_initialized && controller.m_loading && routes.size() == 1,
                 "Multiple reloads during loading must coalesce into one subsequent reload");
             finishRoute();
             finishRoute();
-            events(300);
+            events(static_cast<int>(app_constants::kStartupSplashMinimumDisplayMs + 200));
             check(!controller.m_loading && routes.isEmpty(), "Coalesced reload must complete without duplicate route callbacks");
         }
         // Test-mode paths are unique to this process and never touch user data.

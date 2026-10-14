@@ -45,6 +45,9 @@ struct QuoteItem {
     double change = qQNaN();
     double cost = qQNaN(); // cost basis
     double riseSpeed = qQNaN();
+    // True when the provider returned its pre-open reset sentinel values.
+    // Reset rows are rendered blank while retaining a flat-price visual state.
+    bool resetData = false;
 };
 
 struct HotRankItem {

@@ -55,5 +55,31 @@ int main(int argc, char** argv) {
     quote.price = 532.5;
     model.updateQuotes({quote});
     check(model.data(model.index(1, ColPrice), Qt::DisplayRole).toString() == "532.500", "Filtering a BK row must not offset legacy quote updates");
+
+    QuoteItem indexQuote;
+    indexQuote.code = "1.000001";
+    indexQuote.riseSpeed = 1.5;
+    indexQuote.pct = 0.5;
+    model.updateQuotes({indexQuote});
+    check(model.data(model.index(3, ColRiseSpeed), Qt::DisplayRole).toString().isEmpty(),
+        "Index rows must not display rise speed");
+
+    QVector<QuoteItem> preOpenReset;
+    for (const QString& code : {"tdx:main:1:600519", "116.00700", "1.510300", "1.000001", "1.600519"}) {
+        QuoteItem reset;
+        reset.code = code;
+        reset.price = 10.0;
+        reset.pct = -100.0;
+        reset.change = -10.0;
+        reset.riseSpeed = -100.0;
+        preOpenReset.push_back(reset);
+    }
+    model.updateQuotes(preOpenReset);
+    check(model.data(model.index(0, ColPrice), Qt::DisplayRole).toString().isEmpty(),
+        "Pre-open reset sentinel prices must be blank");
+    check(model.data(model.index(0, ColPrice), Qt::ForegroundRole).value<QColor>() == cfg.flatColor,
+        "Pre-open reset prices must use the flat color");
+    check(model.data(model.index(0, ColCode), Qt::DisplayRole).toString() == "tdx:main:1:600519",
+        "Pre-open reset must retain the quote identity");
     return 0;
 }

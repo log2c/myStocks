@@ -1,4 +1,5 @@
 #include "app_controller.h"
+#include "app_constants.h"
 #include "app_logging.h"
 #include "config_manager.h"
 #include "floating_window.h"
@@ -55,6 +56,7 @@ void AppController::beginLoading(bool coldStart) {
         i18n::t("splash.probing", m_resolvedLanguage));
     m_splash->setRouteStatus(false, i18n::t("splash.mainWaiting", m_resolvedLanguage));
     m_splash->setRouteStatus(true, i18n::t("splash.exWaiting", m_resolvedLanguage));
+    m_splashShownTimer.start();
     m_splash->showFor(m_window);
     // Let Qt paint the splash before starting the worker.
     QTimer::singleShot(0, this, [this]() { prepareRoute(false); });
@@ -157,8 +159,13 @@ void AppController::loadAfterRoutes() {
     m_splash->showFor(m_window);
     m_splash->setStatus(i18n::t("splash.ready", m_resolvedLanguage),
         i18n::t(m_routesReady ? "splash.readyDetail" : "splash.offlineDetail", m_resolvedLanguage), 100);
-    // Leave fallback warnings visible long enough to read before closing.
-    QTimer::singleShot(m_routeWarnings.isEmpty() ? 250 : 1800, this, [this]() { completeLoading(); });
+    // Keep the splash visible for a predictable minimum duration, including fast
+    // route probes and reloads. Warnings may extend that duration further.
+    const qint64 warningDelay = m_routeWarnings.isEmpty() ? 250 : 1800;
+    const qint64 elapsed = m_splashShownTimer.isValid() ? m_splashShownTimer.elapsed() : 0;
+    const qint64 minimumDelay = qMax<qint64>(0, app_constants::kStartupSplashMinimumDisplayMs - elapsed);
+    QTimer::singleShot(static_cast<int>(qMax(warningDelay, minimumDelay)), this,
+        [this]() { completeLoading(); });
 }
 
 void AppController::completeLoading() {

@@ -6,6 +6,7 @@
 #include <QColor>
 
 #include <cmath>
+#include <algorithm>
 
 namespace {
 
@@ -118,6 +119,23 @@ bool hasBreakevenGain(const QuoteItem& quote) {
         && std::isfinite(quote.price)
         && quote.price > 0.0
         && quote.price < quote.cost;
+}
+
+bool isMarketResetBatch(const QVector<QuoteItem>& quotes) {
+    if (quotes.isEmpty()) {
+        return false;
+    }
+
+    return std::all_of(quotes.cbegin(), quotes.cend(), [](const QuoteItem& quote) {
+        // TDX uses -100% (and occasionally a more extreme sentinel) while
+        // resetting quotes before the market opens. A real batch should never
+        // have every instrument at that value.
+        return std::isfinite(quote.pct) && quote.pct <= -99.0;
+    });
+}
+
+bool isIndexQuote(const QuoteItem& quote) {
+    return watchlist_utils::isPredefinedIndexCode(quote.code);
 }
 
 } // namespace
@@ -239,14 +257,19 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
         case ColName:
             return withHongKongNamePrefix(q.code, q.name);
         case ColPrice:
+            if (q.resetData) return {};
             return std::isnan(q.price) ? QString("--") : QString::number(q.price, 'f', 3);
         case ColRiseSpeed:
+            if (q.resetData || isIndexQuote(q)) return {};
             return std::isnan(q.riseSpeed) ? QString("--") : formatSigned(q.riseSpeed, 2, true);
         case ColPct:
+            if (q.resetData) return {};
             return std::isnan(q.pct) ? QString("--") : formatSigned(q.pct, 2, true);
         case ColChange:
+            if (q.resetData) return {};
             return std::isnan(q.change) ? QString("--") : formatSigned(q.change, 3, false);
         case ColIndicator:
+            if (q.resetData) return {};
             return indicatorSymbol(q.code, q.pct);
         case ColCost: {
             if (std::isnan(q.cost) || q.cost <= 0.0) return QString();
@@ -320,10 +343,14 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
             return hasBreakevenGain(q) ? m_cfg.upColor : defaultText;
         }
         if (index.column() == ColRiseSpeed) {
+            if (isIndexQuote(q)) return defaultText;
             if (!std::isfinite(q.riseSpeed)) return defaultText;
             return q.riseSpeed > 0 ? m_cfg.upColor : q.riseSpeed < 0 ? m_cfg.downColor : m_cfg.flatColor;
         }
         if (index.column() >= ColPrice) {
+            if (q.resetData && index.column() == ColPrice && std::isfinite(q.price)) {
+                return m_cfg.flatColor;
+            }
             if (std::isnan(q.pct)) {
                 return defaultText;
             }
@@ -361,6 +388,7 @@ void QuoteModel::setStocks(const QVector<StockItem>& stocks) {
 }
 
 void QuoteModel::updateQuotes(const QVector<QuoteItem>& quotes) {
+    const bool resetBatch = isMarketResetBatch(quotes);
     for (const QuoteItem& q : quotes) {
         if (!m_rowByCode.contains(q.code)) {
             continue;
@@ -374,12 +402,16 @@ void QuoteModel::updateQuotes(const QVector<QuoteItem>& quotes) {
         const QString newIndicator = indicatorSymbol(q.code, q.pct);
         const bool indicatorChanged = (oldIndicator != newIndicator)
             && !std::isnan(m_rows[row].pct)  // skip initial load
-            && !std::isnan(q.pct);
+            && !std::isnan(q.pct)
+            && !resetBatch
+            && !q.resetData;
 
+        const bool resetData = resetBatch || q.resetData;
+        m_rows[row].resetData = resetData;
         m_rows[row].price = q.price;
-        m_rows[row].pct = q.pct;
-        m_rows[row].change = q.change;
-        m_rows[row].riseSpeed = q.riseSpeed;
+        m_rows[row].pct = resetData ? qQNaN() : q.pct;
+        m_rows[row].change = resetData ? qQNaN() : q.change;
+        m_rows[row].riseSpeed = resetData ? qQNaN() : q.riseSpeed;
 
         if (indicatorChanged && m_cfg.blinkReminderEnabled) {
             m_blinkCounters[row] = 4; // 4 half-periods = 2 full blinks
@@ -461,10 +493,10 @@ QString QuoteModel::language() const {
 QString QuoteModel::trayTooltipText() const {
     QStringList lines;
     for (const QuoteItem& q : m_rows) {
-        const QString price = std::isnan(q.price)
+        const QString price = q.resetData ? QStringLiteral("--") : std::isnan(q.price)
             ? QStringLiteral("--")
             : QString::number(q.price, 'f', 3);
-        const QString pct = std::isnan(q.pct)
+        const QString pct = q.resetData || std::isnan(q.pct)
             ? QStringLiteral("--")
             : formatSigned(q.pct, 2, true);
         const QString indicator = indicatorSymbol(q.code, q.pct);
