@@ -15,6 +15,7 @@
 
 class QFileSystemWatcher;
 class FloatingWindow;
+class StartupSplash;
 class EastMoneyHotRankProvider;
 class AshareMarketBreadthProvider;
 class IQuoteProvider;
@@ -29,8 +30,17 @@ class QTimer;
 class AppController : public QObject {
 public:
     explicit AppController(QObject* parent = nullptr);
+    ~AppController() override;
 
 private:
+    friend class AppControllerStartupTest;
+    void beginLoading(bool coldStart);
+    void prepareRoute(bool extended);
+    void loadAfterRoutes();
+    void completeLoading();
+    void initializeApplication();
+    void loadStocksAfterRoutes();
+    void copyPreparedRoutes(AppConfig* cfg) const;
     QString findDataYaml(QString* errorMessage = nullptr) const;
     void toggleWindow();
     void toggleMarketBreadthDetailWindow();
@@ -85,6 +95,16 @@ private:
     void checkAndPullGistOnStartup();
 
 private:
+    StartupSplash* m_splash = nullptr;
+    AppConfig m_routeConfig;
+    bool m_loading = false;
+    bool m_loadCompleted = false;
+    bool m_initialized = false;
+    bool m_reloadQueued = false;
+    bool m_coldStart = true;
+    bool m_routesReady = false;
+    QStringList m_routeErrors;
+    QStringList m_routeWarnings;
     AppConfig m_cfg;
     QString m_resolvedLanguage;
     QVector<StockItem> m_stocks;

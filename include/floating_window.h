@@ -23,6 +23,7 @@ public:
     ~FloatingWindow() override;
 
     void applyConfig(const AppConfig& cfg);
+    void setLoading(bool loading);
     void toggleMarketBreadthDetailPopupFromTray();
     QRect marketBreadthDetailPopupGeometry() const;
     void setMarketBreadthDetailPopupGeometry(const QRect& rect);

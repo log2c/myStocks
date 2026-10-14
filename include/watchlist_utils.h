@@ -11,6 +11,8 @@ QString watchCodeKey(const QString& code);
 bool isDigitsOnly(const QString& text);
 QVector<int> normalizedColumnOrder(const QVector<int>& order);
 bool isTdxCode(const QString& code);
+// Accept native TDX codes and legacy identifiers with an explicit bridge mapping.
+bool isTdxCompatibleCode(const QString& code);
 bool isTdxExtendedCode(const QString& code);
 QString tdxSymbol(const QString& code);
 QString normalizeApiWatchCode(const QString& rawCode);

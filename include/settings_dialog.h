@@ -109,6 +109,7 @@ private:
     bool m_tdxServersLoading = false;
     bool m_tdxProbePending = false;
     QLineEdit* m_userAgentEdit = nullptr;
+    QComboBox* m_networkInterfaceCombo = nullptr;
     QComboBox* m_proxyTypeCombo = nullptr;
     QLineEdit* m_proxyHostEdit = nullptr;
     QSpinBox* m_proxyPortSpin = nullptr;

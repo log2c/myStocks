@@ -12,6 +12,7 @@
 #include <QFont>
 #include <QSaveFile>
 #include <QSettings>
+#include <QSet>
 #include <QStandardPaths>
 
 #include <yaml-cpp/yaml.h>
@@ -544,7 +545,28 @@ bool ConfigManager::saveDataYaml(
             << "groupAllPosition=" << groupAllPosition;
 
     QString errorMessage;
-    const QString yamlText = emitDataYamlText(stocks, groups, groupAllPosition, &errorMessage);
+    // Disabled-source entries are hidden from editors, but remain on disk when
+    // the user saves an unrelated TDX stock or group change.
+    DataYamlDocument previous;
+    if (!loadDataYamlDocumentForUpdate(filePath, &previous, &errorMessage)) return false;
+    QVector<StockItem> persistedStocks = stocks;
+    QVector<StockGroup> persistedGroups = groups;
+    QSet<QString> keys;
+    for (const auto& stock : stocks) keys.insert(watchlist_utils::watchCodeKey(stock.code));
+    for (const auto& stock : previous.stocks) {
+        if (!watchlist_utils::isTdxCompatibleCode(stock.code) && !keys.contains(watchlist_utils::watchCodeKey(stock.code))) {
+            persistedStocks.append(stock);
+        }
+    }
+    for (auto& group : persistedGroups) {
+        for (const auto& oldGroup : previous.groups) {
+            if (oldGroup.name != group.name) continue;
+            for (const auto& code : oldGroup.stockCodes) {
+                if (!watchlist_utils::isTdxCompatibleCode(code) && !group.stockCodes.contains(code)) group.stockCodes.append(code);
+            }
+        }
+    }
+    const QString yamlText = emitDataYamlText(persistedStocks, persistedGroups, groupAllPosition, &errorMessage);
     if (!errorMessage.isEmpty()) {
         return false;
     }
@@ -592,6 +614,31 @@ bool ConfigManager::saveDataYamlText(
 }
 
 
+AppConfig ConfigManager::loadConnectionConfig() {
+    AppConfig cfg;
+    const auto settings = createAppSettings();
+    const QSettings& s = *settings;
+    cfg.language = i18n::normalizeLanguage(readConfigValue(s, "language", cfg.language).toString());
+    cfg.logEnabled = readConfigValue(s, "logEnabled", cfg.logEnabled).toBool();
+    cfg.logLevel = readConfigValue(s, "logLevel", cfg.logLevel).toString();
+    cfg.tdxUserId = readConfigValue(s, "tdxUserId", cfg.tdxUserId).toString().trimmed();
+    cfg.tdxRememberToken = readConfigValue(s, "tdxRememberToken", false).toBool();
+    if (cfg.tdxRememberToken) cfg.tdxToken = readConfigValue(s, "tdxToken", QString()).toString();
+    cfg.tdxMainAutoSelect = readConfigValue(s, "tdxMainAutoSelect", true).toBool();
+    cfg.tdxExAutoSelect = readConfigValue(s, "tdxExAutoSelect", true).toBool();
+    cfg.tdxMainServer = readConfigValue(s, "tdxMainServer", QString()).toString().trimmed();
+    cfg.tdxExServer = readConfigValue(s, "tdxExServer", QString()).toString().trimmed();
+    cfg.tdxMainServerPool = readConfigValue(s, "tdxMainServerPool", QStringList()).toStringList();
+    cfg.tdxExServerPool = readConfigValue(s, "tdxExServerPool", QStringList()).toStringList();
+    cfg.networkInterface = readConfigValue(s, "networkInterface", QString()).toString().trimmed();
+    cfg.proxyType = readConfigValue(s, "proxyType", cfg.proxyType).toString();
+    cfg.proxyHost = readConfigValue(s, "proxyHost", cfg.proxyHost).toString();
+    cfg.proxyPort = readConfigValue(s, "proxyPort", cfg.proxyPort).toInt();
+    cfg.proxyUser = readConfigValue(s, "proxyUser", cfg.proxyUser).toString();
+    cfg.proxyPassword = readConfigValue(s, "proxyPassword", cfg.proxyPassword).toString();
+    return cfg;
+}
+
 AppConfig ConfigManager::loadConfig() {
     AppConfig cfg;
     std::unique_ptr<QSettings> settings = createAppSettings();
@@ -624,6 +671,7 @@ AppConfig ConfigManager::loadConfig() {
     cfg.tdxMainServerPool = readConfigValue(s, QStringLiteral("tdxMainServerPool"), QStringList()).toStringList();
     cfg.tdxExServerPool = readConfigValue(s, QStringLiteral("tdxExServerPool"), QStringList()).toStringList();
     cfg.userAgent = readConfigValue(s, QStringLiteral("userAgent"), cfg.userAgent).toString();
+    cfg.networkInterface = readConfigValue(s, QStringLiteral("networkInterface"), QString()).toString().trimmed();
     cfg.proxyType = readConfigValue(s, QStringLiteral("proxyType"), cfg.proxyType).toString();
     cfg.proxyHost = readConfigValue(s, QStringLiteral("proxyHost"), cfg.proxyHost).toString();
     cfg.proxyPort = readConfigValue(s, QStringLiteral("proxyPort"), cfg.proxyPort).toInt();
@@ -925,6 +973,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         cfg.userAgent.trimmed().isEmpty() ? defaultChrome100UserAgent() : cfg.userAgent.trimmed()
     );
 
+    writeConfigValue(s, QStringLiteral("networkInterface"), cfg.networkInterface.trimmed());
     QString proxyType = cfg.proxyType.trimmed().toLower();
     if (proxyType == "socks") {
         proxyType = "socks5";

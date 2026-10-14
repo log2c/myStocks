@@ -318,7 +318,7 @@ func klines(req request) (any, error) {
 func dispatch(req request) (any, error) {
 	switch req.Operation {
 	case "capabilities":
-		return map[string]any{"abi": 1, "authentication": false, "operations": []string{"quotes", "timeline", "klines", "search", "hot_boards", "members", "breadth", "server_list", "server_probe"}}, nil
+		return map[string]any{"abi": 1, "authentication": false, "operations": []string{"quotes", "timeline", "klines", "search", "hot_boards", "members", "breadth", "server_list", "server_probe", "prepare_servers"}}, nil
 	case "server_list":
 		return listServers(), nil
 	case "server_probe":
@@ -370,6 +370,9 @@ func MyStocksTdxRequest(input *C.char) (output *C.char) {
 }
 
 func processRequest(req request) (any, error) {
+	if req.Operation == "prepare_servers" {
+		return prepareServers(req)
+	}
 	// Settings previews never alter active connections or account/proxy state.
 	if req.Operation == "server_list" || req.Operation == "server_probe" || req.Operation == "capabilities" {
 		return dispatch(req)
@@ -386,6 +389,24 @@ func processRequest(req request) (any, error) {
 		calendarPath = req.CalendarPath
 	}
 	return dispatchWithFailover(req)
+}
+
+//export MyStocksNetworkProxy
+func MyStocksNetworkProxy(input *C.char) (output *C.char) {
+	defer func() {
+		if recover() != nil {
+			output = C.CString(`{"error":"network proxy initialization failed"}`)
+		}
+	}()
+	if input == nil {
+		return C.CString(`{"error":"null proxy settings"}`)
+	}
+	result, err := networkProxyRequest([]byte(C.GoString(input)))
+	if err != nil {
+		result = map[string]any{"error": err.Error()}
+	}
+	data, _ := json.Marshal(result)
+	return C.CString(string(data))
 }
 
 //export MyStocksTdxFree

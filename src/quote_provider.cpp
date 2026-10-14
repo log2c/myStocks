@@ -459,13 +459,13 @@ QStringList extractTonghuashunStockTags(const QJsonObject& row) {
 
 const QVector<QPair<QString, QString>>& indexQuoteConfig() {
     static const QVector<QPair<QString, QString>> kConfig = {
-        {QStringLiteral("1.000001"),   QStringLiteral("上证指数")},
-        {QStringLiteral("0.399001"),   QStringLiteral("深证成指")},
-        {QStringLiteral("0.399006"),   QStringLiteral("创业板指")},
-        {QStringLiteral("1.000688"),   QStringLiteral("科创50")},
-        {QStringLiteral("100.HSI"),    QStringLiteral("恒生指数")},
-        {QStringLiteral("124.HSTECH"), QStringLiteral("恒生科技")},
-        {QStringLiteral("133.USDCNH"), QStringLiteral("美元/人民币")},
+        {QStringLiteral("tdx:main:1:000001"),   QStringLiteral("上证指数")},
+        {QStringLiteral("tdx:main:0:399001"),   QStringLiteral("深证成指")},
+        {QStringLiteral("tdx:main:0:399006"),   QStringLiteral("创业板指")},
+        {QStringLiteral("tdx:main:1:000688"),   QStringLiteral("科创50")},
+        {QStringLiteral("tdx:ex:27:HSI"),    QStringLiteral("恒生指数")},
+        {QStringLiteral("tdx:ex:27:HZ5017"), QStringLiteral("恒生科技")},
+        {QStringLiteral("tdx:ex:10:USDCNH"), QStringLiteral("美元/人民币")},
         {QStringLiteral("tdx:ex:12:A_IXIC"), QStringLiteral("纳斯达克综合")},
         {QStringLiteral("tdx:ex:74:DJIA"), QStringLiteral("道琼斯BuyWrite")},
         {QStringLiteral("tdx:main:1:880003"), QStringLiteral("平均股价")},

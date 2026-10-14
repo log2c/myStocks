@@ -79,18 +79,32 @@ struct IndexPreset {
 
 const QVector<IndexPreset>& indexPresets() {
     static const QVector<IndexPreset> presets {
-        {QStringLiteral("1.000001"), QStringLiteral("上证指数"), QStringLiteral("沪市主板综合指数")},
-        {QStringLiteral("0.399001"), QStringLiteral("深证成指"), QStringLiteral("深市核心宽基指数")},
-        {QStringLiteral("0.399006"), QStringLiteral("创业板指"), QStringLiteral("创业板市场代表指数")},
-        {QStringLiteral("1.000688"), QStringLiteral("科创50"), QStringLiteral("科创板龙头 50 只")},
-        {QStringLiteral("1.000300"), QStringLiteral("沪深300"), QStringLiteral("沪深两市核心蓝筹")},
-        {QStringLiteral("1.000905"), QStringLiteral("中证500"), QStringLiteral("A股中盘代表指数")},
-        {QStringLiteral("100.HSI"), QStringLiteral("恒生指数"), QStringLiteral("港股大盘基准指数")},
-        {QStringLiteral("124.HSTECH"), QStringLiteral("恒生科技指数"), QStringLiteral("港股科技龙头指数")},
-        {QStringLiteral("100.XIN9"), QStringLiteral("富时中国A50"), QStringLiteral("离岸A50指数")},
+        {QStringLiteral("tdx:main:1:000001"), QStringLiteral("上证指数"), QStringLiteral("沪市主板综合指数")},
+        {QStringLiteral("tdx:main:0:399001"), QStringLiteral("深证成指"), QStringLiteral("深市核心宽基指数")},
+        {QStringLiteral("tdx:main:0:399006"), QStringLiteral("创业板指"), QStringLiteral("创业板市场代表指数")},
+        {QStringLiteral("tdx:main:1:000688"), QStringLiteral("科创50"), QStringLiteral("科创板龙头 50 只")},
+        {QStringLiteral("tdx:main:1:000300"), QStringLiteral("沪深300"), QStringLiteral("沪深两市核心蓝筹")},
+        {QStringLiteral("tdx:main:1:000905"), QStringLiteral("中证500"), QStringLiteral("A股中盘代表指数")},
+        {QStringLiteral("tdx:ex:27:HSI"), QStringLiteral("恒生指数"), QStringLiteral("港股大盘基准指数")},
+        {QStringLiteral("tdx:ex:27:HZ5017"), QStringLiteral("恒生科技指数"), QStringLiteral("港股科技龙头指数")},
     };
 
     return presets;
+}
+
+QString indexPresetKey(const QString& rawCode) {
+    const QString code = normalizeApiWatchCode(rawCode);
+    if (watchlist_utils::isTdxCode(code)) return watchCodeKey(code);
+    const QString market = code.section(QLatin1Char('.'), 0, 0);
+    const QString symbol = code.section(QLatin1Char('.'), 1);
+    if (market == QLatin1String("0") || market == QLatin1String("1")) {
+        return watchCodeKey(QStringLiteral("tdx:main:%1:%2").arg(market, symbol));
+    }
+    if (market == QLatin1String("100") || market == QLatin1String("124")) {
+        return watchCodeKey(QStringLiteral("tdx:ex:27:%1").arg(symbol == QLatin1String("HSTECH")
+            ? QStringLiteral("HZ5017") : symbol));
+    }
+    return watchCodeKey(code);
 }
 
 bool isPredefinedIndexCode(const QString& rawCode) {
@@ -560,6 +574,7 @@ AppConfig SettingsDialog::config() const {
         if (out.tdxExServerPool == m_tdxBuiltinServerPools[1]) out.tdxExServerPool.clear();
     }
     out.userAgent = m_userAgentEdit->text().trimmed();
+    out.networkInterface = m_networkInterfaceCombo->currentData().toString();
     out.proxyType = m_proxyTypeCombo->currentData().toString();
     out.proxyHost = m_proxyHostEdit->text().trimmed();
     out.proxyPort = m_proxyPortSpin->value();
@@ -821,7 +836,7 @@ void SettingsDialog::reloadDialogDataFromYaml() {
     QVector<StockItem> filteredStocks;
     filteredStocks.reserve(reloadedStocks.size());
     for (const StockItem& stock : reloadedStocks) {
-        if (!isPredefinedIndexCode(stock.code)) {
+        if (watchlist_utils::isTdxCompatibleCode(stock.code) && !isPredefinedIndexCode(stock.code)) {
             filteredStocks.push_back(stock);
         }
     }
@@ -1208,7 +1223,6 @@ QWidget* SettingsDialog::buildNetworkTab() {
 
     m_quoteSourceCombo = new QComboBox(w);
     m_quoteSourceCombo->addItem(trText("settings.quoteSource.tdx"), "tdx");
-    m_quoteSourceCombo->addItem(trText("settings.quoteSource.eastmoney"), "eastmoney");
     const int sourceIndex = m_quoteSourceCombo->findData(normalizeQuoteSource(m_cfg.quoteSource));
     m_quoteSourceCombo->setCurrentIndex(sourceIndex < 0 ? 0 : sourceIndex);
     connect(m_quoteSourceCombo, &QComboBox::currentIndexChanged, this, [this](int) {
@@ -1221,6 +1235,22 @@ QWidget* SettingsDialog::buildNetworkTab() {
     if (m_userAgentEdit->text().trimmed().isEmpty()) {
         m_userAgentEdit->setText(defaultChrome100UserAgent());
     }
+
+    m_networkInterfaceCombo = new QComboBox(w);
+    m_networkInterfaceCombo->setObjectName(QStringLiteral("networkInterfaceCombo"));
+    m_networkInterfaceCombo->addItem(trText("settings.network.interfaceAuto"), QString());
+    for (const auto& iface : network_utils::availableInterfaces()) {
+        m_networkInterfaceCombo->addItem(iface.label + (iface.up ? QString() : trText("settings.network.interfaceDown")), iface.id);
+    }
+    int interfaceIndex = m_networkInterfaceCombo->findData(m_cfg.networkInterface);
+    if (interfaceIndex < 0 && !m_cfg.networkInterface.isEmpty()) {
+        m_networkInterfaceCombo->addItem(trText("settings.network.interfaceMissing").arg(m_cfg.networkInterface), m_cfg.networkInterface);
+        interfaceIndex = m_networkInterfaceCombo->count() - 1;
+    }
+    m_networkInterfaceCombo->setCurrentIndex(qMax(0, interfaceIndex));
+    m_networkInterfaceCombo->setToolTip(trText("settings.network.interfaceHint"));
+    m_networkInterfaceCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_networkInterfaceCombo->setMinimumContentsLength(28);
 
     m_proxyTypeCombo = new QComboBox(w);
     m_proxyTypeCombo->addItem(trText("settings.proxy.none"), "none");
@@ -1245,6 +1275,7 @@ QWidget* SettingsDialog::buildNetworkTab() {
     m_proxyPasswordEdit->setEchoMode(QLineEdit::Password);
 
     form->addRow(trText("settings.general.quoteSource"), m_quoteSourceCombo);
+    form->addRow(trText("settings.network.interface"), m_networkInterfaceCombo);
     form->addRow(trText("settings.general.userAgent"), m_userAgentEdit);
     form->addRow(trText("settings.general.proxyType"), m_proxyTypeCombo);
     form->addRow(trText("settings.general.proxyHost"), m_proxyHostEdit);
@@ -1892,6 +1923,7 @@ QWidget* SettingsDialog::buildOtherTab() {
             req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                              QNetworkRequest::NoLessSafeRedirectPolicy);
 
+            m_syncNam->setProxy(network_utils::proxyFromConfig(config()));
             QNetworkReply* fetchReply = m_syncNam->get(req);
             connect(fetchReply, &QNetworkReply::finished, this,
                 [this, fetchReply, uploadBtn, downloadBtn, token, gistId]() {
@@ -2055,6 +2087,7 @@ QWidget* SettingsDialog::buildOtherTab() {
                         patchReq.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                                               QNetworkRequest::NoLessSafeRedirectPolicy);
 
+                        m_syncNam->setProxy(network_utils::proxyFromConfig(config()));
                         QNetworkReply* patchReply = m_syncNam->sendCustomRequest(
                             patchReq, "PATCH",
                             QJsonDocument(body).toJson(QJsonDocument::Compact));
@@ -2480,7 +2513,7 @@ QWidget* SettingsDialog::buildStocksTab() {
             return;
         }
 
-        if (watchlist_utils::isTdxCode(code)) {
+        if (watchlist_utils::isTdxCompatibleCode(code)) {
             const int tdxIndex = m_quoteSourceCombo->findData(QStringLiteral("tdx"));
             if (tdxIndex >= 0) m_quoteSourceCombo->setCurrentIndex(tdxIndex);
         }
@@ -2521,7 +2554,7 @@ QWidget* SettingsDialog::buildStocksTab() {
             QVector<StockItem> filteredStocks;
             filteredStocks.reserve(reloadedStocks.size());
             for (const StockItem& stock : reloadedStocks) {
-                if (!isPredefinedIndexCode(stock.code)) {
+                if (watchlist_utils::isTdxCompatibleCode(stock.code) && !isPredefinedIndexCode(stock.code)) {
                     filteredStocks.push_back(stock);
                 }
             }
@@ -2591,7 +2624,7 @@ QWidget* SettingsDialog::buildIndexSectorTab() {
     QSet<QString> checkedKeys;
     QStringList orderedKeys;
     for (const StockItem& selected : m_indexes) {
-        const QString key = watchCodeKey(selected.code);
+        const QString key = indexPresetKey(selected.code);
         if (key.isEmpty()) {
             continue;
         }
@@ -2601,10 +2634,19 @@ QWidget* SettingsDialog::buildIndexSectorTab() {
 
     QHash<QString, IndexPreset> presetByKey;
     for (const IndexPreset& preset : indexPresets()) {
-        const QString key = watchCodeKey(preset.code);
+        const QString key = indexPresetKey(preset.code);
         presetByKey.insert(key, preset);
         if (!orderedKeys.contains(key)) {
             orderedKeys.push_back(key);
+        }
+    }
+
+    // Saved legacy index identifiers are supported by TDX too. Keep their
+    // original identifiers/selection when opening and saving the index editor.
+    for (const auto& selected : m_indexes) {
+        const QString key = indexPresetKey(selected.code);
+        if (watchlist_utils::isTdxCompatibleCode(selected.code)) {
+            presetByKey.insert(key, {selected.code, selected.name, QString()});
         }
     }
 
@@ -2755,6 +2797,7 @@ void SettingsDialog::doStockSearch(bool forceSearch) {
         m_tdxSearchPending = true;
         const int generation = ++m_stockSearchGeneration;
         AppConfig searchConfig = m_cfg;
+        searchConfig.networkInterface = m_networkInterfaceCombo->currentData().toString();
         searchConfig.proxyType = m_proxyTypeCombo->currentData().toString();
         searchConfig.proxyHost = m_proxyHostEdit->text().trimmed();
         searchConfig.proxyPort = m_proxyPortSpin->value();
@@ -2863,6 +2906,7 @@ void SettingsDialog::refreshCurrentGroupSelection() {
         m_groupMemberList->clear();
         m_groupMemberList->setEnabled(true);
         for (const QString& code : group.stockCodes) {
+            if (!watchlist_utils::isTdxCompatibleCode(code)) continue;
             QListWidgetItem* item = new QListWidgetItem(
                 groupMemberDisplayName(code),
                 m_groupMemberList
@@ -3218,7 +3262,7 @@ QWidget* SettingsDialog::buildAboutTab() {
         m_checkUpdateBtn->setEnabled(false);
         m_checkUpdateStatus->setText(trText("settings.about.checking"));
         m_downloadProgress->setVisible(false);
-        m_updater->setConfig(m_cfg);
+        m_updater->setConfig(config());
         m_updater->checkForUpdates();
     });
 

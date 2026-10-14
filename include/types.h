@@ -168,8 +168,8 @@ inline QString normalizeHotRankSortOrder(const QString& rawOrder) {
 }
 
 inline QString normalizeQuoteSource(const QString& source) {
-    return source.trimmed().toLower() == QLatin1String("eastmoney")
-        ? QStringLiteral("eastmoney") : QStringLiteral("tdx");
+    Q_UNUSED(source);
+    return QStringLiteral("tdx");
 }
 
 struct AppConfig {
@@ -191,6 +191,7 @@ struct AppConfig {
     QStringList tdxMainServerPool; // empty uses the SDK's built-in MAC servers
     QStringList tdxExServerPool;
     QString userAgent = defaultChrome100UserAgent();
+    QString networkInterface; // empty lets the operating system select a route
     QString proxyType = "none";
     QString proxyHost;
     int proxyPort = 0;

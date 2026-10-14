@@ -36,7 +36,8 @@ QVector<int> visibleLogicalColumns(const AppConfig& cfg) {
 // Returns true for ChiNext (创业板 300/301) and STAR Market (科创板 688/689)
 // which use a 20% limit but we show ▲▲▲/▼▼▼ at ±10% per display rules.
 bool isHighLimitCode(const QString& rawCode) {
-    QString code = rawCode.trimmed().toLower();
+    QString code = watchlist_utils::isTdxCode(rawCode)
+        ? watchlist_utils::tdxSymbol(rawCode).toLower() : rawCode.trimmed().toLower();
     if (code.startsWith("sh") || code.startsWith("sz")) {
         code = code.mid(2);
     }
@@ -347,12 +348,13 @@ void QuoteModel::setStocks(const QVector<StockItem>& stocks) {
 
     m_rows.reserve(stocks.size());
     for (int i = 0; i < stocks.size(); ++i) {
+        if (!watchlist_utils::isTdxCompatibleCode(stocks[i].code)) continue;
         QuoteItem q;
-        q.code = stocks[i].code;
+        q.code = watchlist_utils::normalizeApiWatchCode(stocks[i].code);
         q.name = stocks[i].name;
         q.cost = stocks[i].cost;
         m_rows.push_back(q);
-        m_rowByCode.insert(q.code, i);
+        m_rowByCode.insert(q.code, m_rows.size() - 1);
     }
 
     endResetModel();

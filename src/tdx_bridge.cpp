@@ -15,19 +15,17 @@
 namespace tdx_bridge {
 namespace {
 struct Result { QJsonObject object; QString error; };
-}
+using RequestFn = char* (*)(const char*);
+using FreeFn = void (*)(char*);
 
-QJsonObject requestBlocking(const QJsonObject& payload, QString* error) {
-    // Loading and calls are serialized: gotdx clients share connection state.
-    static QMutex mutex;
-    QMutexLocker locker(&mutex);
-    static QLibrary library;
-    using RequestFn = char* (*)(const char*);
-    using FreeFn = void (*)(char*);
-    static RequestFn invoke = nullptr;
-    static FreeFn release = nullptr;
-    if (error) error->clear();
-    if (!invoke) {
+struct Bridge {
+    QLibrary library;
+    RequestFn request = nullptr;
+    RequestFn networkProxy = nullptr;
+    FreeFn release = nullptr;
+    QString error;
+
+    Bridge() {
         const QDir appDir(QCoreApplication::applicationDirPath());
 #if defined(Q_OS_MACOS)
         const QString path = appDir.absoluteFilePath(QStringLiteral("../Frameworks/libmystocks_gotdx.dylib"));
@@ -37,30 +35,40 @@ QJsonObject requestBlocking(const QJsonObject& payload, QString* error) {
         const QString path = appDir.absoluteFilePath(QStringLiteral("libmystocks_gotdx.so"));
 #endif
         library.setFileName(path);
-        // A Go runtime cannot safely be unloaded while its goroutines exist.
         library.setLoadHints(QLibrary::PreventUnloadHint);
         if (!library.load()) {
-            if (error) *error = QStringLiteral("Cannot load gotdx: %1").arg(library.errorString());
-            return {};
+            error = QStringLiteral("Cannot load gotdx: %1").arg(library.errorString());
+            return;
         }
-        invoke = reinterpret_cast<RequestFn>(library.resolve("MyStocksTdxRequest"));
+        request = reinterpret_cast<RequestFn>(library.resolve("MyStocksTdxRequest"));
+        networkProxy = reinterpret_cast<RequestFn>(library.resolve("MyStocksNetworkProxy"));
         release = reinterpret_cast<FreeFn>(library.resolve("MyStocksTdxFree"));
-        if (!invoke || !release) {
-            invoke = nullptr;
-            if (error) *error = QStringLiteral("Incompatible gotdx bridge ABI");
-            return {};
-        }
+        if (!request || !networkProxy || !release) error = QStringLiteral("Incompatible gotdx bridge ABI");
     }
-    QJsonObject request = payload;
-    request.insert(QStringLiteral("calendarPath"), QFileInfo(library.fileName()).dir().filePath(QStringLiteral("gotdx-futures-calendar.db")));
-    const QByteArray input = QJsonDocument(request).toJson(QJsonDocument::Compact);
+};
+
+Bridge& bridge() {
+    // C++ static initialization is thread-safe. Loading is shared; the network
+    // relay API has an independent Go lock and never waits for TDX quotation I/O.
+    static Bridge instance;
+    return instance;
+}
+
+QJsonObject invokeJson(RequestFn invoke, const QJsonObject& payload, QString* error) {
+    Bridge& runtime = bridge();
+    if (error) error->clear();
+    if (!runtime.error.isEmpty()) {
+        if (error) *error = runtime.error;
+        return {};
+    }
+    const QByteArray input = QJsonDocument(payload).toJson(QJsonDocument::Compact);
     char* response = invoke(input.constData());
     if (!response) {
         if (error) *error = QStringLiteral("gotdx returned a null response");
         return {};
     }
     const QByteArray bytes(response);
-    release(response);
+    runtime.release(response);
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(bytes, &parseError);
     if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
@@ -71,15 +79,32 @@ QJsonObject requestBlocking(const QJsonObject& payload, QString* error) {
     if (error) *error = object.value(QStringLiteral("error")).toString();
     return object;
 }
+} // namespace
 
-void request(QObject* context, const AppConfig& config, QJsonObject payload, Callback callback) {
-    payload.insert(QStringLiteral("proxy"), QJsonObject{
-        {QStringLiteral("type"), config.proxyType},
+QJsonObject proxySettings(const AppConfig& config) {
+    return {{QStringLiteral("type"), config.proxyType},
         {QStringLiteral("host"), config.proxyHost.trimmed()},
         {QStringLiteral("port"), config.proxyPort},
         {QStringLiteral("user"), config.proxyUser},
-        {QStringLiteral("password"), config.proxyPassword}
-    });
+        {QStringLiteral("password"), config.proxyPassword},
+        {QStringLiteral("interface"), config.networkInterface.trimmed()}};
+}
+
+QJsonObject networkProxyBlocking(const AppConfig& config, QString* error) {
+    return invokeJson(bridge().networkProxy, proxySettings(config), error);
+}
+
+QJsonObject requestBlocking(const QJsonObject& payload, QString* error) {
+    static QMutex mutex;
+    QMutexLocker locker(&mutex);
+    QJsonObject request = payload;
+    request.insert(QStringLiteral("calendarPath"), QFileInfo(bridge().library.fileName()).dir()
+        .filePath(QStringLiteral("gotdx-futures-calendar.db")));
+    return invokeJson(bridge().request, request, error);
+}
+
+void request(QObject* context, const AppConfig& config, QJsonObject payload, Callback callback) {
+    payload.insert(QStringLiteral("proxy"), proxySettings(config));
     payload.insert(QStringLiteral("user"), QJsonObject{
         {QStringLiteral("userId"), config.tdxUserId},
         {QStringLiteral("token"), config.tdxToken}

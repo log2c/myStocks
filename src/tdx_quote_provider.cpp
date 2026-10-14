@@ -1,5 +1,6 @@
 #include "tdx_quote_provider.h"
 #include "tdx_bridge.h"
+#include "watchlist_utils.h"
 #include <QJsonArray>
 
 namespace {
@@ -20,10 +21,11 @@ void TdxQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
     QJsonArray items;
     QHash<QString, StockItem> originals;
     for (const StockItem& stock : stocks) {
-        if (originals.contains(stock.code)) continue;
+        if (!watchlist_utils::isTdxCompatibleCode(stock.code) || originals.contains(stock.code)) continue;
         items.append(QJsonObject{{QStringLiteral("code"), stock.code}, {QStringLiteral("name"), stock.name}});
         originals.insert(stock.code, stock);
     }
+    if (items.isEmpty()) return;
     m_pending = true;
     const int generation = m_generation;
     tdx_bridge::request(this, m_cfg,

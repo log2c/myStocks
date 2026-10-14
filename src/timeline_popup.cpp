@@ -1294,6 +1294,7 @@ public:
     void applyConfig(const AppConfig& cfg) {
         const bool sourceChanged = normalizeQuoteSource(m_cfg.quoteSource) != normalizeQuoteSource(cfg.quoteSource)
             || m_cfg.tdxUserId != cfg.tdxUserId || m_cfg.tdxToken != cfg.tdxToken
+            || m_cfg.networkInterface != cfg.networkInterface
             || m_cfg.proxyType != cfg.proxyType || m_cfg.proxyHost != cfg.proxyHost || m_cfg.proxyPort != cfg.proxyPort
             || m_cfg.proxyUser != cfg.proxyUser || m_cfg.proxyPassword != cfg.proxyPassword;
         if (sourceChanged) {

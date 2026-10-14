@@ -256,6 +256,10 @@ func TestProxyProbeAndCustomPoolUseRemoteAddress(t *testing.T) {
 	if err != nil || !strings.Contains(result.(map[string]any)["main"].(map[string]any)["current"].(string), "custom.example") {
 		t.Fatal("current server exposed a local tunnel address")
 	}
+	prepared, err := processRequest(request{Operation: "prepare_servers", Kind: "main", Proxy: p, Servers: cfg})
+	if err != nil || prepared.(map[string]any)["address"] != "custom.example:7709" || count.Load() < 2 {
+		t.Fatalf("startup protocol verification bypassed the configured proxy: %+v %v", prepared, err)
+	}
 }
 
 func TestUnavailableCustomPoolDoesNotUseSDKDefaults(t *testing.T) {
@@ -274,5 +278,79 @@ func TestUnavailableCustomPoolDoesNotUseSDKDefaults(t *testing.T) {
 	data := result.(map[string]any)
 	if len(data["quotes"].([]quote)) != 0 || len(data["errors"].([]string)) == 0 || currentServer(false) != "" {
 		t.Fatal("unavailable custom pool silently fell back to SDK defaults")
+	}
+}
+
+func TestPrepareServersKeepsWorkingManualRoute(t *testing.T) {
+	isolateServers(t)
+	first, _ := quotePeer(t, false)
+	selected, _ := quotePeer(t, false)
+	config := serverConfig{Main: serverGroup{Mode: "manual", Address: selected, Addresses: []string{first, selected}}}
+	result, err := processRequest(request{Operation: "prepare_servers", Kind: "main", Servers: config})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := result.(map[string]any)
+	if row["address"] != selected || row["switched"] != false || currentServer(false) != selected {
+		t.Fatalf("working manual selection changed: %+v", row)
+	}
+	if !row["protocolVerified"].(bool) {
+		t.Fatal("route must be protocol-verified before loading configuration")
+	}
+}
+
+func TestPrepareServersSwitchesBrokenManualProtocol(t *testing.T) {
+	isolateServers(t)
+	bad, rejected := quotePeer(t, true)
+	good, accepted := quotePeer(t, false)
+	config := serverConfig{Main: serverGroup{Mode: "manual", Address: bad, Addresses: []string{bad, good}}}
+	result, err := processRequest(request{Operation: "prepare_servers", Kind: "main", Servers: config})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := result.(map[string]any)
+	if row["address"] != good || row["previous"] != bad || row["switched"] != true {
+		t.Fatalf("broken manual route did not switch: %+v", row)
+	}
+	if rejected.Load() == 0 || accepted.Load() == 0 {
+		t.Fatal("TCP-only reachability must not bypass protocol verification")
+	}
+	if group(false).Mode != "manual" || group(false).Address != good {
+		t.Fatal("fallback must retain manual mode with the working replacement")
+	}
+	config.Main.Address = good
+	if _, err := processRequest(request{Operation: "quotes", Servers: config,
+		Stocks: []stock{{Code: "tdx:main:1:600519"}}}); err != nil {
+		t.Fatalf("prepared replacement failed on the first normal request: %v", err)
+	}
+	if currentServer(false) != good {
+		t.Fatal("first quote must reuse the prepared route")
+	}
+}
+
+func TestPrepareServersRepairsStaleManualSelection(t *testing.T) {
+	isolateServers(t)
+	good, _ := quotePeer(t, false)
+	result, err := processRequest(request{Operation: "prepare_servers", Kind: "main",
+		Servers: serverConfig{Main: serverGroup{Mode: "manual", Address: "127.0.0.1:1", Addresses: []string{good}}}})
+	if err != nil || result.(map[string]any)["address"] != good {
+		t.Fatalf("stale selected address must not block the available pool: %+v %v", result, err)
+	}
+}
+
+func TestPrepareServersRequiresUsableProtocolAndSeparatesMarkets(t *testing.T) {
+	isolateServers(t)
+	bad, _ := quotePeer(t, true)
+	good, _ := quotePeer(t, false)
+	config := serverConfig{Main: serverGroup{Addresses: []string{bad}}, Ex: serverGroup{Addresses: []string{good}}}
+	if _, err := processRequest(request{Operation: "prepare_servers", Kind: "main", Servers: config}); err == nil {
+		t.Fatal("TCP-open node with invalid protocol was accepted")
+	}
+	result, err := processRequest(request{Operation: "prepare_servers", Kind: "ex", Servers: config})
+	if err != nil || result.(map[string]any)["address"] != good || currentServer(false) != "" {
+		t.Fatalf("extended market must prepare independently: %+v %v", result, err)
+	}
+	if _, err := processRequest(request{Operation: "prepare_servers", Kind: "unknown", Servers: config}); err == nil {
+		t.Fatal("invalid market group was accepted")
 	}
 }

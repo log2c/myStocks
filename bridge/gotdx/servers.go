@@ -203,7 +203,7 @@ func serverOptions(extended bool) []gotdx.Option {
 	r.remote = make(map[string]string)
 	local := make([]string, 0, len(addresses))
 	for _, address := range addresses {
-		if activeProxy.enabled() {
+		if activeProxy.enabled() || activeProxy.Interface != "" {
 			t, err := newTunnel(activeProxy, []string{address})
 			if err != nil {
 				continue
@@ -335,4 +335,111 @@ func dispatchWithFailover(req request) (any, error) {
 	second := quotes(req)
 	second["quotes"] = append(collected, second["quotes"].([]quote)...)
 	return second, nil
+}
+
+// Startup/reload preparation probes the configured pool, then verifies the MAC
+// quotation protocol before committing a route. A successful TCP connection
+// alone can be a proxy or an unrelated service, so it is not considered ready.
+func prepareServers(req request) (any, error) {
+	if req.Kind != "main" && req.Kind != "ex" {
+		return nil, fmt.Errorf("select main or ex server group")
+	}
+	if err := configureProxy(req.Proxy); err != nil {
+		return nil, err
+	}
+	if req.CalendarPath != calendarPath {
+		dropClient(false, false)
+		dropClient(true, false)
+		calendarPath = req.CalendarPath
+	}
+	if _, err := interfaceDialer(req.Proxy.Interface, 3*time.Second); err != nil {
+		return nil, err
+	}
+	extended := req.Kind == "ex"
+	configured := req.Servers.Main
+	if extended {
+		configured = req.Servers.Ex
+	}
+	mode, previous := configured.Mode, strings.TrimSpace(configured.Address)
+	if mode == "" {
+		mode = "auto"
+	}
+	if mode != "auto" && mode != "manual" {
+		return nil, fmt.Errorf("invalid server selection mode")
+	}
+	// A stale manual selection must not prevent testing the rest of the pool.
+	configured.Mode, configured.Address = "auto", ""
+	g, err := normalizeGroup(configured, extended)
+	if err != nil {
+		return nil, err
+	}
+	if normalized, err := normalizeAddress(previous); err == nil {
+		previous = normalized
+	}
+	probes := probeServers(g.Addresses, req.Proxy)
+	candidates := make([]serverProbe, 0, len(probes))
+	for _, probe := range probes {
+		if probe.Reachable {
+			candidates = append(candidates, probe)
+		}
+	}
+	// Respect a working manual selection even when another node is faster.
+	if mode == "manual" {
+		for i, candidate := range candidates {
+			if candidate.Address == previous {
+				candidates = append([]serverProbe{candidate}, append(candidates[:i], candidates[i+1:]...)...)
+				break
+			}
+		}
+	}
+	dropClient(extended, false)
+	if extended {
+		activeServers.Ex = g
+	} else {
+		activeServers.Main = g
+	}
+	r := route(extended)
+	r.failed = make(map[string]time.Time)
+	for _, candidate := range candidates {
+		// Limit each protocol validation to this one node. SDK fallback must not
+		// silently accept a different address than the one being measured.
+		r.ordered, r.expires = []string{candidate.Address}, time.Now().Add(5*time.Minute)
+		opts := append(serverOptions(extended), gotdx.WithTimeoutSec(3), gotdx.WithFuturesCalendarPath(calendarPath))
+		var c *gotdx.Client
+		market, code := uint8(1), "000001"
+		if extended {
+			c = gotdx.NewMACEx(opts...)
+			market, code = 27, "HSI"
+			exClient = c
+		} else {
+			c = gotdx.NewMAC(opts...)
+			mainClient = c
+		}
+		_, err := c.MACSymbolQuotes([]uint8{market}, []string{code}, gotdx.MACFieldBitmap(gotdx.MACFieldClose))
+		if err != nil {
+			r.failed[candidate.Address] = time.Now().Add(time.Minute)
+			dropClient(extended, false)
+			continue
+		}
+		g.Mode, g.Address = mode, candidate.Address
+		if extended {
+			activeServers.Ex = g
+		} else {
+			activeServers.Main = g
+		}
+		r.ordered = []string{candidate.Address}
+		for _, other := range candidates {
+			if other.Address != candidate.Address && r.failed[other.Address].IsZero() {
+				r.ordered = append(r.ordered, other.Address)
+			}
+		}
+		r.expires = time.Now().Add(5 * time.Minute)
+		return map[string]any{
+			"address": candidate.Address, "latencyMs": candidate.LatencyMS,
+			"previous": previous, "switched": mode == "manual" && previous != candidate.Address,
+			"protocolVerified": true,
+		}, nil
+	}
+	r.ordered, r.expires = nil, time.Time{}
+	return nil, fmt.Errorf("no usable %s TDX route; check the address pool or proxy", req.Kind)
 }

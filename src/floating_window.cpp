@@ -248,7 +248,7 @@ bool isActivationKeyPressed(const QString& rawKey) {
 
 #if defined(Q_OS_MACOS)
 void* macWindowHandleForWidget(const QWidget* widget) {
-    if (!widget) {
+    if (!widget || QGuiApplication::platformName() != QStringLiteral("cocoa")) {
         return nullptr;
     }
 
@@ -1689,6 +1689,7 @@ public:
     void applyConfig(const AppConfig& cfg) {
         const bool sourceChanged = normalizeQuoteSource(m_cfg.quoteSource) != normalizeQuoteSource(cfg.quoteSource)
             || m_cfg.tdxUserId != cfg.tdxUserId || m_cfg.tdxToken != cfg.tdxToken
+            || m_cfg.networkInterface != cfg.networkInterface
             || m_cfg.proxyType != cfg.proxyType || m_cfg.proxyHost != cfg.proxyHost || m_cfg.proxyPort != cfg.proxyPort
             || m_cfg.proxyUser != cfg.proxyUser || m_cfg.proxyPassword != cfg.proxyPassword;
         if (sourceChanged) {
@@ -2868,6 +2869,17 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
     });
 }
 
+void FloatingWindow::setLoading(bool loading) {
+    if (loading) {
+        if (m_hoverTimer) m_hoverTimer->stop();
+        hideTimelinePopup();
+        // The usual hide helper leaves pinned windows open. Route preparation
+        // must also suspend pinned detail windows so they cannot queue requests.
+        if (m_marketBreadthDetailPopup) m_marketBreadthDetailPopup->hidePopup();
+    }
+    setEnabled(!loading);
+}
+
 void FloatingWindow::setIndexCount(int count) {
     m_indexCount = count;
     adjustWindowSize();
@@ -3051,6 +3063,7 @@ bool FloatingWindow::shouldCaptureMouseInteraction() const {
 }
 
 bool FloatingWindow::shouldAllowMouseInteraction() const {
+    if (!isEnabled()) return false;
     if (!m_cfg.mousePassthroughEnabled) {
         return true;
     }
@@ -3147,7 +3160,7 @@ void FloatingWindow::updateHoverReadingState(bool animated) {
 }
 
 bool FloatingWindow::canShowTimelinePopup() const {
-    if (!m_cfg.timelineChartEnabled || !m_timelinePopup) {
+    if (!isEnabled() || !m_cfg.timelineChartEnabled || !m_timelinePopup) {
         return false;
     }
     if (!isVisible()) {

@@ -18,11 +18,12 @@ import (
 )
 
 type proxyConfig struct {
-	Type     string `json:"type"`
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	User     string `json:"user"`
-	Password string `json:"password"`
+	Interface string `json:"interface"`
+	Type      string `json:"type"`
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	User      string `json:"user"`
+	Password  string `json:"password"`
 }
 
 func (p proxyConfig) enabled() bool { return p.Type != "" && p.Type != "none" }
@@ -53,10 +54,14 @@ func dialProxy(p proxyConfig, target string, timeout time.Duration) (net.Conn, e
 	if err := p.validate(); err != nil {
 		return nil, err
 	}
-	if !p.enabled() {
-		return net.DialTimeout("tcp", target, timeout)
+	dialer, err := interfaceDialer(p.Interface, timeout)
+	if err != nil {
+		return nil, err
 	}
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(p.Host, strconv.Itoa(p.Port)), timeout)
+	if !p.enabled() {
+		return dialer.Dial("tcp", target)
+	}
+	conn, err := dialer.Dial("tcp", net.JoinHostPort(p.Host, strconv.Itoa(p.Port)))
 	if err != nil {
 		return nil, errors.New("cannot connect to configured proxy")
 	}
