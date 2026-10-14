@@ -66,15 +66,17 @@ cmake --build --preset dev-debug
 
 #### Windows
 
-安装 Qt 6、CMake、Ninja、Go 1.27+ 和 MinGW-w64 GCC（供 cgo 使用）后，执行。Qt/C++ 可继续使用 MSVC，`CC` 应指向 MinGW GCC：
+安装 MSVC、Qt 6 的 MSVC 版本、CMake、Ninja、Go 1.27+ 和 MinGW-w64 GCC（供 cgo 使用）后，在已初始化 MSVC x64 环境的终端中执行。CMake 的 C++ 编译器显式指定为 `cl`，`CC` 单独指向 MinGW GCC，避免加入 MinGW PATH 后自动选中不兼容的 C++ 工具链：
 
 ```bash
 # PowerShell；按实际安装路径调整
 $env:CC = "C:/msys64/mingw64/bin/gcc.exe"
 $env:PATH = "C:/msys64/mingw64/bin;" + $env:PATH
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DQt6_DIR="你的Qt6_DIR路径"
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=cl -DQt6_DIR="你的Qt6_DIR路径"
 cmake --build build --parallel
 ```
+
+`C:/msys64` 仅为本地安装路径示例；应确认 `$env:CC` 指向的 `gcc.exe` 存在且能运行。GitHub Actions 使用 `msys2/setup-msys2` 的 `msys2-location` 输出定位 GCC，并从同一安装目录复制 cgo 所需的运行库，不依赖固定盘符或目录。
 
 ### 通达信数据源与更新
 
