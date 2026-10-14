@@ -48,6 +48,7 @@ jobs:
 
       - name: Setup MinGW for Go cgo
         if: runner.os == 'Windows'
+        id: msys2
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -61,9 +62,21 @@ jobs:
       - name: Select cgo compiler
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
         run: |
-          "CC=C:/msys64/mingw64/bin/gcc.exe" >> $env:GITHUB_ENV
-          "C:/msys64/mingw64/bin" >> $env:GITHUB_PATH
+          $mingwBin = Join-Path $env:MSYS2_LOCATION "mingw64/bin"
+          $gcc = (Join-Path $mingwBin "gcc.exe").Replace('\', '/')
+          if (!(Test-Path -Path $gcc -PathType Leaf)) {
+            throw "MinGW GCC not found: $gcc"
+          }
+          & $gcc --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "MinGW GCC failed with exit code $LASTEXITCODE"
+          }
+          "CC=$gcc" >> $env:GITHUB_ENV
+          "MINGW_BIN=$mingwBin" >> $env:GITHUB_ENV
+          $mingwBin >> $env:GITHUB_PATH
 
       - name: Configure (Release)
         shell: bash
@@ -137,7 +150,7 @@ jobs:
           Copy-Item -Path (Join-Path (Split-Path $exePath) "gotdx-LICENSE.txt") -Destination $bundleDir -Force
           # MinGW's runtime dependencies, when linked dynamically by cgo.
           foreach ($dll in @("libgcc_s_seh-1.dll", "libwinpthread-1.dll")) {
-            $runtimeDll = Join-Path "C:/msys64/mingw64/bin" $dll
+            $runtimeDll = Join-Path $env:MINGW_BIN $dll
             if (Test-Path $runtimeDll) { Copy-Item -Path $runtimeDll -Destination $bundleDir -Force }
           }
 
