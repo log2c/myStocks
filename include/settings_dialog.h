@@ -161,6 +161,8 @@ private:
     QCheckBox* m_hoverReadingTransparentBackgroundCheck = nullptr;
     QCheckBox* m_timelineChartEnabledCheck = nullptr;
     QSpinBox* m_timelineChartRefreshSecsSpin = nullptr;
+    QSpinBox* m_dailyKlineDaysSpin = nullptr;
+    QMap<int, QCheckBox*> m_dailyKlineMAChecks;
     QCheckBox* m_marketBreadthEnabledCheck = nullptr;
     QSpinBox* m_marketBreadthRefreshSecsSpin = nullptr;
     QCheckBox* m_timelineChartFixedRangeCheck = nullptr;

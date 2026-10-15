@@ -180,6 +180,7 @@ set(MYSTOCKS_SOURCES
     src/tdx_bridge.cpp
     src/tdx_quote_provider.cpp
     src/timeline_popup.cpp
+    src/daily_kline_chart.cpp
     src/updater.cpp
     src/watchlist_utils.cpp
 )
@@ -202,6 +203,8 @@ set(MYSTOCKS_HEADERS
     include/tdx_bridge.h
     include/tdx_quote_provider.h
     include/timeline_popup.h
+    include/daily_kline_chart.h
+    include/daily_kline_indicators.h
     include/types.h
     include/updater.h
     include/watchlist_utils.h
@@ -346,6 +349,13 @@ install(TARGETS MyStocks
 include(CTest)
 include(cmake/Gotdx.cmake)
 if(BUILD_TESTING)
+    qt_add_executable(MyStocksDailyKlineTest tests/daily_kline_test.cpp src/daily_kline_chart.cpp src/i18n.cpp)
+    target_include_directories(MyStocksDailyKlineTest PRIVATE include)
+    target_link_libraries(MyStocksDailyKlineTest PRIVATE Qt6::Widgets)
+    mystocks_enable_agl_stub(MyStocksDailyKlineTest)
+    add_test(NAME daily_kline COMMAND MyStocksDailyKlineTest)
+    set_tests_properties(daily_kline PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
     qt_add_executable(MyStocksTimelineVolumeTest tests/timeline_volume_test.cpp)
     target_include_directories(MyStocksTimelineVolumeTest PRIVATE include)
     target_link_libraries(MyStocksTimelineVolumeTest PRIVATE Qt6::Gui)

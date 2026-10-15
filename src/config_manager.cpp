@@ -741,6 +741,14 @@ AppConfig ConfigManager::loadConfig() {
         "ui/timelineChartRefreshSecs",
         cfg.timelineChartRefreshSecs
     ).toInt();
+    cfg.dailyKlineDays = qBound(1, s.value("ui/dailyKlineDays", cfg.dailyKlineDays).toInt(), 800);
+    if (s.contains("ui/dailyKlineMAPeriods")) {
+        QVector<int> periods;
+        for (const QString& value : s.value("ui/dailyKlineMAPeriods").toStringList()) {
+            periods.append(value.toInt());
+        }
+        cfg.dailyKlineMAPeriods = normalizeDailyKlineMAPeriods(periods);
+    }
     cfg.marketBreadthEnabled = s.value(
         "ui/marketBreadthEnabled",
         cfg.marketBreadthEnabled
@@ -1038,6 +1046,12 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         "ui/hoverReadingTransparentBackgroundEnabled",
         cfg.hoverReadingTransparentBackgroundEnabled
     );
+    s.setValue("ui/dailyKlineDays", qBound(1, cfg.dailyKlineDays, 800));
+    QStringList dailyMAPeriods;
+    for (int period : normalizeDailyKlineMAPeriods(cfg.dailyKlineMAPeriods)) {
+        dailyMAPeriods.append(QString::number(period));
+    }
+    s.setValue("ui/dailyKlineMAPeriods", dailyMAPeriods);
     s.setValue("ui/timelineChartEnabled", cfg.timelineChartEnabled);
     s.setValue("ui/timelineChartRefreshSecs", qBound(10, cfg.timelineChartRefreshSecs, 3600));
     s.setValue("ui/marketBreadthEnabled", cfg.marketBreadthEnabled);

@@ -6,6 +6,7 @@
 #include "network_logger.h"
 #include "network_utils.h"
 #include "tdx_bridge.h"
+#include "daily_kline_indicators.h"
 #include "updater.h"
 #include "watchlist_utils.h"
 
@@ -652,6 +653,11 @@ AppConfig SettingsDialog::config() const {
     out.timelineChartEnabled = m_timelineChartEnabledCheck
         ? m_timelineChartEnabledCheck->isChecked()
         : out.timelineChartEnabled;
+    out.dailyKlineDays = m_dailyKlineDaysSpin ? m_dailyKlineDaysSpin->value() : out.dailyKlineDays;
+    out.dailyKlineMAPeriods.clear();
+    for (auto it = m_dailyKlineMAChecks.cbegin(); it != m_dailyKlineMAChecks.cend(); ++it) {
+        if (it.value()->isChecked()) out.dailyKlineMAPeriods.append(it.key());
+    }
     out.timelineChartRefreshSecs = m_timelineChartRefreshSecsSpin
         ? qBound(10, m_timelineChartRefreshSecsSpin->value(), 3600)
         : out.timelineChartRefreshSecs;
@@ -1650,6 +1656,32 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_timelineChartRefreshSecsSpin->setValue(qBound(10, m_cfg.timelineChartRefreshSecs, 3600));
     applyNumericSpinBoxWidth(m_timelineChartRefreshSecsSpin);
     timelineForm->addRow(trText("settings.display.timelineRefresh"), m_timelineChartRefreshSecsSpin);
+
+    m_dailyKlineDaysSpin = new QSpinBox(w);
+    m_dailyKlineDaysSpin->setObjectName(QStringLiteral("dailyKlineDaysSpin"));
+    m_dailyKlineDaysSpin->setRange(1, 800);
+    m_dailyKlineDaysSpin->setValue(qBound(1, m_cfg.dailyKlineDays, 800));
+    m_dailyKlineDaysSpin->setSuffix(trText("settings.display.dailyDaysSuffix"));
+    m_dailyKlineDaysSpin->setToolTip(trText("settings.display.dailyHint"));
+    applyNumericSpinBoxWidth(m_dailyKlineDaysSpin);
+    timelineForm->addRow(trText("settings.display.dailyDays"), m_dailyKlineDaysSpin);
+
+    QWidget* dailyMARow = new QWidget(w);
+    QGridLayout* dailyMALayout = new QGridLayout(dailyMARow);
+    dailyMALayout->setContentsMargins(0, 0, 0, 0);
+    int maIndex = 0;
+    for (int period : {5, 10, 20, 30, 60, 120, 250}) {
+        auto* check = new QCheckBox(QStringLiteral("MA%1").arg(period), dailyMARow);
+        check->setObjectName(QStringLiteral("dailyKlineMA%1Check").arg(period));
+        check->setChecked(m_cfg.dailyKlineMAPeriods.contains(period));
+        QPixmap swatch(12, 12);
+        swatch.fill(daily_kline::movingAverageColor(period));
+        check->setIcon(QIcon(swatch));
+        m_dailyKlineMAChecks.insert(period, check);
+        dailyMALayout->addWidget(check, maIndex / 4, maIndex % 4);
+        ++maIndex;
+    }
+    timelineForm->addRow(trText("settings.display.dailyMA"), dailyMARow);
 
     m_timelineChartFixedRangeCheck = new QCheckBox(trText("settings.display.timelineFixedRange"), w);
     m_timelineChartFixedRangeCheck->setChecked(m_cfg.timelineChartFixedRangeEnabled);

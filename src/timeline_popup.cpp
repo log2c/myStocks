@@ -5,6 +5,7 @@
 #include "watchlist_utils.h"
 #include "tdx_bridge.h"
 #include "timeline_volume.h"
+#include "daily_kline_chart.h"
 
 #include <QDateTime>
 #include <QGuiApplication>
@@ -671,6 +672,9 @@ protected:
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing, true);
         painter.fillRect(rect(), m_cfg.timelineChartBgColor);
+        // Daily mode shares this background, while the transparent child draws
+        // its candles. Suppress timeline contents to prevent ghosting beneath it.
+        if (property("dailyKlineVisible").toBool()) return;
 
         const QRect r = rect().adjusted(12, 12, -12, -12);
         if (r.width() < 80 || r.height() < 80) {
@@ -983,9 +987,7 @@ protected:
                         ? xOfSessionTime(point.time.time())
                         : xOfIndex(i);
             };
-            timeline_volume::draw(painter, volumePlot,
-                QRect(r.left(), volumePlot.top(), leftMargin - 6, volumePlot.height()),
-                m_points, volumeX, baseline, m_cfg, m_resolvedLanguage.startsWith(QLatin1String("en")));
+            timeline_volume::draw(painter, volumePlot, m_points, volumeX, baseline, m_cfg);
         }
 
         const int xLabelY = (hasVolume ? volumePlot.bottom() : plot.bottom()) + 8;
@@ -1312,6 +1314,7 @@ public:
         QVBoxLayout* layout = new QVBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
         m_chart = new TimelineChartWidget(this);
+        m_dailyChart = new DailyKlineChart(m_chart);
         layout->addWidget(m_chart);
 
         m_refreshTimer = new QTimer(this);
@@ -1337,6 +1340,7 @@ public:
         }
         m_cfg = cfg;
         m_chart->setConfig(cfg);
+        m_dailyChart->setContext(cfg, m_code, m_name);
         if (!isVisible()) {
             return;
         }
@@ -1359,6 +1363,7 @@ public:
         m_code = code.trimmed();
         m_name = name.trimmed();
         m_cost = cost;
+        m_dailyChart->setContext(m_cfg, m_code, m_name);
         if (changed) {
             m_hongKongHalfDayDate = QDate();
         }
@@ -1670,6 +1675,7 @@ private:
     QWidget* m_parentWindow = nullptr;
     AppConfig m_cfg;
     TimelineChartWidget* m_chart = nullptr;
+    DailyKlineChart* m_dailyChart = nullptr;
     QTimer* m_refreshTimer = nullptr;
     QNetworkAccessManager m_nam;
     QNetworkReply* m_reply = nullptr;

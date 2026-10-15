@@ -359,6 +359,15 @@ const TranslationMap& translations() {
                 {"popup.marketBreadth.same", "Flat"},
                 {"popup.marketBreadth.vsYesterdayFmt", "vs Yesterday %1"},
                 {"popup.timeline.profit", "P/L"},
+                {"settings.display.dailyDays", "Daily K-line range"},
+                {"settings.display.dailyMA", "Daily moving averages"},
+                {"settings.display.dailyDaysSuffix", " trading days"},
+                {"settings.display.dailyHint", "Hold Ctrl in a timeline popup to show daily candles; release to return. 1–800 trading days."},
+                {"popup.daily.title", "Daily · %1 trading days"},
+                {"popup.daily.gap", "Gap"},
+                {"popup.daily.loading", "Loading daily candles…"},
+                {"popup.daily.empty", "No daily candle data available"},
+                {"popup.daily.error", "Daily candles unavailable: %1"},
                 {"popup.timeline.breakevenGain", "Breakeven gain"}
             }
         },
@@ -712,6 +721,15 @@ const TranslationMap& translations() {
                 {"popup.marketBreadth.same", "持平"},
                 {"popup.marketBreadth.vsYesterdayFmt", "比昨日%1"},
                 {"popup.timeline.profit", "收益"},
+                {"settings.display.dailyDays", "日K显示范围"},
+                {"settings.display.dailyMA", "日K均线"},
+                {"settings.display.dailyDaysSuffix", " 个交易日"},
+                {"settings.display.dailyHint", "分时图显示时按住 Ctrl 查看日K，松开恢复分时。可设置 1–800 个交易日。"},
+                {"popup.daily.title", "日K · %1 个交易日"},
+                {"popup.daily.gap", "缺口"},
+                {"popup.daily.loading", "正在加载日K…"},
+                {"popup.daily.empty", "暂无日K数据"},
+                {"popup.daily.error", "日K加载失败：%1"},
                 {"popup.timeline.breakevenGain", "回本涨幅"}
             }
         }

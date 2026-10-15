@@ -10,22 +10,12 @@
 
 namespace timeline_volume {
 
-inline QString scaleText(double value, bool english) {
-    const double divisor = english
-        ? (value >= 1e9 ? 1e9 : value >= 1e6 ? 1e6 : value >= 1e3 ? 1e3 : 1.0)
-        : (value >= 1e8 ? 1e8 : value >= 1e4 ? 1e4 : 1.0);
-    const QString suffix = english
-        ? (divisor == 1e9 ? "B" : divisor == 1e6 ? "M" : divisor == 1e3 ? "K" : "")
-        : (divisor == 1e8 ? QStringLiteral("亿") : divisor == 1e4 ? QStringLiteral("万") : QString());
-    return QString::number(value / divisor, 'f', divisor > 1.0 ? 1 : 0) + suffix;
-}
-
 // Both popup implementations pass their existing price-chart time mapping so
 // volume bars share its session breaks and never stretch across unelapsed time.
 template<typename Points, typename XOfPoint>
-void draw(QPainter& painter, const QRect& plot, const QRect& labelArea,
+void draw(QPainter& painter, const QRect& plot,
           const Points& points, XOfPoint xOfPoint, double preClose,
-          const AppConfig& cfg, bool english) {
+          const AppConfig& cfg) {
     if (plot.width() <= 0 || plot.height() <= 1) return;
     double maximum = 0.0;
     int spacing = std::numeric_limits<int>::max();
@@ -46,12 +36,6 @@ void draw(QPainter& painter, const QRect& plot, const QRect& labelArea,
     painter.setPen(QPen(cfg.timelineChartGridColor, 1));
     painter.drawLine(plot.topLeft(), plot.topRight());
     painter.drawLine(plot.bottomLeft(), plot.bottomRight());
-    painter.setPen(cfg.timelineChartTextColor);
-    painter.drawText(QRect(labelArea.left(), plot.top(), labelArea.width(), 18),
-        Qt::AlignRight | Qt::AlignTop, scaleText(maximum, english));
-    painter.drawText(QRect(labelArea.left(), plot.bottom() - 16, labelArea.width(), 16),
-        Qt::AlignRight | Qt::AlignBottom, QStringLiteral("0"));
-
     painter.setClipRect(plot, Qt::IntersectClip);
     double previousPrice = preClose;
     QColor previousColor = cfg.timelineChartTextColor;

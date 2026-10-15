@@ -176,6 +176,14 @@ inline QString normalizeQuoteSource(const QString& source) {
     return QStringLiteral("tdx");
 }
 
+inline QVector<int> normalizeDailyKlineMAPeriods(const QVector<int>& periods) {
+    QVector<int> normalized;
+    for (int period : {5, 10, 20, 30, 60, 120, 250}) {
+        if (periods.contains(period)) normalized.append(period);
+    }
+    return normalized;
+}
+
 struct AppConfig {
     int pollMs = 3000;
     double opacity = 0.9;
@@ -277,6 +285,8 @@ struct AppConfig {
     bool hoverReadingTransparentBackgroundEnabled = true;
     bool timelineChartEnabled = true;
     int timelineChartRefreshSecs = 10;
+    int dailyKlineDays = 60;
+    QVector<int> dailyKlineMAPeriods{5, 10, 20, 30};
     bool marketBreadthEnabled = true;
     int marketBreadthRefreshSecs = 10;
     bool timelineChartFixedRangeEnabled = false;

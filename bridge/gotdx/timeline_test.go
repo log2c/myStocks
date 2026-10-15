@@ -56,3 +56,10 @@ func TestTimelineReconstructsFullWidthMinuteVolumes(t *testing.T) {
 		t.Fatal("510300 minute prices must produce green, red, green bars")
 	}
 }
+
+func TestKlineHistoryLimitIncludesMA250Warmup(t *testing.T) {
+	_, err := klines(request{Code: "1.510300", Period: 4, Count: 1050})
+	if err == nil {
+		t.Fatal("K-line request must reject more than 800 visible days plus 249 warm-up days")
+	}
+}

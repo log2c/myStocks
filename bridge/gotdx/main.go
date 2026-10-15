@@ -325,8 +325,9 @@ func klines(req request) (any, error) {
 	if req.Count == 0 {
 		req.Count = 240
 	}
-	if req.Count > 800 {
-		return nil, fmt.Errorf("K-line count exceeds 800")
+	// Up to 800 visible days plus 249 prior closes for the MA250 warm-up.
+	if req.Count > 1049 {
+		return nil, fmt.Errorf("K-line count exceeds 1049")
 	}
 	reply, err := client(s.extended).MACSymbolBars(s.market, s.code, req.Period, 1, uint32(req.Start), uint32(req.Count), types.AdjustNone)
 	if err != nil {

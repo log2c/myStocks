@@ -113,6 +113,16 @@ public:
         {
             SettingsDialog dialog(cfg, {{"1.600519", "Stock"}, {"1.510300", "ETF"}},
                 {{"1.000001", "Legacy index"}}, {}, yaml, {});
+            auto* dailyDays = dialog.findChild<QSpinBox*>("dailyKlineDaysSpin");
+            check(dailyDays && dailyDays->value() == 60, "Daily range setting must default to 60");
+            dailyDays->setValue(120);
+            check(dialog.config().dailyKlineDays == 120, "Daily range editor must update configuration");
+            for (int period : {5, 10, 20, 30, 60, 120, 250}) {
+                auto* ma = dialog.findChild<QCheckBox*>(QStringLiteral("dailyKlineMA%1Check").arg(period));
+                check(ma && ma->isChecked() == (period <= 30), "MA editor defaults are incorrect");
+                ma->setChecked(period == 250);
+            }
+            check(dialog.config().dailyKlineMAPeriods == QVector<int>({250}), "MA choices must update configuration");
             auto* adapters = dialog.findChild<QComboBox*>("networkInterfaceCombo");
             check(adapters && adapters->currentData().toString().isEmpty(), "Network interface selection must default to automatic");
             const auto indexes = dialog.selectedIndexes();

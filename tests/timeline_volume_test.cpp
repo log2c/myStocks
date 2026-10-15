@@ -24,8 +24,8 @@ int main(int argc, char** argv) {
     painter.setBrush(Qt::yellow);
     painter.setRenderHint(QPainter::Antialiasing, true);
     const QRect plot(60, 10, 120, 60);
-    timeline_volume::draw(painter, plot, QRect(0, 10, 50, 60), points,
-        [](int i) { return 60 + i * 3; }, 100.0, cfg, false);
+    timeline_volume::draw(painter, plot, points,
+        [](int i) { return 60 + i * 3; }, 100.0, cfg);
     check(painter.pen() == original && painter.brush().color() == Qt::yellow
         && painter.testRenderHint(QPainter::Antialiasing), "Volume must restore painter state for time labels");
     painter.end();
@@ -37,16 +37,14 @@ int main(int argc, char** argv) {
     check(image.pixelColor(75, 65) == Qt::black, "Missing volume must have no bar");
     check(image.pixelColor(61, 65) == Qt::red, "Adjacent early-session bars must remain visible");
     check(image.pixelColor(59, 65) == Qt::black, "Edge bars must stay inside the chart");
-    check(timeline_volume::scaleText(12345678, false) == QStringLiteral("1234.6万"), "Large volume labels must be compact");
-    check(timeline_volume::scaleText(12345678, true) == "12.3M", "English labels use compact units");
     // User-reported 510300 regression: full-width minute volumes, not lots
     // or cumulative differences, and first-bar height must reach the top.
     const QVector<Point> etf{{4.229, 1355308}, {4.238, 421948}, {4.234, 419112}};
     QImage etfImage(260, 130, QImage::Format_ARGB32);
     etfImage.fill(Qt::black);
     QPainter etfPainter(&etfImage);
-    timeline_volume::draw(etfPainter, QRect(60, 10, 180, 100), QRect(0, 10, 50, 100),
-        etf, [](int i) { return 60 + i * 10; }, 4.294, cfg, false);
+    timeline_volume::draw(etfPainter, QRect(60, 10, 180, 100),
+        etf, [](int i) { return 60 + i * 10; }, 4.294, cfg);
     etfPainter.end();
     check(etfImage.pixelColor(60, 11) == Qt::green
         && etfImage.pixelColor(63, 11) == Qt::green,
@@ -59,7 +57,11 @@ int main(int argc, char** argv) {
         "09:32 must be green and about the same height as 09:31");
     check(etfImage.pixelColor(65, 100) == Qt::black,
         "Wide first bar must not overlap the next minute");
-    check(timeline_volume::scaleText(1355308, false) == QStringLiteral("135.5万"),
-        "510300 maximum volume label must match the minute data");
+    for (int yy = 0; yy < etfImage.height(); ++yy) {
+        for (int xx = 0; xx < 55; ++xx) {
+            check(etfImage.pixelColor(xx, yy) == Qt::black,
+                "Volume plots must leave the label margin blank without quantity text");
+        }
+    }
     return 0;
 }
