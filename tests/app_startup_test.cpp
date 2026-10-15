@@ -7,6 +7,9 @@
 #include "settings_dialog.h"
 #include <QComboBox>
 #include <QListWidget>
+#include <QKeyEvent>
+#include <QLabel>
+#include <QLineEdit>
 #include "tdx_bridge.h"
 
 #include <QApplication>
@@ -17,6 +20,7 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QSettings>
+#include <QTabWidget>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUuid>
@@ -34,6 +38,12 @@ struct PendingRoute {
 };
 QVector<PendingRoute> routes;
 int quoteRequests = 0;
+struct PendingSearch {
+    QPointer<QObject> context;
+    QString keyword;
+    tdx_bridge::Callback callback;
+};
+QVector<PendingSearch> searches;
 void events(int milliseconds = 10) {
     QEventLoop loop;
     QTimer::singleShot(milliseconds, &loop, &QEventLoop::quit);
@@ -58,6 +68,10 @@ void request(QObject* context, const AppConfig& config, QJsonObject payload, Cal
     const QString operation = payload.value("operation").toString();
     if (operation == "prepare_servers") {
         routes.append({context, config, payload.value("kind").toString(), std::move(callback)});
+        return;
+    }
+    if (operation == "search") {
+        searches.append({context, payload.value("keyword").toString(), std::move(callback)});
         return;
     }
     if (operation == "quotes") ++quoteRequests;
@@ -113,6 +127,62 @@ public:
             check(dialog.config().networkInterface == cfg.networkInterface, "Network draft must preserve the selected adapter");
         }
         cfg.networkInterface.clear();
+        {
+            SettingsDialog dialog(cfg, {}, {}, {}, yaml, {});
+            auto* edit = dialog.findChild<QLineEdit*>("stockSearchEdit");
+            auto* button = dialog.findChild<QPushButton*>("stockSearchButton");
+            auto* status = dialog.findChild<QLabel*>("stockSearchStatus");
+            auto* results = dialog.findChild<QListWidget*>("stockSearchResults");
+            check(edit && button && status && results, "Search controls must be available");
+            edit->setText("600519");
+            button->click();
+            check(searches.size() == 1 && !status->isHidden() && !status->text().isEmpty(),
+                "Search must show directory loading progress");
+            auto pending = searches.takeFirst();
+            pending.callback({}, "Directory unavailable");
+            check(!status->isHidden() && status->text().contains("Directory unavailable") && results->isHidden(),
+                "Search failures must be visible without hovering");
+            button->click();
+            pending = searches.takeFirst();
+            pending.callback({{"items", QJsonArray{QJsonObject{{"code", "1.600519"}, {"name", "贵州茅台"}}}},
+                {"warning", "Extended market unavailable"}}, {});
+            check(results->count() == 1 && !results->isHidden()
+                && results->item(0)->data(Qt::UserRole).toString() == "1.600519"
+                && status->text().contains("Extended market unavailable"),
+                "Partial catalog must display both available results and a warning");
+            button->click();
+            pending = searches.takeFirst();
+            pending.callback({{"items", QJsonArray()}}, {});
+            check(results->isHidden() && !status->isHidden() && !status->text().isEmpty(),
+                "An empty search must have a visible no-results message");
+            edit->setText("腾讯");
+            button->click();
+            edit->setText("茅台");
+            pending = searches.takeFirst();
+            pending.callback({{"items", QJsonArray{QJsonObject{{"code", "tdx:ex:31:00700"}, {"name", "腾讯控股"}}}}}, {});
+            check(searches.size() == 1 && searches.first().keyword == "茅台" && results->count() == 0,
+                "A stale response must request the latest keyword instead of displaying old results");
+            pending = searches.takeFirst();
+            pending.callback({{"items", QJsonArray{QJsonObject{{"code", "1.600519"}, {"name", "贵州茅台"}}}}}, {});
+            check(results->count() == 1 && results->item(0)->data(Qt::UserRole).toString() == "1.600519"
+                && status->isHidden(), "Successful search must show matching results and clear status");
+            // Exercise the actual Return key path, including QDialog default-button handling.
+            auto* tabs = dialog.findChild<QTabWidget*>();
+            for (int i = 0; tabs && i < tabs->count(); ++i) {
+                if (tabs->widget(i)->isAncestorOf(edit)) tabs->setCurrentIndex(i);
+            }
+            bool finished = false;
+            QObject::connect(&dialog, &QDialog::finished, &dialog, [&finished](int) { finished = true; });
+            dialog.show();
+            edit->setFocus();
+            events();
+            QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+            QApplication::sendEvent(edit, &enter);
+            check(searches.size() == 1 && !finished,
+                "Return in the search field must search once and keep settings open");
+            pending = searches.takeFirst();
+            pending.callback({{"items", QJsonArray()}}, {});
+        }
         {
             AppController controller;
             events();

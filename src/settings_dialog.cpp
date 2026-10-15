@@ -71,6 +71,21 @@ protected:
     }
 };
 
+// Keep Return in the search field from activating the dialog's default button.
+class StockSearchEdit : public QLineEdit {
+public:
+    using QLineEdit::QLineEdit;
+protected:
+    void keyPressEvent(QKeyEvent* event) override {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            emit returnPressed();
+            event->accept();
+            return;
+        }
+        QLineEdit::keyPressEvent(event);
+    }
+};
+
 struct IndexPreset {
     QString code;
     QString name;
@@ -2353,18 +2368,28 @@ QWidget* SettingsDialog::buildStocksTab() {
     searchLayout->setContentsMargins(0, 0, 0, 0);
     searchLayout->setSpacing(5);
 
-    m_stockSearchEdit = new QLineEdit(searchRow);
+    m_stockSearchEdit = new StockSearchEdit(searchRow);
+    m_stockSearchEdit->setObjectName(QStringLiteral("stockSearchEdit"));
     m_stockSearchEdit->setPlaceholderText(trText("settings.stocks.searchPlaceholder"));
 
     m_stockSearchBtn = new QPushButton(trText("settings.stocks.search"), searchRow);
+    m_stockSearchBtn->setObjectName(QStringLiteral("stockSearchButton"));
     m_stockSearchBtn->setMinimumWidth(76);
 
     searchLayout->addWidget(m_stockSearchEdit, 1);
     searchLayout->addWidget(m_stockSearchBtn);
     vbox->addWidget(searchRow);
 
+    m_stockSearchStatus = new QLabel(w);
+    m_stockSearchStatus->setObjectName(QStringLiteral("stockSearchStatus"));
+    m_stockSearchStatus->setTextFormat(Qt::PlainText);
+    m_stockSearchStatus->setWordWrap(true);
+    m_stockSearchStatus->hide();
+    vbox->addWidget(m_stockSearchStatus);
+
     // --- Suggestion list (floating overlay, not in layout) ---
     m_stockSuggestList = new QListWidget(this);
+    m_stockSuggestList->setObjectName(QStringLiteral("stockSearchResults"));
     m_stockSuggestList->setMaximumHeight(160);
     m_stockSuggestList->setFrameShape(QFrame::StyledPanel);
     m_stockSuggestList->hide();
@@ -2475,17 +2500,18 @@ QWidget* SettingsDialog::buildStocksTab() {
         m_stockTable->setCurrentCell(newRow, 0);
     });
 
-    // Filter spaces; trigger debounce on 3+ chars
+    // Filter spaces; search after the minimum length and debounce interval
     connect(m_stockSearchEdit, &QLineEdit::textEdited, this, [this](const QString& rawText) {
         QString text = rawText;
         text.remove(QLatin1Char(' '));
         if (text != rawText) {
             m_stockSearchEdit->setText(text);
         }
+        m_stockSearchStatus->hide();
+        m_stockSuggestList->clear();
+        m_stockSuggestList->hide();
         if (text.length() < kStockSearchMinLength) {
             m_stockSearchDebounce->stop();
-            m_stockSuggestList->clear();
-            m_stockSuggestList->hide();
             return;
         }
         m_stockSearchDebounce->start();
@@ -2496,6 +2522,8 @@ QWidget* SettingsDialog::buildStocksTab() {
         m_stockSearchDebounce->stop();
         doStockSearch(true);
     });
+
+    connect(m_stockSearchEdit, &QLineEdit::returnPressed, m_stockSearchBtn, &QPushButton::click);
 
     // Debounce fires: make network request
     connect(m_stockSearchDebounce, &QTimer::timeout, this, [this]() {
@@ -2803,7 +2831,11 @@ void SettingsDialog::doStockSearch(bool forceSearch) {
         searchConfig.proxyPort = m_proxyPortSpin->value();
         searchConfig.proxyUser = m_proxyUserEdit->text();
         searchConfig.proxyPassword = m_proxyPasswordEdit->text();
-        m_stockSearchEdit->setToolTip(trText("settings.tdx.searchLoading"));
+        m_stockSuggestList->clear();
+        m_stockSuggestList->hide();
+        m_stockSearchStatus->setText(trText("settings.tdx.searchLoading"));
+        m_stockSearchStatus->show();
+        m_stockSearchEdit->setToolTip(QString());
         tdx_bridge::request(this, searchConfig,
             {{QStringLiteral("operation"), QStringLiteral("search")}, {QStringLiteral("keyword"), keyword},
              {QStringLiteral("count"), kStockSearchResultLimit}},
@@ -2813,7 +2845,9 @@ void SettingsDialog::doStockSearch(bool forceSearch) {
                 if (keyword != m_stockSearchEdit->text().trimmed()) { doStockSearch(false); return; }
                 if (!error.isEmpty()) {
                     m_stockSuggestList->clear(); m_stockSuggestList->hide();
-                    m_stockSearchEdit->setToolTip(error);
+                    qWarning() << "[StockSearch]" << error;
+                    m_stockSearchStatus->setText(trText("settings.stocks.searchError").arg(error));
+                    m_stockSearchStatus->show();
                     return;
                 }
                 QJsonArray items;
@@ -2824,6 +2858,14 @@ void SettingsDialog::doStockSearch(bool forceSearch) {
                         {QStringLiteral("SecurityTypeName"), item.value(QStringLiteral("kind"))}});
                 }
                 m_stockSearchEdit->setToolTip(QString());
+                const QString warning = response.value(QStringLiteral("warning")).toString();
+                if (!warning.isEmpty()) {
+                    m_stockSearchStatus->setText(trText("settings.stocks.searchPartial").arg(warning));
+                } else {
+                    m_stockSearchStatus->setText(items.isEmpty()
+                        ? trText("settings.stocks.searchEmpty") : QString());
+                }
+                m_stockSearchStatus->setVisible(!m_stockSearchStatus->text().isEmpty());
                 parseSearchResult(QJsonDocument(QJsonObject{{QStringLiteral("Data"), items}}).toJson());
             });
         return;

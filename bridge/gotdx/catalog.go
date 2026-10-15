@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -19,6 +20,7 @@ type catalogItem struct {
 
 var catalog []catalogItem
 var catalogExpires time.Time
+var catalogWarning string
 var boardLists = map[uint16][]proto.MACBoardListItem{}
 var boardsExpires time.Time
 
@@ -91,17 +93,74 @@ func resolveNamed(code, name string) (symbol, error) {
 	}
 	return symbol{uint8(matches[0].Market), matches[0].Code, false}, nil
 }
+
+// ExCount is an advertised bound: live servers can end the directory before it.
+// Advance by the actual page size, including when the server caps a request.
+func extendedCatalog(total uint32, page func(uint32, uint16) ([]proto.ExListItem, error)) ([]catalogItem, error) {
+	if total > 200000 {
+		return nil, fmt.Errorf("TDX extended catalog is unexpectedly large")
+	}
+	result := []catalogItem{}
+	for start := uint32(0); start < total; {
+		count := min(uint32(1000), total-start)
+		list, err := page(start, uint16(count))
+		if err != nil {
+			return nil, err
+		}
+		if len(list) == 0 {
+			break
+		}
+		for _, item := range list {
+			result = append(result, catalogItem{canonical(uint16(item.Category), item.Code, true), item.Name, "扩展市场"})
+		}
+		start += uint32(len(list))
+	}
+	return result, nil
+}
+
+type catalogLoader struct {
+	stocks   func(uint8) ([]proto.Security, error)
+	boards   func() ([]proto.MACBoardListItem, error)
+	extended func() ([]catalogItem, error)
+}
+
 func loadCatalog() error {
+	return loadCatalogWith(catalogLoader{
+		stocks: func(market uint8) ([]proto.Security, error) {
+			list, err := client(false).StockAll(market)
+			if err != nil {
+				reset(false)
+			}
+			return list, err
+		},
+		boards: func() ([]proto.MACBoardListItem, error) { return boards(types.BoardTypeAll) },
+		extended: func() ([]catalogItem, error) {
+			total, err := client(true).ExCount()
+			if err == nil {
+				var list []catalogItem
+				list, err = extendedCatalog(total, client(true).ExList)
+				if err == nil {
+					return list, nil
+				}
+			}
+			reset(true)
+			return nil, err
+		},
+	})
+}
+
+func loadCatalogWith(loader catalogLoader) error {
 	if len(catalog) > 0 && time.Now().Before(catalogExpires) {
 		return nil
 	}
 	result := []catalogItem{}
-	// Build into a fresh slice so a failed page cannot mark an incomplete list cached.
+	var failures []error
+	// A failed source must not discard successful directories from other markets.
 	for _, market := range []uint8{0, 1, 2} {
-		list, err := client(false).StockAll(market)
+		list, err := loader.stocks(market)
 		if err != nil {
-			reset(false)
-			return err
+			failures = append(failures, fmt.Errorf("TDX market %d: %w", market, err))
+			continue
 		}
 		for _, item := range list {
 			code, kind := fmt.Sprintf("%d.%s", market, item.Code), "证券"
@@ -112,33 +171,22 @@ func loadCatalog() error {
 			result = append(result, catalogItem{code, item.Name, kind})
 		}
 	}
-	list, err := boards(types.BoardTypeAll)
+	list, err := loader.boards()
 	if err != nil {
-		return err
-	}
-	for _, item := range list {
-		result = append(result, catalogItem{canonical(item.Market, item.Code, false), item.Name, "板块"})
-	}
-	total, err := client(true).ExCount()
-	if err != nil {
-		reset(true)
-		return err
-	}
-	if total > 200000 {
-		return fmt.Errorf("TDX extended catalog is unexpectedly large")
-	}
-	for start := uint32(0); start < total; start += 1000 {
-		list, err := client(true).ExList(start, 1000)
-		if err != nil {
-			reset(true)
-			return err
-		}
-		if len(list) == 0 {
-			return fmt.Errorf("TDX extended catalog ended before declared total")
-		}
+		failures = append(failures, fmt.Errorf("TDX boards: %w", err))
+	} else {
 		for _, item := range list {
-			result = append(result, catalogItem{canonical(uint16(item.Category), item.Code, true), item.Name, "扩展市场"})
+			result = append(result, catalogItem{canonical(item.Market, item.Code, false), item.Name, "板块"})
 		}
+	}
+	extended, err := loader.extended()
+	if err != nil {
+		failures = append(failures, fmt.Errorf("TDX extended market: %w", err))
+	} else {
+		result = append(result, extended...)
+	}
+	if len(result) == 0 && len(failures) > 0 {
+		return errors.Join(failures...)
 	}
 	unique := make(map[string]bool)
 	dedup := []catalogItem{}
@@ -149,7 +197,13 @@ func loadCatalog() error {
 		}
 	}
 	catalog = dedup
+	catalogWarning = ""
 	catalogExpires = time.Now().Add(30 * time.Minute)
+	if len(failures) > 0 {
+		catalogWarning = errors.Join(failures...).Error()
+		// Retry unavailable sources soon rather than caching a partial directory for 30 minutes.
+		catalogExpires = time.Now().Add(time.Minute)
+	}
 	return nil
 }
 func search(req request) (any, error) {
@@ -193,5 +247,5 @@ func search(req request) (any, error) {
 	if len(result) > limit {
 		result = result[:limit]
 	}
-	return map[string]any{"items": result}, nil
+	return map[string]any{"items": result, "warning": catalogWarning}, nil
 }

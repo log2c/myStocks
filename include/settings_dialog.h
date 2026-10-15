@@ -193,6 +193,7 @@ private:
     // Stocks tab
     QLineEdit* m_stockSearchEdit = nullptr;
     QPushButton* m_stockSearchBtn = nullptr;
+    QLabel* m_stockSearchStatus = nullptr;
     QTimer* m_stockSearchDebounce = nullptr;
     QNetworkAccessManager* m_stockSearchNam = nullptr;
     QNetworkReply* m_stockSearchReply = nullptr;

@@ -265,6 +265,7 @@ func configureProxy(p proxyConfig) error {
 	exRoute.ordered, exRoute.failed, exRoute.expires = nil, nil, time.Time{}
 	activeProxy = p
 	catalog = nil
+	catalogWarning = ""
 	boardLists = make(map[uint16][]proto.MACBoardListItem)
 	breadthCache = nil
 	breadthHistory = nil
