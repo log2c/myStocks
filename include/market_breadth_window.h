@@ -2,6 +2,7 @@
 
 #include "types.h"
 
+#include <QElapsedTimer>
 #include <QRect>
 #include <QTimer>
 #include <QWidget>
@@ -109,7 +110,10 @@ private:
     bool containsHotStockWatchlistItem(const HotRankItem& item) const;
     void toggleHotStockWatchlistAction(int actionIndex);
     void flushPendingHotStockWatchlistReloadIfNeeded();
-    void showTimelinePopupForIndexCell(int index);
+    void showTimelinePopupForIndexCell(int index, bool daily = false);
+    void showTimelinePopupForHotRankRow(int row, bool daily = false);
+    QString rightChartCodeAt(const QPoint& pos, bool* indexCell) const;
+    void resetRightChartPress();
     void hideTimelinePopup();
 
     struct HotRankRowHitArea {
@@ -177,6 +181,11 @@ private:
     int m_hoveredHotRowIndex = -1;
     int m_pressedHotRowIndex = -1;
     int m_pressedIndexCellIndex = -1;
+    QString m_rightPressedCode;
+    bool m_rightPressedIndexCell = false;
+    HotRankTabMode m_rightPressedTab = HotRankTabMode::Auto;
+    QPoint m_rightPressGlobal;
+    QElapsedTimer m_rightPressTime;
     int m_hotSectorScrollIndex = 0;
     int m_hotConceptScrollIndex = 0;
     int m_hotHourScrollIndex = 0;

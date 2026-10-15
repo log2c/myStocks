@@ -2190,6 +2190,7 @@ bool  MarketBreadthDetailWindow::eventFilter(QObject* watched, QEvent* event) {
 
 
 void  MarketBreadthDetailWindow::hideEvent(QHideEvent* event) {
+    resetRightChartPress();
     QWidget::hideEvent(event);
     unsetCursor();
     stopAutoRefreshTimer();
@@ -2316,6 +2317,12 @@ void  MarketBreadthDetailWindow::mouseMoveEvent(QMouseEvent* event) {
         return;
     }
 
+    if (m_rightPressTime.isValid()
+        && (event->globalPosition().toPoint() - m_rightPressGlobal).manhattanLength()
+            >= QApplication::startDragDistance()) {
+        resetRightChartPress();
+    }
+
     if (m_resizing && (event->buttons() & Qt::LeftButton)) {
         hideTimelinePopup();
         applyResizeFromGlobalPos(event->globalPosition().toPoint());
@@ -2421,6 +2428,7 @@ void  MarketBreadthDetailWindow::mouseMoveEvent(QMouseEvent* event) {
 
 
 void  MarketBreadthDetailWindow::leaveEvent(QEvent* event) {
+    resetRightChartPress();
     if (!testAttribute(Qt::WA_TransparentForMouseEvents)
         && (m_closeButtonHovered || m_closeButtonPressed
             || m_refreshButtonHovered || m_refreshButtonPressed
@@ -2509,6 +2517,19 @@ void  MarketBreadthDetailWindow::mousePressEvent(QMouseEvent* event) {
     if (!event || testAttribute(Qt::WA_TransparentForMouseEvents)) {
         QWidget::mousePressEvent(event);
         return;
+    }
+
+    resetRightChartPress();
+    if (event->button() == Qt::RightButton) {
+        const QString code = rightChartCodeAt(event->pos(), &m_rightPressedIndexCell);
+        if (!code.isEmpty() && isTimelinePopupSupportedCode(code)) {
+            m_rightPressedCode = code;
+            m_rightPressedTab = resolvedHotRankTabMode();
+            m_rightPressGlobal = event->globalPosition().toPoint();
+            m_rightPressTime.start();
+            event->accept();
+            return;
+        }
     }
 
     if (event->button() == Qt::LeftButton && m_closeButtonRect.contains(event->pos())) {
@@ -2637,6 +2658,24 @@ void  MarketBreadthDetailWindow::mousePressEvent(QMouseEvent* event) {
 void  MarketBreadthDetailWindow::mouseReleaseEvent(QMouseEvent* event) {
     if (!event || testAttribute(Qt::WA_TransparentForMouseEvents)) {
         QWidget::mouseReleaseEvent(event);
+        return;
+    }
+
+    if (event->button() == Qt::RightButton) {
+        bool indexCell = false;
+        const QString code = rightChartCodeAt(event->pos(), &indexCell);
+        const bool showDaily = !m_rightPressedCode.isEmpty() && code == m_rightPressedCode
+            && indexCell == m_rightPressedIndexCell
+            && (indexCell || resolvedHotRankTabMode() == m_rightPressedTab)
+            && m_rightPressTime.isValid() && m_rightPressTime.elapsed() < QApplication::startDragTime()
+            && (event->globalPosition().toPoint() - m_rightPressGlobal).manhattanLength()
+                < QApplication::startDragDistance();
+        resetRightChartPress();
+        if (showDaily) {
+            if (indexCell) showTimelinePopupForIndexCell(indexCellAt(event->pos()), true);
+            else showTimelinePopupForHotRankRow(hotRankRowAt(event->pos()), true);
+        }
+        event->accept();
         return;
     }
 
@@ -2785,20 +2824,7 @@ void  MarketBreadthDetailWindow::mouseReleaseEvent(QMouseEvent* event) {
         if (activateHotRow && releasedHotRow >= 0 && releasedHotRow < m_hotRankRowHitAreas.size()) {
             hideTimelinePopup();
             if (isStockHeatTabMode(resolvedHotRankTabMode())) {
-                const HotRankItem& item = m_hotRankRowHitAreas.at(releasedHotRow).item;
-                const QString code = !item.watchCode.trimmed().isEmpty()
-                    ? item.watchCode.trimmed()
-                    : item.code.trimmed();
-                if (!code.isEmpty() && isTimelinePopupSupportedCode(code)) {
-                    ensureTimelinePopup();
-                    if (m_timelinePopup) {
-                        const QRect globalAnchor(
-                            mapToGlobal(m_hotRankRowHitAreas.at(releasedHotRow).rect.topLeft()),
-                            m_hotRankRowHitAreas.at(releasedHotRow).rect.size()
-                        );
-                        m_timelinePopup->showForStock(code, item.name.trimmed(), globalAnchor, width());
-                    }
-                }
+                showTimelinePopupForHotRankRow(releasedHotRow);
             } else {
                 openHotRankDetail(m_hotRankRowHitAreas.at(releasedHotRow).item);
             }
@@ -2847,6 +2873,8 @@ void  MarketBreadthDetailWindow::wheelEvent(QWheelEvent* event) {
         QWidget::wheelEvent(event);
         return;
     }
+
+    resetRightChartPress();
 
     const QPoint pos = event->position().toPoint();
     if (!m_hotRankListViewportRect.isValid() || !m_hotRankListViewportRect.contains(pos)) {
@@ -5582,7 +5610,39 @@ void  MarketBreadthDetailWindow::ensureTimelinePopup() {
 }
 
 
-void  MarketBreadthDetailWindow::showTimelinePopupForIndexCell(int index) {
+QString MarketBreadthDetailWindow::rightChartCodeAt(const QPoint& pos, bool* indexCell) const {
+    const int index = indexCellAt(pos);
+    *indexCell = index >= 0;
+    if (index >= 0) return m_indexCellHitAreas.at(index).code.trimmed();
+    const int row = hotRankRowAt(pos);
+    if (!isStockHeatTabMode(resolvedHotRankTabMode()) || row < 0) return {};
+    const HotRankItem& item = m_hotRankRowHitAreas.at(row).item;
+    return item.watchCode.trimmed().isEmpty() ? item.code.trimmed() : item.watchCode.trimmed();
+}
+
+void MarketBreadthDetailWindow::resetRightChartPress() {
+    m_rightPressedCode.clear();
+    m_rightPressTime.invalidate();
+}
+
+void MarketBreadthDetailWindow::showTimelinePopupForHotRankRow(int row, bool daily) {
+    if (testAttribute(Qt::WA_TransparentForMouseEvents)
+        || !isStockHeatTabMode(resolvedHotRankTabMode())
+        || row < 0 || row >= m_hotRankRowHitAreas.size()) return;
+    const HotRankRowHitArea& area = m_hotRankRowHitAreas.at(row);
+    const QString code = area.item.watchCode.trimmed().isEmpty()
+        ? area.item.code.trimmed() : area.item.watchCode.trimmed();
+    if (code.isEmpty() || !isTimelinePopupSupportedCode(code)) return;
+    ensureTimelinePopup();
+    const QRect anchor(mapToGlobal(area.rect.topLeft()), area.rect.size());
+    m_timelinePopup->showForStock(code, area.item.name.trimmed(), anchor, width(), qQNaN(), daily);
+    if (!m_timelineAppFilterInstalled) {
+        m_timelineAppFilterInstalled = true;
+        QCoreApplication::instance()->installEventFilter(this);
+    }
+}
+
+void  MarketBreadthDetailWindow::showTimelinePopupForIndexCell(int index, bool daily) {
     if (testAttribute(Qt::WA_TransparentForMouseEvents)
         || index < 0
         || index >= m_indexCellHitAreas.size()) {
@@ -5604,7 +5664,7 @@ void  MarketBreadthDetailWindow::showTimelinePopupForIndexCell(int index) {
 
     const QString name = area.name.trimmed().isEmpty() ? code : area.name.trimmed();
     const QRect globalAnchor(mapToGlobal(area.rect.topLeft()), area.rect.size());
-    m_timelinePopup->showForStock(code, name, globalAnchor, width());
+    m_timelinePopup->showForStock(code, name, globalAnchor, width(), qQNaN(), daily);
 
     if (!m_timelineAppFilterInstalled) {
         m_timelineAppFilterInstalled = true;

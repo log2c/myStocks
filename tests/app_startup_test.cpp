@@ -412,6 +412,77 @@ public:
                 "Existing numeric-header sorting must remain local and dismiss the chart");
             detail->hide();
         }
+        market.m_indexQuotes = {{"1.000001", "Shanghai", 3000, 10, 0.3},
+                                {"0.399001", "Shenzhen", 10000, 20, 0.2}};
+        market.setAttribute(Qt::WA_TransparentForMouseEvents, false);
+        market.show();
+        events();
+        market.grab();
+        check(market.m_indexCellHitAreas.size() >= 2, "Market panel must paint index chart targets");
+        const QPoint firstIndex = market.m_indexCellHitAreas.at(0).rect.center();
+        const QPoint secondIndex = market.m_indexCellHitAreas.at(1).rect.center();
+        click(&market, firstIndex, Qt::RightButton);
+        auto* indexPopup = chartPopup();
+        check(indexPopup && indexPopup->findChild<QWidget*>("dailyKlineChart")->isVisible()
+            && lastKlinePayload.value("code").toString() == market.m_indexCellHitAreas.at(0).code
+            && lastKlinePayload.value("period").toInt() == 4,
+            "Right-clicking a market index must show its daily candles");
+        click(&market, secondIndex, Qt::RightButton);
+        check(lastKlinePayload.value("code").toString() == market.m_indexCellHitAreas.at(1).code,
+            "Right-clicking another index must select the correct instrument");
+        click(&market, firstIndex, Qt::LeftButton);
+        check(!indexPopup->findChild<QWidget*>("dailyKlineChart")->isVisible(),
+            "Left-clicking a market index must retain intraday mode");
+        const int beforeIndexMisclick = klineRequests;
+        mouse(&market, QEvent::MouseButtonPress, firstIndex, Qt::RightButton, Qt::RightButton);
+        mouse(&market, QEvent::MouseButtonRelease, secondIndex, Qt::RightButton, Qt::NoButton);
+        check(klineRequests == beforeIndexMisclick, "Releasing on a different index must not open daily candles");
+
+        HotRankItem firstHeat, secondHeat;
+        firstHeat.code = "600519";
+        firstHeat.watchCode = "1.600519";
+        firstHeat.name = "Heat A";
+        secondHeat.code = "0.000001"; // Fall back to code when watchCode is absent.
+        secondHeat.name = "Heat B";
+        market.m_hotHourStocks = {firstHeat, secondHeat};
+        market.m_hotDayStocks = {secondHeat, firstHeat};
+        for (const auto mode : {MarketBreadthDetailWindow::HotRankTabMode::HourHeat,
+                                MarketBreadthDetailWindow::HotRankTabMode::DayHeat}) {
+            market.m_hotRankTabMode = mode;
+            market.grab();
+            check(market.m_hotRankRowHitAreas.size() == 2, "Heat tab must paint both stock cards");
+            const auto& firstArea = market.m_hotRankRowHitAreas.at(0);
+            const QString expectedCode = firstArea.item.watchCode.isEmpty() ? firstArea.item.code : firstArea.item.watchCode;
+            const QPoint first = firstArea.rect.center();
+            const QPoint second = market.m_hotRankRowHitAreas.at(1).rect.center();
+            click(&market, first, Qt::RightButton);
+            auto* popup = chartPopup();
+            check(popup && popup->findChild<QWidget*>("dailyKlineChart")->isVisible()
+                && lastKlinePayload.value("code").toString() == expectedCode,
+                "Both heat tabs must open daily candles for the right-clicked stock");
+            events(80);
+            check(popup->findChild<QWidget*>("dailyKlineChart")->isVisible(),
+                "Heat daily candles must remain visible without holding Ctrl");
+            click(&market, first, Qt::LeftButton);
+            check(!popup->findChild<QWidget*>("dailyKlineChart")->isVisible(),
+                "Left-clicking a heat card must retain intraday mode");
+            const int beforeMisclick = klineRequests;
+            mouse(&market, QEvent::MouseButtonPress, first, Qt::RightButton, Qt::RightButton);
+            mouse(&market, QEvent::MouseButtonRelease, second, Qt::RightButton, Qt::NoButton);
+            mouse(&market, QEvent::MouseButtonPress, first, Qt::RightButton, Qt::RightButton);
+            mouse(&market, QEvent::MouseMove, first + QPoint(40, 0), Qt::NoButton, Qt::RightButton);
+            mouse(&market, QEvent::MouseMove, first, Qt::NoButton, Qt::RightButton);
+            mouse(&market, QEvent::MouseButtonRelease, first, Qt::RightButton, Qt::NoButton);
+            mouse(&market, QEvent::MouseButtonPress, first, Qt::RightButton, Qt::RightButton);
+            events(150);
+            mouse(&market, QEvent::MouseButtonRelease, first, Qt::RightButton, Qt::NoButton);
+            check(klineRequests == beforeMisclick, "Heat mismatched releases, drags and long presses must not open daily candles");
+            const int beforeWatchlist = watchlistMutations;
+            const int actionIndex = mode == MarketBreadthDetailWindow::HotRankTabMode::HourHeat ? 0 : 1;
+            click(&market, market.m_hotStockActionButtonRects.at(actionIndex).center(), Qt::LeftButton);
+            check(watchlistMutations == beforeWatchlist + 1, "Heat watchlist actions must remain available");
+        }
+        market.hide();
         QApplication::setStartDragTime(oldDragTime);
         constituentFixture = false;
     }
