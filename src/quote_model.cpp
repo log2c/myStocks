@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <algorithm>
+#include <limits>
 
 namespace {
 
@@ -257,7 +258,6 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
         case ColName:
             return withHongKongNamePrefix(q.code, q.name);
         case ColPrice:
-            if (q.resetData) return {};
             return std::isnan(q.price) ? QString("--") : QString::number(q.price, 'f', 3);
         case ColRiseSpeed:
             if (q.resetData || isIndexQuote(q)) return {};
@@ -276,7 +276,7 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
             return QString::number(q.cost, 'f', 3);
         }
         case ColCostPct: {
-            if (std::isnan(q.cost) || q.cost <= 0.0 || std::isnan(q.price)) return QString();
+            if (std::isnan(q.cost) || q.cost <= 0.0 || !std::isfinite(q.price) || q.price <= 0.0) return QString();
             const double costPct = (q.price - q.cost) / q.cost * 100.0;
             return formatSigned(costPct, 2, true);
         }
@@ -397,18 +397,29 @@ void QuoteModel::updateQuotes(const QVector<QuoteItem>& quotes) {
         const int row = m_rowByCode.value(q.code);
         m_rows[row].name = q.name.isEmpty() ? m_rows[row].name : q.name;
 
+        const bool resetData = resetBatch || q.resetData
+            || (std::isfinite(q.pct) && q.pct <= -99.0);
+
         // Detect indicator change before updating pct
         const QString oldIndicator = indicatorSymbol(m_rows[row].code, m_rows[row].pct);
         const QString newIndicator = indicatorSymbol(q.code, q.pct);
         const bool indicatorChanged = (oldIndicator != newIndicator)
             && !std::isnan(m_rows[row].pct)  // skip initial load
             && !std::isnan(q.pct)
-            && !resetBatch
-            && !q.resetData;
+            && !resetData;
 
-        const bool resetData = resetBatch || q.resetData;
         m_rows[row].resetData = resetData;
+        m_rows[row].preClose = q.preClose;
         m_rows[row].price = q.price;
+        if (resetData) {
+            // Prefer the explicit previous close; recover it from legacy raw
+            // reset quotes only when the zero price and change identify it.
+            m_rows[row].price = std::isfinite(q.preClose) && q.preClose > 0.0
+                ? q.preClose
+                : (q.price == 0.0 && std::isfinite(q.change) && q.change < 0.0
+                    ? -q.change : (q.price > 0.0 ? q.price : qQNaN()));
+            m_blinkCounters.remove(row);
+        }
         m_rows[row].pct = resetData ? qQNaN() : q.pct;
         m_rows[row].change = resetData ? qQNaN() : q.change;
         m_rows[row].riseSpeed = resetData ? qQNaN() : q.riseSpeed;
@@ -427,9 +438,10 @@ void QuoteModel::updateQuotes(const QVector<QuoteItem>& quotes) {
 
 void QuoteModel::setMarketBreadthSnapshot(const MarketBreadthSnapshot& snapshot) {
     m_marketBreadth = snapshot;
-    m_marketBreadth.upCount = qMax(0, m_marketBreadth.upCount);
-    m_marketBreadth.flatCount = qMax(0, m_marketBreadth.flatCount);
-    m_marketBreadth.downCount = qMax(0, m_marketBreadth.downCount);
+    const qint64 total = qint64(snapshot.upCount) + snapshot.flatCount + snapshot.downCount;
+    m_marketBreadth.breadthValid = snapshot.breadthValid
+        && snapshot.upCount >= 0 && snapshot.flatCount >= 0 && snapshot.downCount >= 0
+        && total > 0 && total <= std::numeric_limits<int>::max();
     emitSpecialRowsChanged();
 }
 
@@ -493,7 +505,7 @@ QString QuoteModel::language() const {
 QString QuoteModel::trayTooltipText() const {
     QStringList lines;
     for (const QuoteItem& q : m_rows) {
-        const QString price = q.resetData ? QStringLiteral("--") : std::isnan(q.price)
+        const QString price = std::isnan(q.price)
             ? QStringLiteral("--")
             : QString::number(q.price, 'f', 3);
         const QString pct = q.resetData || std::isnan(q.pct)
@@ -541,13 +553,6 @@ QString QuoteModel::specialRowLabel(int row) const {
 
 QString QuoteModel::specialRowText(int row) const {
     if (rowKind(row) == RowKindMarketBreadth) {
-        if (!m_marketBreadth.breadthValid) {
-            return i18n::t("quote.dataError", m_language);
-        }
-        const int total = m_marketBreadth.upCount + m_marketBreadth.flatCount + m_marketBreadth.downCount;
-        if (total <= 0) {
-            return i18n::t("quote.noData", m_language);
-        }
         return {};
     }
 

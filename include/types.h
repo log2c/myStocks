@@ -45,8 +45,9 @@ struct QuoteItem {
     double change = qQNaN();
     double cost = qQNaN(); // cost basis
     double riseSpeed = qQNaN();
-    // True when the provider returned its pre-open reset sentinel values.
-    // Reset rows are rendered blank while retaining a flat-price visual state.
+    double preClose = qQNaN();
+    // Pre-open reset rows display yesterday's close with a flat-price visual state.
+    // Intraday change, indicators and rise speed remain blank.
     bool resetData = false;
 };
 

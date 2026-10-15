@@ -43,6 +43,8 @@ void TdxQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
                 item.code = code;
                 item.name = row.value(QStringLiteral("name")).toString();
                 item.price = number(row, QStringLiteral("price"));
+                item.preClose = number(row, QStringLiteral("preClose"));
+                item.resetData = row.value(QStringLiteral("resetData")).toBool();
                 item.pct = number(row, QStringLiteral("pct"));
                 item.change = number(row, QStringLiteral("change"));
                 item.riseSpeed = number(row, QStringLiteral("riseSpeed"));

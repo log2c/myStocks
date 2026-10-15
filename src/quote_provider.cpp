@@ -1721,15 +1721,22 @@ void AshareMarketBreadthProvider::fetch(bool forceRefresh) {
             [this, generation](const QJsonObject& row, const QString& message) {
                 if (generation != m_tdxGeneration) return;
                 m_tdxPending = false;
-                if (!message.isEmpty()) { emit error(message); return; }
+                if (!message.isEmpty()) {
+                    m_cacheValid = false;
+                    emit dataReady(MarketBreadthSnapshot{});
+                    emit error(message);
+                    return;
+                }
                 MarketBreadthSnapshot snapshot;
-                snapshot.upCount = row.value(QStringLiteral("upCount")).toInt();
-                snapshot.flatCount = row.value(QStringLiteral("flatCount")).toInt();
-                snapshot.downCount = row.value(QStringLiteral("downCount")).toInt();
+                snapshot.upCount = row.value(QStringLiteral("upCount")).toInt(-1);
+                snapshot.flatCount = row.value(QStringLiteral("flatCount")).toInt(-1);
+                snapshot.downCount = row.value(QStringLiteral("downCount")).toInt(-1);
                 snapshot.limitUpCount = row.value(QStringLiteral("limitUpCount")).toInt();
                 snapshot.limitDownCount = row.value(QStringLiteral("limitDownCount")).toInt();
                 snapshot.lastUpdatedAtMs = static_cast<qint64>(row.value(QStringLiteral("lastUpdatedAtMs")).toDouble());
-                snapshot.overviewValid = snapshot.breadthValid = true;
+                snapshot.overviewValid = snapshot.breadthValid = snapshot.upCount >= 0
+                    && snapshot.flatCount >= 0 && snapshot.downCount >= 0
+                    && (qint64(snapshot.upCount) + snapshot.flatCount + snapshot.downCount) > 0;
                 snapshot.turnover = row.value(QStringLiteral("turnover")).toDouble(qQNaN());
                 snapshot.turnoverPre = row.value(QStringLiteral("turnoverPre")).toDouble(qQNaN());
                 snapshot.turnoverChange = row.value(QStringLiteral("turnoverChange")).toDouble(qQNaN());

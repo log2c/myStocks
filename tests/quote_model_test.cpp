@@ -68,18 +68,101 @@ int main(int argc, char** argv) {
     for (const QString& code : {"tdx:main:1:600519", "116.00700", "1.510300", "1.000001", "1.600519"}) {
         QuoteItem reset;
         reset.code = code;
-        reset.price = 10.0;
+        reset.price = 0.0;
+        reset.preClose = 10.0;
         reset.pct = -100.0;
         reset.change = -10.0;
         reset.riseSpeed = -100.0;
         preOpenReset.push_back(reset);
     }
     model.updateQuotes(preOpenReset);
-    check(model.data(model.index(0, ColPrice), Qt::DisplayRole).toString().isEmpty(),
-        "Pre-open reset sentinel prices must be blank");
+    check(model.data(model.index(0, ColPrice), Qt::DisplayRole).toString() == "10.000",
+        "Pre-open reset prices must display yesterday's close");
     check(model.data(model.index(0, ColPrice), Qt::ForegroundRole).value<QColor>() == cfg.flatColor,
         "Pre-open reset prices must use the flat color");
     check(model.data(model.index(0, ColCode), Qt::DisplayRole).toString() == "tdx:main:1:600519",
         "Pre-open reset must retain the quote identity");
+    for (int column : {ColPct, ColChange, ColIndicator, ColRiseSpeed}) {
+        check(model.data(model.index(0, column), Qt::DisplayRole).toString().isEmpty(),
+            "Pre-open reset must hide intraday change fields");
+    }
+    check(model.trayTooltipText().contains("10.000") && !model.trayTooltipText().contains("-100.00%"),
+        "Tray tooltip must use the previous close and hide reset percentages");
+
+    // A live HK/futures row must not prevent an A-share reset from being detected.
+    QuoteModel mixed;
+    mixed.setConfig(cfg);
+    mixed.setStocks({{"1.600519", "Stock", 20.0}, {"116.00700", "Tencent"}});
+    QuoteItem reset;
+    reset.code = "1.600519";
+    reset.price = 0.0;
+    reset.preClose = 18.5;
+    reset.pct = -100.0;
+    reset.change = -18.5;
+    quote.code = "116.00700";
+    quote.price = 532.5;
+    quote.pct = 2.0;
+    mixed.updateQuotes({reset, quote});
+    check(mixed.data(mixed.index(0, ColPrice), Qt::DisplayRole).toString() == "18.500",
+        "Mixed reset batch must use the previous close");
+    check(mixed.data(mixed.index(0, ColPct), Qt::DisplayRole).toString().isEmpty(),
+        "Mixed reset batch must hide -100 percent");
+    check(mixed.data(mixed.index(0, ColCostPct), Qt::DisplayRole).toString() == "-7.50%",
+        "Cost return must use the previous close instead of the zero sentinel");
+    check(mixed.data(mixed.index(1, ColPct), Qt::DisplayRole).toString() == "+2.00%",
+        "Live rows must retain their percentage during another market's reset");
+    reset.resetData = true;
+    reset.price = 18.5; // normalized bridge payload
+    reset.pct = reset.change = qQNaN();
+    mixed.updateQuotes({reset});
+    check(mixed.data(mixed.index(0, ColPrice), Qt::DisplayRole).toString() == "18.500",
+        "Explicit reset flag must preserve the normalized previous close");
+    reset.price = 0.0;
+    reset.preClose = qQNaN();
+    mixed.updateQuotes({reset});
+    check(mixed.data(mixed.index(0, ColPrice), Qt::DisplayRole).toString() == "--",
+        "Missing previous close must not display a fake zero price");
+    check(mixed.data(mixed.index(0, ColCostPct), Qt::DisplayRole).toString().isEmpty(),
+        "Missing previous close must not display -100 percent cost return");
+    reset.resetData = false;
+    reset.price = 21.0;
+    reset.pct = 5.0;
+    reset.change = 1.0;
+    reset.riseSpeed = 0.1;
+    mixed.updateQuotes({reset});
+    check(mixed.data(mixed.index(0, ColPrice), Qt::DisplayRole).toString() == "21.000"
+        && mixed.data(mixed.index(0, ColPct), Qt::DisplayRole).toString() == "+5.00%",
+        "Live trading must recover from reset state on the next quote");
+
+    cfg.marketBreadthEnabled = true;
+    mixed.setConfig(cfg);
+    const int breadthRow = 0;
+    check(mixed.rowKind(breadthRow) == QuoteModel::RowKindMarketBreadth,
+        "Expected breadth row before quotes");
+    auto checkBlankBreadth = [&]() {
+        check(!mixed.marketBreadthValid() && !mixed.specialRowHasData(breadthRow),
+            "Invalid or empty breadth must not draw counts");
+        check(mixed.specialRowText(breadthRow).isEmpty(), "Invalid breadth fallback must be blank");
+        for (int column = 0; column < ColCount; ++column) {
+            check(mixed.data(mixed.index(breadthRow, column), Qt::DisplayRole).toString().isEmpty(),
+                "Invalid breadth must not expose placeholder text");
+        }
+    };
+    checkBlankBreadth();
+    MarketBreadthSnapshot snapshot;
+    snapshot.breadthValid = true;
+    mixed.setMarketBreadthSnapshot(snapshot);
+    checkBlankBreadth();
+    snapshot.upCount = 3000;
+    snapshot.flatCount = 100;
+    snapshot.downCount = 2000;
+    mixed.setMarketBreadthSnapshot(snapshot);
+    check(mixed.marketBreadthValid() && mixed.specialRowHasData(breadthRow),
+        "Valid breadth must remain visible");
+    snapshot.upCount = -1;
+    mixed.setMarketBreadthSnapshot(snapshot);
+    checkBlankBreadth();
+    mixed.setMarketBreadthSnapshot({});
+    checkBlankBreadth();
     return 0;
 }

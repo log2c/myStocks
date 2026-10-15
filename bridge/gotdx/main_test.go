@@ -141,3 +141,27 @@ func TestDistributionBinBoundaries(t *testing.T) {
 		}
 	}
 }
+
+func TestPreOpenQuoteUsesPreviousClose(t *testing.T) {
+	q := quoteFromValues("1.600519", "Stock", map[string]any{
+		"close": float64(0), "pre_close": float64(18.5), "speed_pct": float64(-100),
+	})
+	if !q.ResetData || q.Price == nil || *q.Price != 18.5 || q.PreClose == nil || *q.PreClose != 18.5 {
+		t.Fatalf("reset quote must carry the previous close: %+v", q)
+	}
+	if q.Pct != nil || q.Change != nil || q.RiseSpeed != nil {
+		t.Fatal("reset quote must not carry intraday change sentinels")
+	}
+	for _, pre := range []any{nil, float64(0), math.NaN()} {
+		q = quoteFromValues("1.600519", "Stock", map[string]any{"close": float64(0), "pre_close": pre})
+		if !q.ResetData || q.Price != nil || q.Pct != nil {
+			t.Fatal("unavailable previous close must not become a zero price or -100 percent")
+		}
+	}
+	q = quoteFromValues("1.600519", "Stock", map[string]any{
+		"close": float64(21), "pre_close": float64(20), "speed_pct": float64(0),
+	})
+	if q.ResetData || q.Price == nil || *q.Price != 21 || q.Pct == nil || *q.Pct != 5 || q.Change == nil || *q.Change != 1 || q.RiseSpeed == nil || *q.RiseSpeed != 0 {
+		t.Fatal("live quotes must retain prices, changes and valid zero rise speed")
+	}
+}

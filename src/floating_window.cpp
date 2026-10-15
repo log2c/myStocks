@@ -2355,22 +2355,7 @@ private:
             return;
         }
 
-        const QString fallbackText = m_model->specialRowText(index.row());
-        const QVariant foreground = index.data(Qt::ForegroundRole);
-        const QColor textColor = foreground.canConvert<QColor>()
-            ? qvariant_cast<QColor>(foreground)
-            : option.palette.color(QPalette::Text);
-
-        painter->save();
-
         if (!m_model->marketBreadthValid()) {
-            painter->setPen(textColor);
-            painter->drawText(
-                contentRect,
-                Qt::AlignLeft | Qt::AlignVCenter,
-                fallbackText
-            );
-            painter->restore();
             return;
         }
 
@@ -2378,30 +2363,14 @@ private:
         const int flat = m_model->marketBreadthFlatCount();
         const int down = m_model->marketBreadthDownCount();
         const int total = up + flat + down;
-        if (total <= 0) {
-            painter->setPen(textColor);
-            painter->drawText(
-                contentRect,
-                Qt::AlignLeft | Qt::AlignVCenter,
-                fallbackText
-            );
-            painter->restore();
-            return;
-        }
-
         const int barHeight = qMax(2, contentRect.height() / 5);
         const int barTop = contentRect.top() + (contentRect.height() - barHeight) / 2;
         QRect barRect(contentRect.left(), barTop, contentRect.width(), barHeight);
         if (barRect.width() < 60) {
-            painter->setPen(textColor);
-            painter->drawText(
-                contentRect,
-                Qt::AlignLeft | Qt::AlignVCenter,
-                fallbackText
-            );
-            painter->restore();
             return;
         }
+
+        painter->save();
 
         const auto computeSegmentWidths = [&](const QVector<int>& values) -> QVector<int> {
             QVector<int> widths(values.size(), 0);

@@ -57,6 +57,8 @@ type quote struct {
 	Pct       *float64 `json:"pct"`
 	Change    *float64 `json:"change"`
 	RiseSpeed *float64 `json:"riseSpeed"`
+	PreClose  *float64 `json:"preClose"`
+	ResetData bool     `json:"resetData"`
 }
 type point struct {
 	Time   string   `json:"time"`
@@ -181,6 +183,27 @@ func resolve(code string) (symbol, error) {
 	}
 	return s, nil
 }
+
+// Normalize each instrument independently: other markets may still have live quotes.
+func quoteFromValues(code, name string, values map[string]any) quote {
+	q := quote{Code: code, Name: name, Price: field(values, "close"),
+		PreClose: field(values, "pre_close"), RiseSpeed: field(values, "speed_pct")}
+	if q.Price != nil && *q.Price == 0 {
+		q.ResetData = true
+		q.Price = nil
+		q.RiseSpeed = nil
+		if q.PreClose != nil && *q.PreClose > 0 {
+			q.Price = q.PreClose
+		}
+	}
+	if !q.ResetData && q.Price != nil && q.PreClose != nil && *q.PreClose > 0 {
+		change := *q.Price - *q.PreClose
+		q.Change = number(change)
+		q.Pct = number(change / *q.PreClose * 100)
+	}
+	return q
+}
+
 func quotes(req request) map[string]any {
 	result := make([]quote, 0)
 	errors := make([]string, 0)
@@ -220,18 +243,13 @@ func quotes(req request) map[string]any {
 				stocks := originals[key]
 				delete(originals, key)
 				for _, original := range stocks {
-					q := quote{Code: original.Code, Name: item.Name, Price: field(item.Values, "close"), RiseSpeed: field(item.Values, "speed_pct")}
+					q := quoteFromValues(original.Code, item.Name, item.Values)
 					if q.Name == "" {
 						q.Name = original.Name
 					}
-					pre := field(item.Values, "pre_close")
-					if q.Price == nil {
+					if q.Price == nil && !q.ResetData {
 						errors = append(errors, original.Code+": missing price")
 						continue
-					}
-					if pre != nil && *pre > 0 {
-						q.Change = number(*q.Price - *pre)
-						q.Pct = number((*q.Change) / (*pre) * 100)
 					}
 					result = append(result, q)
 				}
