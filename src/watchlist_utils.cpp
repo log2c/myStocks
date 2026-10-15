@@ -15,6 +15,8 @@ const QSet<QString>& predefinedAshareIndexAliases() {
         QStringLiteral("0.399006"),
         QStringLiteral("399006"),
         QStringLiteral("sz399006"),
+        QStringLiteral("1.000680"),
+        QStringLiteral("sh000680"),
         QStringLiteral("1.000688"),
         QStringLiteral("sh000688"),
         QStringLiteral("1.000300"),
@@ -358,6 +360,7 @@ bool isPredefinedIndexCode(const QString& rawCode) {
         static const QSet<QString> nativeIndexes {
             QStringLiteral("tdx:main:1:000001"), QStringLiteral("tdx:main:0:399001"),
             QStringLiteral("tdx:main:0:399006"), QStringLiteral("tdx:main:1:000688"),
+            QStringLiteral("tdx:main:1:000680"),
             QStringLiteral("tdx:main:1:000300"), QStringLiteral("tdx:main:1:000905"),
             QStringLiteral("tdx:ex:27:hsi"), QStringLiteral("tdx:ex:27:hz5017")
         };

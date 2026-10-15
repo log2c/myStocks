@@ -6,6 +6,8 @@
 #include "timeline_popup.h"
 
 #include <QCoreApplication>
+#include <QApplication>
+#include <QElapsedTimer>
 #include <QDateTime>
 #include <QFontMetrics>
 #include <QGuiApplication>
@@ -173,7 +175,7 @@ QFont effectiveFloatingWindowFont(const AppConfig& cfg, const QFont& baseFont) {
 
 #if defined(Q_OS_MACOS)
 static void* macWindowHandleForWidget(const QWidget* widget) {
-    if (!widget) {
+    if (!widget || QGuiApplication::platformName() != QStringLiteral("cocoa")) {
         return nullptr;
     }
     void* nsView = reinterpret_cast<void*>(widget->winId());
@@ -201,6 +203,7 @@ static void setMacWindowCollectionBehaviorManaged(const QWidget* widget) {
 // NSApplicationActivationPolicyRegular   = 0
 // NSApplicationActivationPolicyAccessory = 1
 static void setMacAppActivationPolicy(bool regular) {
+    if (QGuiApplication::platformName() != QStringLiteral("cocoa")) return;
     auto getShared = reinterpret_cast<void* (*)(void*, SEL)>(objc_msgSend);
     void* nsApp = getShared(
         reinterpret_cast<void*>(objc_getClass("NSApplication")),
@@ -361,6 +364,7 @@ class HotRankConstituentDetailWindow : public QWidget {
 public:
     explicit HotRankConstituentDetailWindow(QWidget* parentWindow)
         : QWidget(parentWindow) {
+        setObjectName(QStringLiteral("hotRankConstituentDetailWindow"));
         setWindowFlags(Qt::FramelessWindowHint | Qt::Window | Qt::WindowStaysOnTopHint);
         setAttribute(Qt::WA_ShowWithoutActivating, true);
         setAttribute(Qt::WA_TranslucentBackground, true);
@@ -416,6 +420,7 @@ public:
     }
 
     void showForItem(const HotRankItem& item, const QRect& referenceRect) {
+        resetRightChartPress();
         const QString fs = !item.detailFs.trimmed().isEmpty()
             ? item.detailFs.trimmed()
             : (item.code.trimmed().isEmpty()
@@ -496,6 +501,7 @@ public:
     }
 
     void hidePopup() {
+        resetRightChartPress();
         flushPendingWatchlistReloadIfNeeded();
         hideTimelinePopup();
         m_closeButtonHovered = false;
@@ -519,6 +525,7 @@ public:
 
 protected:
     void hideEvent(QHideEvent* event) override {
+        resetRightChartPress();
         flushPendingWatchlistReloadIfNeeded();
         hideTimelinePopup();
         QWidget::hideEvent(event);
@@ -530,6 +537,10 @@ protected:
             return;
         }
 
+        if (m_rightPressTime.isValid()
+            && (event->globalPosition().toPoint() - m_rightPressGlobal).manhattanLength() >= QApplication::startDragDistance()) {
+            resetRightChartPress();
+        }
         if (m_dragging && (event->buttons() & Qt::LeftButton)) {
             hideTimelinePopup();
             move(event->globalPosition().toPoint() - m_dragOffset);
@@ -576,6 +587,7 @@ protected:
     }
 
     void leaveEvent(QEvent* event) override {
+        resetRightChartPress();
         if (m_closeButtonHovered || m_closeButtonPressed
             || m_refreshButtonHovered || m_refreshButtonPressed
             || m_hoveredHeader != 0 || m_pressedHeader != 0
@@ -612,6 +624,18 @@ protected:
         if (!event) {
             QWidget::mousePressEvent(event);
             return;
+        }
+
+        resetRightChartPress();
+        if (event->button() == Qt::RightButton && !m_loading) {
+            const int row = dataRowAt(event->pos());
+            if (row >= 0) {
+                m_rightPressedCode = chartCode(m_dataRowHitAreas[row].item);
+                m_rightPressGlobal = event->globalPosition().toPoint();
+                m_rightPressTime.start();
+                event->accept();
+                return;
+            }
         }
 
         if (event->button() == Qt::LeftButton && m_closeButtonRect.contains(event->pos())) {
@@ -667,6 +691,18 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override {
         if (!event) {
             QWidget::mouseReleaseEvent(event);
+            return;
+        }
+
+        if (event->button() == Qt::RightButton) {
+            const int row = dataRowAt(event->pos());
+            const bool showDaily = !m_loading && row >= 0 && !m_rightPressedCode.isEmpty()
+                && chartCode(m_dataRowHitAreas[row].item) == m_rightPressedCode
+                && m_rightPressTime.isValid() && m_rightPressTime.elapsed() < QApplication::startDragTime()
+                && (event->globalPosition().toPoint() - m_rightPressGlobal).manhattanLength() < QApplication::startDragDistance();
+            resetRightChartPress();
+            if (showDaily) showTimelinePopupForRow(row, true);
+            event->accept();
             return;
         }
 
@@ -1531,6 +1567,7 @@ private:
     }
 
     void requestData(bool forceRefresh = false) {
+        resetRightChartPress();
         ensureProvider();
         if (!m_provider || m_currentFs.isEmpty()) {
             return;
@@ -1556,14 +1593,23 @@ private:
         m_timelinePopup->applyConfig(m_cfg);
     }
 
-    void showTimelinePopupForRow(int rowIndex) {
+    static QString chartCode(const HotRankDetailItem& item) {
+        return item.watchCode.trimmed().isEmpty() ? item.code.trimmed() : item.watchCode.trimmed();
+    }
+
+    void resetRightChartPress() {
+        m_rightPressedCode.clear();
+        m_rightPressTime.invalidate();
+    }
+
+    void showTimelinePopupForRow(int rowIndex, bool daily = false) {
         if (m_loading || rowIndex < 0 || rowIndex >= m_dataRowHitAreas.size()) {
             hideTimelinePopup();
             return;
         }
 
         const DataRowHitArea& area = m_dataRowHitAreas.at(rowIndex);
-        const QString code = area.item.watchCode.trimmed();
+        const QString code = chartCode(area.item);
         const QString name = area.item.name.trimmed();
         if (code.isEmpty() || !isTimelinePopupSupportedCode(code)) {
             hideTimelinePopup();
@@ -1575,7 +1621,7 @@ private:
             return;
         }
         const QRect globalAnchor(mapToGlobal(area.rect.topLeft()), area.rect.size());
-        m_timelinePopup->showForStock(code, name, globalAnchor, width());
+        m_timelinePopup->showForStock(code, name, globalAnchor, width(), qQNaN(), daily);
     }
 
     void hideTimelinePopup() {
@@ -1794,6 +1840,9 @@ private:
     int m_hoveredActionRow = -1;
     int m_pressedActionRow = -1;
     int m_pressedDataRow = -1;
+    QString m_rightPressedCode;
+    QPoint m_rightPressGlobal;
+    QElapsedTimer m_rightPressTime;
     int m_scrollIndex = 0;
     QPoint m_dragOffset;
     DetailSortField m_sortField = DetailSortField::Pct;
@@ -4453,7 +4502,7 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
         const int cellWidth = qMax(60, (indexInner.width() - totalCellGap) / kIdxColumns);
 
         static const char* const kIdxNames[kIdxCount] = {
-            "上证指数", "深证成指", "创业板指", "科创50",
+            "上证指数", "深证成指", "创业板指", "科创综指",
             "恒生指数", "恒生科技", "美元/人民币",
             "纳斯达克综合", "道琼斯BuyWrite", "平均股价", "黄金主连", "富时A50期指连续", "布油金融主连"
         };

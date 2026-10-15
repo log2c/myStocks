@@ -60,6 +60,7 @@ protected:
     void paintEvent(QPaintEvent* event) override;
 
 private:
+    friend class MarketBreadthConstituentInteractionTest;
     enum class HotRankTabMode {
         Auto = 0,
         Sector = 1,

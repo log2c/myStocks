@@ -470,7 +470,7 @@ const QVector<QPair<QString, QString>>& indexQuoteConfig() {
         {QStringLiteral("tdx:main:1:000001"),   QStringLiteral("上证指数")},
         {QStringLiteral("tdx:main:0:399001"),   QStringLiteral("深证成指")},
         {QStringLiteral("tdx:main:0:399006"),   QStringLiteral("创业板指")},
-        {QStringLiteral("tdx:main:1:000688"),   QStringLiteral("科创50")},
+        {QStringLiteral("1.000680"),   QStringLiteral("科创综指")},
         {QStringLiteral("tdx:ex:27:HSI"),    QStringLiteral("恒生指数")},
         {QStringLiteral("tdx:ex:27:HZ5017"), QStringLiteral("恒生科技")},
         {QStringLiteral("tdx:ex:10:USDCNH"), QStringLiteral("美元/人民币")},

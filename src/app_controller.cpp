@@ -128,7 +128,7 @@ QVector<StockItem> defaultCommonIndexes() {
     return {
         {QStringLiteral("tdx:main:1:000001"), QStringLiteral("上证指数")},
         {QStringLiteral("tdx:main:0:399006"), QStringLiteral("创业板指")},
-        {QStringLiteral("tdx:main:1:000688"), QStringLiteral("科创50")},
+        {QStringLiteral("1.000680"), QStringLiteral("科创综指")},
         {QStringLiteral("tdx:ex:27:HZ5017"), QStringLiteral("恒生科技指数")},
     };
 }
@@ -766,24 +766,34 @@ void AppController::loadExtraWatchItems() {
     m_indexes.reserve(decodedIndexes.size());
 
     QSet<QString> indexSeen;
+    bool migratedStarIndex = false;
     for (const StockItem& index : decodedIndexes) {
-        const QString normalizedCode = normalizeApiWatchCode(index.code);
+        QString normalizedCode = normalizeApiWatchCode(index.code);
+        QString displayName = index.name.trimmed();
+        if (normalizedCode == QStringLiteral("1.000688")
+            || normalizedCode == QStringLiteral("tdx:main:1:000688")) {
+            normalizedCode = QStringLiteral("1.000680");
+            displayName = QStringLiteral("科创综指");
+            migratedStarIndex = true;
+        }
         if (!watchlist_utils::isTdxCompatibleCode(normalizedCode) || !isPredefinedIndexCode(normalizedCode)) {
             continue;
         }
 
-        const QString key = watchCodeKey(normalizedCode);
+        const QString key = normalizedCode == QStringLiteral("tdx:main:1:000680")
+            ? QStringLiteral("1.000680") : watchCodeKey(normalizedCode);
         if (indexSeen.contains(key)) {
             continue;
         }
         indexSeen.insert(key);
 
-        m_indexes.push_back({normalizedCode, index.name.trimmed()});
+        m_indexes.push_back({normalizedCode, displayName});
     }
 
     if (!hasStoredIndexes && m_indexes.isEmpty()) {
         m_indexes = defaultCommonIndexes();
     }
+    if (migratedStarIndex) saveExtraWatchItems();
 }
 
 void AppController::saveExtraWatchItems() const {

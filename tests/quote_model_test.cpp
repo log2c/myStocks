@@ -25,6 +25,10 @@ int main(int argc, char** argv) {
     check(watchlist_utils::isCostEditableCode("tdx:main:1:600519"), "Native TDX stocks must support cost editing");
     check(!watchlist_utils::isCostEditableCode("tdx:main:1:000001"), "Native indexes must not accept stock cost editing");
     check(watchlist_utils::isPredefinedAshareIndexCode("tdx:main:0:399006"), "Native A-share index classification was lost");
+    check(watchlist_utils::isPredefinedAshareIndexCode("1.000680")
+        && watchlist_utils::isPredefinedAshareIndexCode("tdx:main:1:000680"),
+        "STAR Composite must be recognized in legacy and native TDX formats");
+    check(!watchlist_utils::isCostEditableCode("1.000680"), "STAR Composite must behave as an index");
     check(!watchlist_utils::isTdxCode("tdx:ex:256:00700"), "Invalid market was accepted");
     QuoteModel model;
     model.setConfig(cfg);

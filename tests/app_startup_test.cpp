@@ -2,6 +2,7 @@
 #include "app_constants.h"
 #include "config_manager.h"
 #include "floating_window.h"
+#include "market_breadth_window.h"
 #include "quote_model.h"
 #include "startup_splash.h"
 #include "settings_dialog.h"
@@ -45,6 +46,9 @@ int quoteRequests = 0;
 int timelineRequests = 0;
 int klineRequests = 0;
 QJsonObject lastTimelinePayload;
+QJsonObject lastKlinePayload;
+bool constituentFixture = false;
+int memberRequests = 0;
 struct PendingSearch {
     QPointer<QObject> context;
     QString keyword;
@@ -82,11 +86,18 @@ void request(QObject* context, const AppConfig& config, QJsonObject payload, Cal
         return;
     }
     if (operation == "timeline") { ++timelineRequests; lastTimelinePayload = payload; }
-    if (operation == "klines") ++klineRequests;
+    if (operation == "klines") { ++klineRequests; lastKlinePayload = payload; }
     if (operation == "quotes") ++quoteRequests;
+    QJsonObject response{{"quotes", QJsonArray()}};
+    if (constituentFixture && operation == "members") {
+        ++memberRequests;
+        response = {{"items", QJsonArray{
+            QJsonObject{{"code", "1.600519"}, {"name", "Stock A"}, {"price", 100}, {"pct", 2}, {"marketCap", 2e12}},
+            QJsonObject{{"code", "0.000001"}, {"name", "Stock B"}, {"price", 20}, {"pct", -1}, {"marketCap", 1e12}}}}};
+    }
     QPointer<QObject> guarded(context);
-    QTimer::singleShot(0, context, [guarded, callback = std::move(callback)]() {
-        if (guarded) callback({{"quotes", QJsonArray()}}, {});
+    QTimer::singleShot(0, context, [guarded, response, callback = std::move(callback)]() {
+        if (guarded) callback(response, {});
     });
 }
 QJsonObject networkProxyBlocking(const AppConfig&, QString* error) {
@@ -315,6 +326,97 @@ void checkStockChartClicks() {
     QApplication::setStartDragTime(oldDragTime);
 }
 
+class MarketBreadthConstituentInteractionTest {
+public:
+    static void run() {
+        constituentFixture = true;
+        const int oldDragTime = QApplication::startDragTime();
+        QApplication::setStartDragTime(120);
+        QWidget owner;
+        MarketBreadthDetailWindow market(&owner);
+        AppConfig cfg;
+        cfg.language = "zh_CN";
+        market.applyConfig(cfg);
+        market.setLanguage("zh_CN");
+        int watchlistMutations = 0;
+        market.setHotRankDetailWatchlistCallbacks([](const QString&) { return false; },
+            [&](const QString&, const QString&, bool) { ++watchlistMutations; return true; }, []() {});
+        const auto mouse = [](QWidget* target, QEvent::Type type, QPoint pos,
+                              Qt::MouseButton button, Qt::MouseButtons buttons) {
+            QMouseEvent event(type, QPointF(pos), QPointF(target->mapToGlobal(pos)), button, buttons, Qt::NoModifier);
+            QApplication::sendEvent(target, &event);
+        };
+        const auto click = [&](QWidget* target, QPoint pos, Qt::MouseButton button) {
+            mouse(target, QEvent::MouseButtonPress, pos, button, button);
+            mouse(target, QEvent::MouseButtonRelease, pos, button, Qt::NoButton);
+            events();
+        };
+        const auto chartPopup = []() -> QWidget* {
+            for (auto* top : QApplication::topLevelWidgets()) {
+                if (top->isVisible() && top->findChild<QWidget*>("dailyKlineChart")) return top;
+            }
+            return nullptr;
+        };
+        for (const QString& category : {QStringLiteral("热门概念"), QStringLiteral("热门板块")}) {
+            HotRankItem item;
+            item.code = category == QStringLiteral("热门概念") ? "tdx:main:1:885000" : "tdx:main:1:881319";
+            item.detailFs = item.code;
+            item.name = category;
+            const int beforeMembers = memberRequests;
+            market.openHotRankDetail(item);
+            events(20);
+            auto* detail = owner.findChild<QWidget*>("hotRankConstituentDetailWindow");
+            check(detail && detail->isVisible() && memberRequests == beforeMembers + 1,
+                "Opening a concept/sector must load its shared constituent popup");
+            detail->grab(); // Ensure the custom-painted row hit areas are current.
+            const QPoint firstRow(50, 105), secondRow(50, 131);
+            click(detail, firstRow, Qt::RightButton);
+            auto* popup = chartPopup();
+            check(popup && popup->findChild<QWidget*>("dailyKlineChart")->isVisible()
+                && lastKlinePayload.value("code").toString() == "1.600519"
+                && lastKlinePayload.value("period").toInt() == 4,
+                "Right-clicking a concept/sector constituent must show that stock's daily candles");
+            events(80);
+            check(popup->findChild<QWidget*>("dailyKlineChart")->isVisible(),
+                "Constituent daily mode must stay visible without holding Ctrl");
+            click(detail, secondRow, Qt::RightButton);
+            check(lastKlinePayload.value("code").toString() == "0.000001",
+                "Right-clicking another constituent must load the correct stock");
+            const int beforeIntraday = timelineRequests;
+            click(detail, firstRow, Qt::LeftButton);
+            check(popup->isVisible() && !popup->findChild<QWidget*>("dailyKlineChart")->isVisible(),
+                "Existing left-click constituent intraday behavior must remain available");
+            if (timelineRequests > beforeIntraday) {
+                check(lastTimelinePayload.value("code").toString() == "1.600519",
+                    "Uncached left-click intraday requests must select the correct constituent");
+            }
+            const int beforeWatchlist = watchlistMutations;
+            click(detail, QPoint(detail->width() - 50, 105), Qt::LeftButton);
+            check(watchlistMutations == beforeWatchlist + 1,
+                "The existing left-click watchlist button must still work");
+            const int beforeMisclick = klineRequests;
+            mouse(detail, QEvent::MouseButtonPress, firstRow, Qt::RightButton, Qt::RightButton);
+            mouse(detail, QEvent::MouseButtonRelease, secondRow, Qt::RightButton, Qt::NoButton);
+            check(klineRequests == beforeMisclick, "Right release on another row must not open a chart");
+            mouse(detail, QEvent::MouseButtonPress, firstRow, Qt::RightButton, Qt::RightButton);
+            mouse(detail, QEvent::MouseMove, firstRow + QPoint(40, 0), Qt::NoButton, Qt::RightButton);
+            mouse(detail, QEvent::MouseMove, firstRow, Qt::NoButton, Qt::RightButton);
+            mouse(detail, QEvent::MouseButtonRelease, firstRow, Qt::RightButton, Qt::NoButton);
+            check(klineRequests == beforeMisclick, "Dragging out and back must not become a right-click chart");
+            mouse(detail, QEvent::MouseButtonPress, firstRow, Qt::RightButton, Qt::RightButton);
+            events(150);
+            mouse(detail, QEvent::MouseButtonRelease, firstRow, Qt::RightButton, Qt::NoButton);
+            check(klineRequests == beforeMisclick, "A long right press must not trigger a chart");
+            click(detail, QPoint(detail->width() / 2, 72), Qt::LeftButton);
+            check(!popup->isVisible() && memberRequests == beforeMembers + 1,
+                "Existing numeric-header sorting must remain local and dismiss the chart");
+            detail->hide();
+        }
+        QApplication::setStartDragTime(oldDragTime);
+        constituentFixture = false;
+    }
+};
+
 class AppControllerStartupTest {
 public:
     static void run() {
@@ -451,6 +553,27 @@ public:
                 check(settings->value(app_constants::kWatchIndexesKey).toStringList().contains("1.000001\tLegacy index"),
                     "Saving index edits must retain compatible legacy indexes");
             }
+            {
+                auto settings = ConfigManager::createAppSettings();
+                const auto originalIndexes = settings->value(app_constants::kWatchIndexesKey);
+                settings->setValue(app_constants::kWatchIndexesKey, QStringList{
+                    "1.000001\tLegacy index", "tdx:main:1:000688\t科创50",
+                    "1.000688\t科创50", "tdx:main:1:000680\t科创综指", "90.BK0420\tLegacy board"});
+                controller.loadExtraWatchItems();
+                check(controller.m_indexes.size() == 2 && controller.m_indexes[0].code == "1.000001"
+                    && controller.m_indexes[1].code == "1.000680" && controller.m_indexes[1].name == "科创综指",
+                    "Saved STAR 50 selections must migrate in place and deduplicate STAR Composite formats");
+                const auto migrated = settings->value(app_constants::kWatchIndexesKey).toStringList();
+                check(migrated.contains("1.000680\t科创综指") && migrated.contains("90.BK0420\tLegacy board")
+                    && !migrated.join("|").contains("000688"),
+                    "Index replacement must persist while preserving unsupported saved selections");
+                settings->remove(app_constants::kWatchIndexesKey);
+                controller.loadExtraWatchItems();
+                check(controller.m_indexes.size() == 4 && controller.m_indexes[2].code == "1.000680"
+                    && controller.m_indexes[2].name == "科创综指", "Default top indexes must use STAR Composite");
+                settings->setValue(app_constants::kWatchIndexesKey, originalIndexes);
+                controller.loadExtraWatchItems();
+            }
             events(static_cast<int>(app_constants::kStartupSplashMinimumDisplayMs + 200));
             check(!controller.m_loading && !controller.m_splash->isVisible() && quoteRequests > 0,
                 "Completed startup must close splash and start quotations");
@@ -547,6 +670,10 @@ int main(int argc, char** argv) {
     QCoreApplication::setApplicationName("startupTest-" + QUuid::createUuid().toString(QUuid::WithoutBraces));
     if (app.arguments().contains("--stock-chart-clicks")) {
         checkStockChartClicks();
+        return 0;
+    }
+    if (app.arguments().contains("--constituent-chart-clicks")) {
+        MarketBreadthConstituentInteractionTest::run();
         return 0;
     }
     AppControllerStartupTest::run();

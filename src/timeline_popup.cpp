@@ -47,7 +47,7 @@ inline constexpr int kTimelinePopupScreenMarginPx = 12;
 
 #if defined(Q_OS_MACOS)
 static void* macWindowHandleForWidget(const QWidget* widget) {
-    if (!widget) {
+    if (!widget || QGuiApplication::platformName() != QStringLiteral("cocoa")) {
         return nullptr;
     }
     void* nsView = reinterpret_cast<void*>(widget->winId());
