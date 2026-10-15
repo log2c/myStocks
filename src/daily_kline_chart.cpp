@@ -233,10 +233,8 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
     for (const auto& gap : daily_kline::unfilledGaps(m_bars, visibleStart)) {
         const double left = x(gap.startIndex) - slot * 0.5;
         const QRectF zone(left, y(gap.upper), price.right() - left, y(gap.lower) - y(gap.upper));
-        QColor fill = gap.upward ? m_cfg.timelineChartUpColor : m_cfg.timelineChartDownColor;
-        QColor edge = fill;
-        fill.setAlpha(28);
-        edge.setAlpha(125);
+        const QColor fill(160, 160, 160, 28);
+        const QColor edge(160, 160, 160, 125);
         p.fillRect(zone, fill);
         p.setPen(QPen(edge, 0.7, Qt::DashLine));
         p.drawLine(zone.topLeft(), zone.topRight());
