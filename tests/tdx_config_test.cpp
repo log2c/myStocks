@@ -31,7 +31,9 @@ int main(int argc, char** argv) {
 
     check(defaults.dailyKlineDays == 60, "Daily candles must default to 60 trading days");
     check(defaults.dailyKlineMAPeriods == QVector<int>({5, 10, 20, 30}), "Default MAs must be 5/10/20/30");
+    check(defaults.timelineChartHoverDelayMs == 500, "Existing settings must default hover delay to 500ms");
     AppConfig cfg = defaults;
+    cfg.timelineChartHoverDelayMs = 800;
     cfg.dailyKlineDays = 120;
     cfg.dailyKlineMAPeriods = {250, 10, 10, 99, 60};
     cfg.quoteSource = "eastmoney";
@@ -48,6 +50,7 @@ int main(int argc, char** argv) {
     cfg.tdxExServerPool = {QStringLiteral("ex.example:7727")};
     ConfigManager::saveConfig(cfg);
     const AppConfig loaded = ConfigManager::loadConfig();
+    check(loaded.timelineChartHoverDelayMs == 800, "Hover delay must survive saving and loading");
     check(loaded.dailyKlineDays == 120, "Daily candle range did not persist");
     check(loaded.dailyKlineMAPeriods == QVector<int>({10, 60, 250}), "MA periods must persist, normalize and reject unknowns");
     check(!loaded.tdxMainAutoSelect && loaded.tdxExAutoSelect, "Independent selection modes were lost");
@@ -75,13 +78,17 @@ int main(int argc, char** argv) {
     check(groups.size() == 1 && groups[0].stockCodes.contains("90.BK0420") && !groups[0].stockCodes.contains("tdx:main:0:000001"),
         "Saving groups must preserve disabled members without retaining deleted active members");
     cfg.dailyKlineMAPeriods.clear();
+    cfg.timelineChartHoverDelayMs = -100;
     cfg.dailyKlineDays = 0;
     ConfigManager::saveConfig(cfg);
     check(ConfigManager::loadConfig().dailyKlineDays == 1, "Daily range must have a lower bound");
     check(ConfigManager::loadConfig().dailyKlineMAPeriods.isEmpty(), "Disabling every MA must persist as empty, not defaults");
+    check(ConfigManager::loadConfig().timelineChartHoverDelayMs == 0, "Hover delay must have a lower bound");
+    cfg.timelineChartHoverDelayMs = 20000;
     cfg.dailyKlineDays = 900;
     ConfigManager::saveConfig(cfg);
     check(ConfigManager::loadConfig().dailyKlineDays == 800, "Daily range must respect bridge limit");
+    check(ConfigManager::loadConfig().timelineChartHoverDelayMs == 10000, "Hover delay must have an upper bound");
     check(QFile::remove(path), "Could not clean up isolated test settings");
     return 0;
 }

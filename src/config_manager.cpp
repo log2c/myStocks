@@ -741,6 +741,8 @@ AppConfig ConfigManager::loadConfig() {
         "ui/timelineChartRefreshSecs",
         cfg.timelineChartRefreshSecs
     ).toInt();
+    cfg.timelineChartHoverDelayMs = qBound(0,
+        s.value("ui/timelineChartHoverDelayMs", cfg.timelineChartHoverDelayMs).toInt(), 10000);
     cfg.dailyKlineDays = qBound(1, s.value("ui/dailyKlineDays", cfg.dailyKlineDays).toInt(), 800);
     if (s.contains("ui/dailyKlineMAPeriods")) {
         QVector<int> periods;
@@ -1052,6 +1054,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         dailyMAPeriods.append(QString::number(period));
     }
     s.setValue("ui/dailyKlineMAPeriods", dailyMAPeriods);
+    s.setValue("ui/timelineChartHoverDelayMs", qBound(0, cfg.timelineChartHoverDelayMs, 10000));
     s.setValue("ui/timelineChartEnabled", cfg.timelineChartEnabled);
     s.setValue("ui/timelineChartRefreshSecs", qBound(10, cfg.timelineChartRefreshSecs, 3600));
     s.setValue("ui/marketBreadthEnabled", cfg.marketBreadthEnabled);

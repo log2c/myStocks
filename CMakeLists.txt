@@ -411,6 +411,8 @@ if(BUILD_TESTING)
         endif()
     endif()
     mystocks_enable_agl_stub(MyStocksStartupFlowTest)
+    add_test(NAME stock_chart_clicks COMMAND MyStocksStartupFlowTest --stock-chart-clicks)
+    set_tests_properties(stock_chart_clicks PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
     add_test(NAME startup_flow COMMAND MyStocksStartupFlowTest)
     set_tests_properties(startup_flow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 

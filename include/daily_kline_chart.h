@@ -9,6 +9,7 @@
 class DailyKlineChart : public QWidget {
 public:
     explicit DailyKlineChart(QWidget* timeline);
+    void setPinnedDaily(bool pinned);
     void setContext(const AppConfig& cfg, const QString& code, const QString& name);
 
 protected:
@@ -29,6 +30,7 @@ private:
     QVector<Bar> m_bars;
     int m_generation = 0;
     bool m_controlHeld = false;
+    bool m_pinnedDaily = false;
     bool m_pending = false;
     qint64 m_nextFetchMs = 0;
 };

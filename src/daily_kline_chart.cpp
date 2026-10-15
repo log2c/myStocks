@@ -8,6 +8,7 @@
 #include <QKeyEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPolygonF>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -94,8 +95,13 @@ bool DailyKlineChart::eventFilter(QObject* watched, QEvent* event) {
     return false;
 }
 
+void DailyKlineChart::setPinnedDaily(bool pinned) {
+    m_pinnedDaily = pinned;
+    setControlHeld(QGuiApplication::queryKeyboardModifiers().testFlag(controlModifier()));
+}
+
 void DailyKlineChart::setControlHeld(bool held) {
-    held = held && m_timeline->isVisible() && !m_code.isEmpty();
+    held = (held || m_pinnedDaily) && m_timeline->isVisible() && !m_code.isEmpty();
     if (m_controlHeld != held) {
         m_timeline->setProperty("dailyKlineVisible", held);
         m_timeline->update();
@@ -233,12 +239,9 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
     for (const auto& gap : daily_kline::unfilledGaps(m_bars, visibleStart)) {
         const double left = x(gap.startIndex) - slot * 0.5;
         const QRectF zone(left, y(gap.upper), price.right() - left, y(gap.lower) - y(gap.upper));
-        const QColor fill(160, 160, 160, 28);
+        const QColor fill(160, 160, 160, 60);
         const QColor edge(160, 160, 160, 125);
         p.fillRect(zone, fill);
-        p.setPen(QPen(edge, 0.7, Qt::DashLine));
-        p.drawLine(zone.topLeft(), zone.topRight());
-        p.drawLine(zone.bottomLeft(), zone.bottomRight());
         const QString label = i18n::t("popup.daily.gap", language);
         const int width = p.fontMetrics().horizontalAdvance(label) + 8;
         if (zone.height() >= p.fontMetrics().height() + 2 && zone.width() >= width + 8) {
@@ -285,14 +288,21 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
     const auto drawMarker = [&](int index, double value, bool high) {
         if (index < 0) return;
         const QString number = QString::number(value, 'f', value < 10 ? 3 : 2);
-        const bool toRight = x(index) < price.center().x();
-        const QString text = toRight ? QStringLiteral("← %1").arg(number) : QStringLiteral("%1 →").arg(number);
-        const int width = p.fontMetrics().horizontalAdvance(text) + 6;
-        const double left = toRight ? x(index) + 6 : x(index) - width - 6;
         const int top = qBound(price.top(), qRound(y(value)) + (high ? -18 : 2), price.bottom() - 17);
-        const QRect label(qBound(price.left(), qRound(left), price.right() - width + 1), top, width, 18);
+        const auto marker = daily_kline::priceMarkerLayout(QRectF(price), QPointF(x(index), top + 9.0),
+            number, QFontMetricsF(p.font()));
+        const double tailX = marker.tip.x() + (marker.labelOnRight ? 5.0 : -5.0);
+        const QPolygonF arrow{marker.tip, QPointF(tailX, marker.tip.y() - 3.0),
+            QPointF(tailX, marker.tip.y() + 3.0)};
+        p.save();
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        p.setBrush(m_cfg.timelineChartTextColor);
+        p.drawPolygon(arrow);
         p.setPen(m_cfg.timelineChartTextColor);
-        p.drawText(label, Qt::AlignCenter, text);
+        p.drawText(marker.label, Qt::TextSingleLine | Qt::AlignVCenter
+            | (marker.labelOnRight ? Qt::AlignLeft : Qt::AlignRight), number);
+        p.restore();
     };
     drawMarker(extrema.highIndex, extrema.high, true);
     drawMarker(extrema.lowIndex, extrema.low, false);

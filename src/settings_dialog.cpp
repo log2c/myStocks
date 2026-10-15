@@ -658,6 +658,8 @@ AppConfig SettingsDialog::config() const {
     for (auto it = m_dailyKlineMAChecks.cbegin(); it != m_dailyKlineMAChecks.cend(); ++it) {
         if (it.value()->isChecked()) out.dailyKlineMAPeriods.append(it.key());
     }
+    out.timelineChartHoverDelayMs = m_timelineChartHoverDelaySpin
+        ? m_timelineChartHoverDelaySpin->value() : out.timelineChartHoverDelayMs;
     out.timelineChartRefreshSecs = m_timelineChartRefreshSecsSpin
         ? qBound(10, m_timelineChartRefreshSecsSpin->value(), 3600)
         : out.timelineChartRefreshSecs;
@@ -1649,6 +1651,16 @@ QWidget* SettingsDialog::buildDisplayTab() {
     applyNumericSpinBoxWidth(m_marketBreadthRefreshSecsSpin);
     timelineForm->addRow(trText("settings.display.marketBreadthRefresh"), m_marketBreadthRefreshSecsSpin);
 
+    m_timelineChartHoverDelaySpin = new QSpinBox(w);
+    m_timelineChartHoverDelaySpin->setObjectName(QStringLiteral("timelineChartHoverDelaySpin"));
+    m_timelineChartHoverDelaySpin->setRange(0, 10000);
+    m_timelineChartHoverDelaySpin->setSingleStep(100);
+    m_timelineChartHoverDelaySpin->setSuffix(trText("settings.display.timelineHoverDelaySuffix"));
+    m_timelineChartHoverDelaySpin->setValue(qBound(0, m_cfg.timelineChartHoverDelayMs, 10000));
+    m_timelineChartHoverDelaySpin->setToolTip(trText("settings.display.timelineHoverHint"));
+    applyNumericSpinBoxWidth(m_timelineChartHoverDelaySpin);
+    timelineForm->addRow(trText("settings.display.timelineHoverDelay"), m_timelineChartHoverDelaySpin);
+
     m_timelineChartRefreshSecsSpin = new QSpinBox(w);
     m_timelineChartRefreshSecsSpin->setRange(10, 3600);
     m_timelineChartRefreshSecsSpin->setSingleStep(1);
@@ -1757,14 +1769,17 @@ QWidget* SettingsDialog::buildDisplayTab() {
     addCompactFormRow(timelineForm, resetTimelineColorsButton);
 
     QWidget* timelineRefreshLabel = timelineForm->labelForField(m_timelineChartRefreshSecsSpin);
+    QWidget* timelineHoverLabel = timelineForm->labelForField(m_timelineChartHoverDelaySpin);
     QWidget* marketBreadthRefreshLabel = timelineForm->labelForField(m_marketBreadthRefreshSecsSpin);
-    const auto updateTimelineControlsState = [this, timelineRefreshLabel, marketBreadthRefreshLabel]() {
+    const auto updateTimelineControlsState = [this, timelineRefreshLabel, timelineHoverLabel, marketBreadthRefreshLabel]() {
         const bool enabled = m_timelineChartEnabledCheck && m_timelineChartEnabledCheck->isChecked();
         const bool marketBreadthEnabled = m_marketBreadthEnabledCheck
             && m_marketBreadthEnabledCheck->isChecked();
         if (m_timelineChartRefreshSecsSpin) {
             m_timelineChartRefreshSecsSpin->setEnabled(enabled);
         }
+        m_timelineChartHoverDelaySpin->setEnabled(enabled);
+        if (timelineHoverLabel) timelineHoverLabel->setEnabled(enabled);
         if (m_marketBreadthRefreshSecsSpin) {
             m_marketBreadthRefreshSecsSpin->setEnabled(marketBreadthEnabled);
         }

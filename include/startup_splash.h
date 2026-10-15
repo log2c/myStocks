@@ -1,6 +1,5 @@
 #pragma once
 
-#include <QPointer>
 #include <QWidget>
 
 class QLabel;
@@ -17,18 +16,16 @@ public:
     void setRouteStatus(bool extended, const QString& text);
     void setWarning(const QString& text);
     void setFailed(const QString& detail);
-    static QRect placement(const QSize& size, const QRect& available, const QRect& anchor = {});
+    static QRect placement(const QSize& size, const QRect& available);
 
 signals:
     void retryRequested();
     void offlineRequested();
 
-protected:
-    bool eventFilter(QObject* watched, QEvent* event) override;
-
 private:
     void updatePlacement();
-    QPointer<QWidget> m_floatingWindow;
+    void trackPrimaryScreen();
+    QMetaObject::Connection m_screenGeometryConnection;
     QLabel* m_heading = nullptr;
     QLabel* m_detail = nullptr;
     QLabel* m_routes[2] = {};

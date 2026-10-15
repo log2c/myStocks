@@ -1352,7 +1352,7 @@ public:
         }
     }
 
-    void showForStock(const QString& code, const QString& name, const QRect& anchorRect, int baseWidth, double cost = qQNaN()) {
+    void showForStock(const QString& code, const QString& name, const QRect& anchorRect, int baseWidth, double cost = qQNaN(), bool daily = false) {
         Q_UNUSED(baseWidth);
         if (code.trimmed().isEmpty() || !isTimelinePopupSupportedCode(code)) {
             hidePopup();
@@ -1363,7 +1363,9 @@ public:
         m_code = code.trimmed();
         m_name = name.trimmed();
         m_cost = cost;
+        m_dailyChart->setPinnedDaily(false);
         m_dailyChart->setContext(m_cfg, m_code, m_name);
+        m_dailyChart->setPinnedDaily(daily);
         if (changed) {
             m_hongKongHalfDayDate = QDate();
         }
@@ -1708,10 +1710,11 @@ void SharedTimelineChartPopup::showForStock(
     const QString& name,
     const QRect& anchorRect,
     int baseWidth,
-    double cost
+    double cost,
+    bool daily
 ) {
     if (d) {
-        d->showForStock(code, name, anchorRect, baseWidth, cost);
+        d->showForStock(code, name, anchorRect, baseWidth, cost, daily);
     }
 }
 

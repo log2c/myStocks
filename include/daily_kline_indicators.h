@@ -1,6 +1,7 @@
 #pragma once
 
 #include "types.h"
+#include <QFontMetricsF>
 #include <algorithm>
 #include <cmath>
 
@@ -42,6 +43,34 @@ QVector<double> movingAverage(const Bars& bars, int period) {
         if (i >= period - 1 && invalid == 0) values[i] = sum / period;
     }
     return values;
+}
+
+struct PriceMarkerLayout {
+    QPointF tip;
+    QRectF label;
+    bool labelOnRight;
+};
+
+inline PriceMarkerLayout priceMarkerLayout(const QRectF& plot, const QPointF& anchor,
+                                          double textWidth, double height = 18.0) {
+    const double spacing = 9.0;
+    const double rightRoom = plot.right() - anchor.x();
+    const double leftRoom = anchor.x() - plot.left();
+    const bool onRight = rightRoom >= leftRoom;
+    const double width = std::min(textWidth, std::max(0.0, (onRight ? rightRoom : leftRoom) - spacing));
+    // Only the text's space is bounded. Never shift the arrow tip away from
+    // the candle's exact (potentially fractional) horizontal center.
+    return {anchor, QRectF(onRight ? anchor.x() + spacing : anchor.x() - spacing - width,
+        anchor.y() - height / 2, width, height), onRight};
+}
+
+inline PriceMarkerLayout priceMarkerLayout(const QRectF& plot, const QPointF& anchor,
+                                          const QString& text, const QFontMetricsF& metrics,
+                                          double height = 18.0) {
+    // Integer advances can round down (e.g. "1163.00"), causing Qt to elide
+    // the last digits even though the chart has ample room for the price.
+    const double width = std::ceil(metrics.horizontalAdvance(text)) + 4.0;
+    return priceMarkerLayout(plot, anchor, width, height);
 }
 
 struct Extrema {

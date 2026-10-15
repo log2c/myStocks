@@ -14,7 +14,7 @@ public:
     ~SharedTimelineChartPopup() override;
 
     void applyConfig(const AppConfig& cfg);
-    void showForStock(const QString& code, const QString& name, const QRect& anchorRect, int baseWidth, double cost = qQNaN());
+    void showForStock(const QString& code, const QString& name, const QRect& anchorRect, int baseWidth, double cost = qQNaN(), bool daily = false);
     void hidePopup();
 
 private:

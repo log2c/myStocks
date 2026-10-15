@@ -285,6 +285,7 @@ struct AppConfig {
     bool hoverReadingTransparentBackgroundEnabled = true;
     bool timelineChartEnabled = true;
     int timelineChartRefreshSecs = 10;
+    int timelineChartHoverDelayMs = 500;
     int dailyKlineDays = 60;
     QVector<int> dailyKlineMAPeriods{5, 10, 20, 30};
     bool marketBreadthEnabled = true;

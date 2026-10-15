@@ -75,6 +75,12 @@ int main(int argc, char** argv) {
         "Late reply may cache daily data but must not restore daily mode");
     control(timeline, true);
     check(daily->isVisible() && pending.isEmpty(), "Holding Ctrl again must reuse loaded bars");
+    daily->setPinnedDaily(true);
+    control(timeline, false);
+    check(daily->isVisible(), "Right-click daily mode must stay visible after Ctrl is released");
+    daily->setPinnedDaily(false);
+    check(daily->isHidden(), "A left-click mode change must return to intraday without holding Ctrl");
+    control(timeline, true);
     timeline.resize(640, 420);
     check(daily->size() == timeline.size(), "Daily overlay must follow popup resize");
     daily->setContext(cfg, "1.510300", "沪深300ETF");
@@ -109,6 +115,37 @@ int main(int argc, char** argv) {
     const auto extrema = daily_kline::visibleExtrema(samples, 249);
     check(extrema.high == 310 && extrema.low == 249.5 && extrema.highIndex == 308 && extrema.lowIndex == 249,
         "Visible high/low must exclude hidden history and use candle wicks, not closes");
+    // Text layout, font padding and edge handling must never move the arrow
+    // horizontally off the first, middle or last candle's fractional center.
+    const QRectF markerPlot(70, 48, 469, 200);
+    for (double candleX : {73.908333333, 304.5, 535.091666667}) {
+        const QPointF anchor(candleX, 100);
+        for (double width : {30.0, 80.0, 600.0}) {
+            const auto marker = daily_kline::priceMarkerLayout(markerPlot, anchor, width);
+            check(marker.tip.x() == candleX && marker.tip.y() == anchor.y(),
+                "Arrow tip must use candle coordinates rather than a centered text rectangle");
+            check(marker.label.left() >= markerPlot.left() && marker.label.right() <= markerPlot.right(),
+                "Edge price labels must fit without shifting the arrow");
+            check(marker.labelOnRight ? marker.label.left() > candleX : marker.label.right() < candleX,
+                "Price text must remain beside its arrow instead of covering the candle");
+        }
+    }
+    for (double pointSize : {9.0, 9.5, 12.0, 14.5, 18.0}) {
+        QFont markerFont = daily->font();
+        markerFont.setPointSizeF(pointSize);
+        const QFontMetricsF metrics(markerFont);
+        for (const QString& number : {QStringLiteral("1163.00"), QStringLiteral("645.01"),
+                                     QStringLiteral("4.825"), QStringLiteral("10000.00")}) {
+            for (double candleX : {73.908333333, 304.5, 535.091666667}) {
+                const auto marker = daily_kline::priceMarkerLayout(markerPlot, QPointF(candleX, 100), number, metrics);
+                check(marker.label.width() >= metrics.horizontalAdvance(number) + 3.0,
+                    "Price rectangles must fit all digits even when integer font metrics round down");
+                check(QFontMetrics(markerFont).elidedText(number, Qt::ElideRight, int(marker.label.width())) == number,
+                    "300308 price markers must have enough width to avoid Qt elision");
+                check(marker.tip.x() == candleX, "Wider price labels must not move the candle's arrow tip");
+            }
+        }
+    }
     const auto singleton = daily_kline::visibleExtrema(QVector<Sample>{{4.2, 4.3, 4.1}}, 0);
     check(singleton.highIndex == 0 && singleton.lowIndex == 0,
         "A single candle must have both price markers");
@@ -217,7 +254,8 @@ int main(int argc, char** argv) {
         check(input.open(QIODevice::ReadOnly), "Cannot open daily fixture");
         cfg.dailyKlineDays = 60;
         cfg.dailyKlineMAPeriods = {5, 10, 20, 30, 60, 120, 250};
-        daily->setContext(cfg, "1.510300", "沪深300ETF");
+        daily->setContext(cfg, argc > 3 ? QString::fromLocal8Bit(argv[3]) : QStringLiteral("1.510300"),
+            argc > 4 ? QString::fromLocal8Bit(argv[4]) : QStringLiteral("沪深300ETF"));
         control(timeline, true);
         pending.takeFirst().callback(QJsonDocument::fromJson(input.readAll()).object(), {});
         timeline.grab().save(QString::fromLocal8Bit(argv[2]));

@@ -8,6 +8,9 @@
 #include <QComboBox>
 #include <QListWidget>
 #include <QKeyEvent>
+#include <QMouseEvent>
+#include <QTableView>
+#include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
 #include "tdx_bridge.h"
@@ -20,6 +23,7 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QSettings>
+#include <QScreen>
 #include <QTabWidget>
 #include <QStandardPaths>
 #include <QTimer>
@@ -38,6 +42,9 @@ struct PendingRoute {
 };
 QVector<PendingRoute> routes;
 int quoteRequests = 0;
+int timelineRequests = 0;
+int klineRequests = 0;
+QJsonObject lastTimelinePayload;
 struct PendingSearch {
     QPointer<QObject> context;
     QString keyword;
@@ -74,6 +81,8 @@ void request(QObject* context, const AppConfig& config, QJsonObject payload, Cal
         searches.append({context, payload.value("keyword").toString(), std::move(callback)});
         return;
     }
+    if (operation == "timeline") { ++timelineRequests; lastTimelinePayload = payload; }
+    if (operation == "klines") ++klineRequests;
     if (operation == "quotes") ++quoteRequests;
     QPointer<QObject> guarded(context);
     QTimer::singleShot(0, context, [guarded, callback = std::move(callback)]() {
@@ -85,6 +94,225 @@ QJsonObject networkProxyBlocking(const AppConfig&, QString* error) {
     return {{"host", "127.0.0.1"}, {"port", 1080}, {"user", "test"}, {"password", "test"}};
 }
 QJsonObject requestBlocking(const QJsonObject&, QString*) { return {}; }
+}
+
+void checkStockChartClicks() {
+    const int oldDragTime = QApplication::startDragTime();
+    QApplication::setStartDragTime(120);
+    AppConfig cfg;
+    check(cfg.timelineChartHoverDelayMs == 500, "Intraday hover must default to 500ms");
+    cfg.timelineChartHoverDelayMs = 140;
+    cfg.marketBreadthEnabled = false;
+    cfg.hotRankEnabled = false;
+    cfg.hoverReadingEnabled = false;
+    cfg.mousePassthroughEnabled = false;
+    cfg.floatingWindowDoubleClickToHide = true;
+    cfg.floatingWindowDoubleClickStockDetail = false;
+    QuoteModel model;
+    model.setConfig(cfg);
+    model.setStocks({{"1.510300", "ETF"}, {"1.600519", "Stock"}});
+    FloatingWindow window(&model);
+    window.applyConfig(cfg);
+    window.move(80, 80);
+    window.show();
+    events();
+    QTableView* view = nullptr;
+    for (auto* candidate : window.findChildren<QTableView*>()) {
+        if (candidate->isVisible() && !candidate->isRowHidden(0)) view = candidate;
+    }
+    check(view, "Expected a visible stock table");
+    QWidget* popup = nullptr;
+    QWidget* daily = nullptr;
+    for (auto* top : QApplication::topLevelWidgets()) {
+        if (auto* child = top->findChild<QWidget*>("dailyKlineChart")) {
+            popup = top;
+            daily = child;
+        }
+    }
+    check(popup && daily && !popup->isVisible(), "Stock chart must initially be hidden");
+    const auto rowGlobal = [&](int row, int column = ColPrice) {
+        return view->viewport()->mapToGlobal(view->visualRect(model.index(row, column)).center());
+    };
+    const auto mouse = [&](QWidget* target, QEvent::Type type, const QPoint& global,
+                           Qt::MouseButton button, Qt::MouseButtons buttons) {
+        QMouseEvent event(type, QPointF(target->mapFromGlobal(global)), QPointF(global),
+            button, buttons, Qt::NoModifier);
+        QApplication::sendEvent(target, &event);
+    };
+    const auto firstColumn = [&]() {
+        for (int visual = 0; visual < view->horizontalHeader()->count(); ++visual) {
+            const int logical = view->horizontalHeader()->logicalIndex(visual);
+            if (!view->isColumnHidden(logical) && view->columnWidth(logical) > 0) return logical;
+        }
+        return -1;
+    };
+    const auto hover = [&](int row, int column = -1) {
+        mouse(view->viewport(), QEvent::MouseMove, rowGlobal(row, column < 0 ? firstColumn() : column),
+            Qt::NoButton, Qt::NoButton);
+    };
+    const auto click = [&](int row, Qt::MouseButton button) {
+        const QPoint global = rowGlobal(row);
+        mouse(view->viewport(), QEvent::MouseButtonPress, global, button, button);
+        mouse(button == Qt::LeftButton ? static_cast<QWidget*>(&window) : view->viewport(),
+            QEvent::MouseButtonRelease, global, button, Qt::NoButton);
+    };
+    check(firstColumn() == ColName, "The hidden code column must not count as the first displayed column");
+    hover(0, ColPrice);
+    events(160);
+    check(!popup->isVisible() && timelineRequests == 0, "Non-first visible columns must never trigger hover charts");
+    hover(0);
+    events(90);
+    check(!popup->isVisible() && timelineRequests == 0, "Hover must not trigger before the configured delay");
+    hover(0, ColPrice);
+    events(80);
+    check(!popup->isVisible(), "Leaving the first column must cancel its pending hover");
+    hover(0);
+    events(90);
+    check(!popup->isVisible(), "Reentering the first column must wait for the full delay");
+    mouse(view->viewport(), QEvent::MouseMove, rowGlobal(0, firstColumn()) + QPoint(1, 0), Qt::NoButton, Qt::NoButton);
+    events(80);
+    check(popup->isVisible() && !daily->isVisible() && timelineRequests == 1,
+        "Movement within the first cell must preserve the hover timer");
+    const int beforeSameRow = timelineRequests;
+    hover(0);
+    events(160);
+    check(timelineRequests == beforeSameRow, "An already displayed hovered stock must not be fetched repeatedly");
+
+    click(0, Qt::LeftButton);
+    events(160);
+    check(!popup->isVisible(), "Left click alone must no longer trigger an intraday chart");
+    hover(0);
+    events(80);
+    hover(1);
+    events(90);
+    check(!popup->isVisible(), "Changing rows must restart the hover delay");
+    events(80);
+    check(popup->isVisible() && !daily->isVisible()
+        && lastTimelinePayload.value("code").toString() == "1.600519",
+        "Hover must open the latest row after its own full delay");
+    click(1, Qt::RightButton);
+    events(160);
+    check(popup->isVisible() && daily->isVisible() && klineRequests == 1,
+        "Right-click must still show daily immediately without Ctrl");
+    const int beforePinnedHover = timelineRequests;
+    hover(1);
+    events(160);
+    check(daily->isVisible() && timelineRequests == beforePinnedHover,
+        "Hovering the same right-clicked row must not replace pinned daily mode");
+
+    hover(0);
+    events(60);
+    const QPoint oldPosition = window.pos();
+    QPoint global = rowGlobal(0);
+    mouse(view->viewport(), QEvent::MouseButtonPress, global, Qt::LeftButton, Qt::LeftButton);
+    events(220);
+    check(!popup->isVisible(), "Holding a drag press must cancel the pending hover timer");
+    mouse(&window, QEvent::MouseMove, global + QPoint(40, 20), Qt::NoButton, Qt::LeftButton);
+    events(160);
+    check(window.pos() == oldPosition + QPoint(40, 20) && !popup->isVisible(),
+        "Dragging must move the window without triggering a chart");
+    mouse(&window, QEvent::MouseButtonRelease, global + QPoint(40, 20), Qt::LeftButton, Qt::NoButton);
+    events(160);
+    check(!popup->isVisible(), "Releasing a drag must not trigger a pending hover or click chart");
+    hover(0);
+    events(160);
+    check(popup->isVisible() && !daily->isVisible(), "Hover may trigger again after dragging has finished");
+
+    // A fast drag returning to its origin must still be treated as a drag.
+    global = rowGlobal(0);
+    mouse(view->viewport(), QEvent::MouseButtonPress, global, Qt::LeftButton, Qt::LeftButton);
+    mouse(&window, QEvent::MouseMove, global + QPoint(40, 0), Qt::NoButton, Qt::LeftButton);
+    mouse(&window, QEvent::MouseMove, global, Qt::NoButton, Qt::LeftButton);
+    mouse(&window, QEvent::MouseButtonRelease, global, Qt::LeftButton, Qt::NoButton);
+    events(160);
+    check(!popup->isVisible(), "Out-and-back dragging must not open a chart");
+    hover(0);
+    events(60);
+    QEvent leave(QEvent::Leave);
+    QApplication::sendEvent(view->viewport(), &leave);
+    QApplication::sendEvent(&window, &leave);
+    events(160);
+    check(!popup->isVisible(), "Leaving the row before the delay must cancel the pending chart");
+    hover(0);
+    events(60);
+    click(0, Qt::LeftButton);
+    global = rowGlobal(0);
+    mouse(view->viewport(), QEvent::MouseButtonDblClick, global, Qt::LeftButton, Qt::LeftButton);
+    mouse(&window, QEvent::MouseButtonRelease, global, Qt::LeftButton, Qt::NoButton);
+    events(160);
+    check(!window.isVisible() && !popup->isVisible(),
+        "Double click must hide the window and cancel pending hover");
+    window.show();
+    events();
+    hover(0);
+    window.hide();
+    events(160);
+    check(!popup->isVisible(), "A pending hover must not resurrect a hidden window's chart");
+
+    window.show();
+    events();
+    hover(0);
+    cfg.timelineChartHoverDelayMs = 300;
+    window.applyConfig(cfg);
+    events(160);
+    check(!popup->isVisible(), "Changing settings must cancel hover started with an old delay");
+    hover(0);
+    events(160);
+    check(!popup->isVisible(), "Updated hover delay must take effect");
+    events(170);
+    check(popup->isVisible(), "Updated delay must eventually trigger intraday");
+    cfg.timelineChartEnabled = false;
+    window.applyConfig(cfg);
+    hover(0);
+    events(330);
+    click(0, Qt::RightButton);
+    check(!popup->isVisible(), "Disabling charts must suppress hover and right-click charts");
+    cfg.timelineChartEnabled = true;
+    cfg.timelineChartHoverDelayMs = 0;
+    window.applyConfig(cfg);
+    hover(0);
+    events();
+    check(popup->isVisible(), "A configured zero delay must trigger at the next event-loop iteration");
+    QWidget outside;
+    const QPoint outsidePoint = window.frameGeometry().united(popup->frameGeometry()).bottomRight() + QPoint(100, 100);
+    mouse(&outside, QEvent::MouseButtonPress, outsidePoint, Qt::LeftButton, Qt::LeftButton);
+    check(!popup->isVisible(), "An outside click must still dismiss the chart");
+    const auto dismissChart = [&]() {
+        const QPoint point = window.frameGeometry().united(popup->frameGeometry()).bottomRight() + QPoint(100, 100);
+        mouse(&outside, QEvent::MouseButtonPress, point, Qt::LeftButton, Qt::LeftButton);
+        check(!popup->isVisible(), "Expected chart dismissal between column scenarios");
+    };
+    auto* header = view->horizontalHeader();
+    header->moveSection(header->visualIndex(ColPrice), 0);
+    hover(0, ColName);
+    events();
+    check(!popup->isVisible(), "The previously first name column must stop triggering after reordering");
+    hover(0, ColPrice);
+    events();
+    check(popup->isVisible() && !daily->isVisible(), "The reordered price column must become the hover trigger");
+    dismissChart();
+    view->setColumnHidden(ColPrice, true);
+    check(firstColumn() == ColName, "Hidden leading sections must be skipped");
+    hover(0, ColName);
+    events();
+    check(popup->isVisible(), "The next visible column must trigger when the leading column is hidden");
+    dismissChart();
+    view->setColumnHidden(ColCode, false);
+    header->moveSection(header->visualIndex(ColCode), 0);
+    hover(0, ColName);
+    events();
+    check(!popup->isVisible(), "Only the newly shown code column may trigger when moved to the front");
+    hover(0, ColCode);
+    events();
+    check(popup->isVisible(), "A visible leading code column must trigger intraday");
+    dismissChart();
+    // Right-click remains valid on any visible column, including the name.
+    const QPoint namePoint = rowGlobal(1, ColName);
+    mouse(view->viewport(), QEvent::MouseButtonPress, namePoint, Qt::RightButton, Qt::RightButton);
+    mouse(view->viewport(), QEvent::MouseButtonRelease, namePoint, Qt::RightButton, Qt::NoButton);
+    events();
+    check(popup->isVisible() && daily->isVisible(), "Right-click daily mode must not be restricted to the first column");
+    QApplication::setStartDragTime(oldDragTime);
 }
 
 class AppControllerStartupTest {
@@ -113,6 +341,10 @@ public:
         {
             SettingsDialog dialog(cfg, {{"1.600519", "Stock"}, {"1.510300", "ETF"}},
                 {{"1.000001", "Legacy index"}}, {}, yaml, {});
+            auto* hoverDelay = dialog.findChild<QSpinBox*>("timelineChartHoverDelaySpin");
+            check(hoverDelay && hoverDelay->value() == 500, "Hover delay editor must default to 500ms");
+            hoverDelay->setValue(800);
+            check(dialog.config().timelineChartHoverDelayMs == 800, "Hover delay editor must update configuration");
             auto* dailyDays = dialog.findChild<QSpinBox*>("dailyKlineDaysSpin");
             check(dailyDays && dailyDays->value() == 60, "Daily range setting must default to 60");
             dailyDays->setValue(120);
@@ -232,6 +464,9 @@ public:
             events();
             check(controller.m_splash->isVisible() && !controller.m_timer->isActive(),
                 "Reload must display splash and suspend polling");
+            check(controller.m_splash->geometry() == StartupSplash::placement(controller.m_splash->size(),
+                QGuiApplication::primaryScreen()->availableGeometry()),
+                "Reload splash must use the screen corner instead of covering the floating window");
             check(controller.m_window->isVisible() && !controller.m_window->isEnabled(),
                 "Reload must retain the visible floating window underneath splash");
             check(quoteRequests == beforeReload, "Reload must not request quotations before route confirmation");
@@ -310,6 +545,10 @@ int main(int argc, char** argv) {
     QStandardPaths::setTestModeEnabled(true);
     QCoreApplication::setOrganizationName("myStocksTests");
     QCoreApplication::setApplicationName("startupTest-" + QUuid::createUuid().toString(QUuid::WithoutBraces));
+    if (app.arguments().contains("--stock-chart-clicks")) {
+        checkStockChartClicks();
+        return 0;
+    }
     AppControllerStartupTest::run();
     return 0;
 }
