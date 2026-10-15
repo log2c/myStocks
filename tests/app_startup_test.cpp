@@ -9,9 +9,12 @@
 #include "settings_dialog.h"
 #include <QComboBox>
 #include <QListWidget>
+#include <QScrollBar>
+#include <QWheelEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QTableView>
+#include <QTableWidget>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
@@ -33,6 +36,7 @@
 #include <QTcpSocket>
 #include <QUuid>
 #include <functional>
+#include <cmath>
 
 namespace {
 void check(bool condition, const char* message) {
@@ -331,6 +335,109 @@ void checkStockChartClicks() {
     QApplication::setStartDragTime(oldDragTime);
 }
 
+void checkBreadthHeaderClick() {
+    const int oldDragTime = QApplication::startDragTime();
+    QApplication::setStartDragTime(120);
+    QTcpServer proxy;
+    check(proxy.listen(QHostAddress::LocalHost), "Could not create an isolated overview proxy");
+    AppConfig cfg;
+    cfg.marketBreadthEnabled = true;
+    cfg.hotRankEnabled = false;
+    cfg.timelineChartEnabled = false; // Opening overview must not depend on chart settings.
+    cfg.hoverReadingEnabled = false;
+    cfg.mousePassthroughEnabled = false;
+    cfg.proxyType = "http";
+    cfg.proxyHost = "127.0.0.1";
+    cfg.proxyPort = proxy.serverPort();
+    QuoteModel model;
+    model.setConfig(cfg);
+    model.setStocks({{"1.600519", "Stock"}});
+    MarketBreadthSnapshot snapshot;
+    snapshot.upCount = 3000;
+    snapshot.flatCount = 100;
+    snapshot.downCount = 2000;
+    snapshot.breadthValid = true;
+    model.setMarketBreadthSnapshot(snapshot);
+    FloatingWindow window(&model);
+    window.applyConfig(cfg);
+    window.move(60, 60);
+    window.show();
+    events();
+    QTableView* topTable = nullptr;
+    for (auto* view : window.findChildren<QTableView*>()) {
+        if (view->isVisible() && !view->isRowHidden(0)) topTable = view;
+    }
+    check(topTable && model.rowKind(0) == QuoteModel::RowKindMarketBreadth,
+        "Expected the market breadth counts in the floating window's top table");
+    MarketBreadthDetailWindow* market = nullptr;
+    for (auto* top : QApplication::topLevelWidgets()) {
+        if (auto* candidate = dynamic_cast<MarketBreadthDetailWindow*>(top)) market = candidate;
+    }
+    check(market && !market->isVisible(), "Market overview must start hidden");
+    int column = 0;
+    while (column < ColCount && topTable->isColumnHidden(column)) ++column;
+    const auto breadthPoint = [&](int quarter) {
+        const QRect row = topTable->visualRect(model.index(0, column));
+        return topTable->viewport()->mapToGlobal(QPoint(row.left() + row.width() * quarter / 4, row.center().y()));
+    };
+    const auto mouse = [](QWidget* target, QEvent::Type type, const QPoint& global,
+                          Qt::MouseButton button, Qt::MouseButtons buttons) {
+        QMouseEvent event(type, QPointF(target->mapFromGlobal(global)), QPointF(global), button, buttons, Qt::NoModifier);
+        QApplication::sendEvent(target, &event);
+    };
+    const auto click = [&](int quarter, bool releaseOnViewport = false, Qt::MouseButton button = Qt::LeftButton) {
+        const QPoint global = breadthPoint(quarter);
+        mouse(topTable->viewport(), QEvent::MouseButtonPress, global, button, button);
+        mouse(releaseOnViewport ? topTable->viewport() : static_cast<QWidget*>(&window),
+            QEvent::MouseButtonRelease, global, button, Qt::NoButton);
+        events();
+    };
+    click(1);
+    check(market->isVisible() && market->isPinnedFromTray(),
+        "Single-clicking rise counts must open an independent market overview");
+    QEvent leave(QEvent::Leave);
+    QApplication::sendEvent(&window, &leave);
+    check(market->isVisible(), "The opened overview must remain visible when the cursor leaves the floating window");
+    market->move(market->pos() + QPoint(12, 8));
+    const QRect positioned = market->geometry();
+    click(3, true);
+    check(market->isVisible() && market->geometry() == positioned,
+        "Clicking fall counts while overview is visible must activate it without toggling or repositioning it");
+    market->showMinimized();
+    events();
+    click(1);
+    check(market->isVisible() && !market->isMinimized(), "Clicking counts must restore a minimized overview");
+    window.toggleMarketBreadthDetailPopupFromTray();
+    check(!market->isVisible(), "The existing tray entry must retain its toggle behavior");
+    click(3);
+    check(market->isVisible(), "Clicking counts must reopen a closed overview");
+    market->hidePopup();
+    click(1, true, Qt::RightButton);
+    check(!market->isVisible(), "Right-clicking breadth counts must not open overview");
+    const QPoint first = breadthPoint(1);
+    mouse(topTable->viewport(), QEvent::MouseButtonPress, first, Qt::LeftButton, Qt::LeftButton);
+    events(150);
+    mouse(&window, QEvent::MouseButtonRelease, first, Qt::LeftButton, Qt::NoButton);
+    check(!market->isVisible(), "A long press on the floating window must not be treated as an overview click");
+    mouse(topTable->viewport(), QEvent::MouseButtonPress, first, Qt::LeftButton, Qt::LeftButton);
+    mouse(&window, QEvent::MouseMove, first + QPoint(40, 0), Qt::NoButton, Qt::LeftButton);
+    mouse(&window, QEvent::MouseMove, first, Qt::NoButton, Qt::LeftButton);
+    mouse(&window, QEvent::MouseButtonRelease, first, Qt::LeftButton, Qt::NoButton);
+    check(!market->isVisible(), "Dragging the floating window out and back must not open overview");
+    window.setLoading(true);
+    click(1);
+    check(!market->isVisible(), "Loading must prevent overview activation");
+    window.setLoading(false);
+    cfg.marketBreadthEnabled = false;
+    model.setConfig(cfg);
+    window.applyConfig(cfg);
+    window.toggleMarketBreadthDetailPopupFromTray();
+    check(market->isVisible(), "The existing tray entry must remain usable when floating breadth counts are disabled");
+    window.toggleMarketBreadthDetailPopupFromTray();
+    window.hide();
+    QApplication::setStartDragTime(oldDragTime);
+}
+
 void checkBreadthTimelineAfterClose() {
     QTcpServer turnoverProxy;
     check(turnoverProxy.listen(QHostAddress::LocalHost), "Could not start stalled turnover fixture");
@@ -374,6 +481,198 @@ void checkBreadthTimelineAfterClose() {
         "Turnover failure must preserve the gotdx breadth history");
     breadthFixture = {};
 }
+
+class LimitPoolTabsTest {
+public:
+    static void run() {
+        const int oldDragTime = QApplication::startDragTime();
+        QApplication::setStartDragTime(120);
+        QTcpServer proxy;
+        check(proxy.listen(QHostAddress::LocalHost), "Could not create an isolated pool proxy");
+        AppConfig cfg;
+        cfg.proxyType = "http";
+        cfg.proxyHost = "127.0.0.1";
+        cfg.proxyPort = proxy.serverPort();
+        cfg.upColor = QColor("#e14343");
+        cfg.downColor = QColor("#25ba71");
+        MarketBreadthDetailWindow market;
+        market.applyConfig(cfg);
+        market.setLanguage("zh_CN");
+        market.setAttribute(Qt::WA_TransparentForMouseEvents, false);
+        market.show();
+        market.grab();
+        check(market.m_breadthLimitPoolTabRect.isValid()
+            && !market.m_breadthDistributionTabRect.intersects(market.m_breadthLimitPoolTabRect),
+            "The combined pool must have one tab alongside trend and distribution");
+        const auto mouse = [](QWidget* target, QEvent::Type type, QPoint pos,
+                              Qt::MouseButton button, Qt::MouseButtons buttons) {
+            QMouseEvent event(type, QPointF(pos), QPointF(target->mapToGlobal(pos)), button, buttons, Qt::NoModifier);
+            QApplication::sendEvent(target, &event);
+        };
+        const auto tabClick = [&](const QRect& rect) {
+            const QPoint center = rect.center();
+            mouse(&market, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
+            mouse(&market, QEvent::MouseButtonRelease, center, Qt::LeftButton, Qt::NoButton);
+            market.grab();
+        };
+        const QDate tradeDate = QDate::currentDate();
+        LimitPoolSnapshot up;
+        up.tradeDate = tradeDate;
+        up.stocks = {{"002134", "天津普林", 10.0158}, {"002889", "东方嘉盛", 10.0}, {"920002", "北交股票", 0.0}};
+        for (int i = 3; i < 60; ++i) up.stocks.append(LimitPoolStock{"600519", "贵州茅台", i == 59 ? qQNaN() : 10.0});
+        const LimitPoolSnapshot down {tradeDate, {{"002647", "仁东控股", -10.041}, {"600693", "东百集团", -10.0082}}};
+        tabClick(market.m_breadthLimitPoolTabRect);
+        check(market.m_breadthChartTabMode == MarketBreadthDetailWindow::BreadthChartTabMode::LimitPool
+            && market.m_limitPoolLoading[0] && market.m_limitPoolLoading[1],
+            "The merged tab must load both pools together");
+        market.m_limitPoolProvider->dataReady(false, up);
+        market.m_limitPoolProvider->dataReady(true, down);
+        market.grab();
+        auto* table = market.findChild<QTableWidget*>("limitPoolTable");
+        check(table && table->isVisible() && table->columnCount() == 2 && table->rowCount() == 60,
+            "The pool must render as one scrollable two-column table");
+        check(!table->horizontalHeader()->isVisible(), "The pool table must not display a header row");
+        for (int column = 0; column < 2; ++column) {
+            const auto& stocks = column == 0 ? up.stocks : down.stocks;
+            for (int row = 0; row < stocks.size(); ++row) {
+                const auto* item = table->item(row, column);
+                check(item && item->text() == stocks[row].name
+                    && item->textAlignment() == (Qt::AlignLeft | Qt::AlignVCenter)
+                    && item->foreground().color() == QColor(Qt::white)
+                    && item->toolTip().isEmpty(),
+                    "Names must remain left-aligned white text with no date tooltip");
+                const double rate = stocks[row].changeRate;
+                const QColor expectedColor = !std::isfinite(rate) ? cfg.textColor
+                    : rate > 0 ? cfg.upColor : rate < 0 ? cfg.downColor : cfg.flatColor;
+                check(item->data(Qt::UserRole + 2).value<QColor>() == expectedColor,
+                    "The percentage color must follow its sign, independent of the pool column");
+            }
+        }
+        check(!table->item(3, 1), "A shorter pool must leave the remaining cells empty");
+        check(table->item(0, 0)->data(Qt::UserRole + 1).toString() == "+10.02%"
+            && table->item(0, 1)->data(Qt::UserRole + 1).toString() == "-10.04%"
+            && table->item(2, 0)->data(Qt::UserRole + 1).toString() == "0.00%"
+            && table->item(59, 0)->data(Qt::UserRole + 1).toString() == "--",
+            "Percentages must use two decimal places without scaling, preserving zero and missing values");
+        check(table->toolTip().isEmpty() && table->horizontalHeaderItem(0)->toolTip().isEmpty()
+            && table->horizontalHeaderItem(1)->toolTip().isEmpty(), "Date tooltips must be removed from the table and headers");
+        const QImage rendered = table->viewport()->grab().toImage();
+        const auto hasColor = [&](QRect rect, const QColor& color) {
+            rect = rect.intersected(rendered.rect());
+            for (int y = rect.top(); y <= rect.bottom(); ++y) {
+                for (int x = rect.left(); x <= rect.right(); ++x) {
+                    const QColor pixel = rendered.pixelColor(x, y);
+                    if (qAbs(pixel.red() - color.red()) < 24 && qAbs(pixel.green() - color.green()) < 24
+                        && qAbs(pixel.blue() - color.blue()) < 24) return true;
+                }
+            }
+            return false;
+        };
+        for (int column = 0; column < 2; ++column) {
+            QRect name = table->visualRect(table->model()->index(0, column));
+            QRect rate = name;
+            name.setRight(name.center().x());
+            rate.setLeft(rate.center().x());
+            check(hasColor(name, QColor(Qt::white)) && hasColor(rate, column == 0 ? cfg.upColor : cfg.downColor),
+                "Rendered cells must place white names on the left and colored percentages on the right");
+        }
+        const auto cellPosition = [&](int row, int column) {
+            return table->visualRect(table->model()->index(row, column)).center();
+        };
+        const auto cellClick = [&](int row, int column, Qt::MouseButton button) {
+            const QPoint pos = cellPosition(row, column);
+            mouse(table->viewport(), QEvent::MouseButtonPress, pos, button, button);
+            mouse(table->viewport(), QEvent::MouseButtonRelease, pos, button, Qt::NoButton);
+            events();
+        };
+        cellClick(0, 0, Qt::LeftButton);
+        QWidget* popup = nullptr;
+        for (auto* top : QApplication::topLevelWidgets()) {
+            if (top->isVisible() && top->findChild<QWidget*>("dailyKlineChart")) popup = top;
+        }
+        check(popup && !popup->findChild<QWidget*>("dailyKlineChart")->isVisible()
+            && lastTimelinePayload.value("code").toString() == "0.002134",
+            "Single-clicking a limit-up stock must open its intraday chart");
+        cellClick(0, 1, Qt::LeftButton);
+        check(lastTimelinePayload.value("code").toString() == "0.002647",
+            "Single-clicking a limit-down stock must open its intraday chart");
+        cellClick(0, 0, Qt::RightButton);
+        check(popup->findChild<QWidget*>("dailyKlineChart")->isVisible()
+            && lastKlinePayload.value("code").toString() == "0.002134"
+            && lastKlinePayload.value("period").toInt() == 4,
+            "Right-clicking a limit-up stock must open its daily candles");
+        cellClick(1, 1, Qt::RightButton);
+        check(lastKlinePayload.value("code").toString() == "1.600693",
+            "Right-clicking another pool/row must select that exact stock");
+        events(80);
+        check(popup->findChild<QWidget*>("dailyKlineChart")->isVisible(),
+            "Pool daily candles must remain visible without holding Ctrl");
+        cellClick(2, 0, Qt::LeftButton);
+        check(!popup->findChild<QWidget*>("dailyKlineChart")->isVisible()
+            && lastTimelinePayload.value("code").toString() == "tdx:main:2:920002",
+            "Beijing stocks must map to the correct market and switch daily back to intraday");
+        const int beforeMisclick = timelineRequests + klineRequests;
+        cellClick(3, 1, Qt::LeftButton);
+        cellClick(3, 1, Qt::RightButton);
+        const QPoint first = cellPosition(0, 0), second = cellPosition(0, 1);
+        mouse(table->viewport(), QEvent::MouseButtonPress, first, Qt::RightButton, Qt::RightButton);
+        mouse(table->viewport(), QEvent::MouseButtonRelease, second, Qt::RightButton, Qt::NoButton);
+        mouse(table->viewport(), QEvent::MouseButtonPress, first, Qt::LeftButton, Qt::LeftButton);
+        mouse(table->viewport(), QEvent::MouseMove, first + QPoint(40, 0), Qt::NoButton, Qt::LeftButton);
+        mouse(table->viewport(), QEvent::MouseMove, first, Qt::NoButton, Qt::LeftButton);
+        mouse(table->viewport(), QEvent::MouseButtonRelease, first, Qt::LeftButton, Qt::NoButton);
+        mouse(table->viewport(), QEvent::MouseButtonPress, first, Qt::RightButton, Qt::RightButton);
+        events(150);
+        mouse(table->viewport(), QEvent::MouseButtonRelease, first, Qt::RightButton, Qt::NoButton);
+        check(timelineRequests + klineRequests == beforeMisclick,
+            "Blank cells, releases on another cell, drags and long presses must not open charts");
+        mouse(table->viewport(), QEvent::MouseButtonPress, first, Qt::RightButton, Qt::RightButton);
+        up.stocks[0] = {"600036", "招商银行", 10.0};
+        market.m_limitPoolProvider->dataReady(false, up);
+        mouse(table->viewport(), QEvent::MouseButtonRelease, first, Qt::RightButton, Qt::NoButton);
+        check(timelineRequests + klineRequests == beforeMisclick,
+            "An async refresh replacing the pressed stock must cancel the chart click");
+        check(table->verticalScrollBar()->maximum() > 0, "Long pools must have a usable vertical scrollbar");
+        const QPoint wheelPosition = table->viewport()->rect().center();
+        QWheelEvent wheel(QPointF(wheelPosition), QPointF(table->viewport()->mapToGlobal(wheelPosition)),
+            QPoint(), QPoint(0, -120), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(table->viewport(), &wheel);
+        const int scroll = table->verticalScrollBar()->value();
+        check(scroll > 0 && !popup->isVisible(), "Scrolling must move both columns and dismiss the old chart anchor");
+        tabClick(market.m_breadthTrendTabRect);
+        check(!table->isVisible(), "The trend tab must hide the pool table");
+        tabClick(market.m_breadthLimitPoolTabRect);
+        check(table->isVisible() && table->verticalScrollBar()->value() == scroll,
+            "Switching breadth tabs must preserve the pool's scroll position");
+        table->verticalScrollBar()->setValue(0);
+        const QString screenshot = qEnvironmentVariable("MYSTOCKS_LIMIT_POOL_SCREENSHOT");
+        if (!screenshot.isEmpty()) check(market.grab().save(screenshot), "Could not save pool preview");
+        up.stocks[0].changeRate = -2.5;
+        market.m_limitPoolProvider->dataReady(false, up);
+        check(table->item(0, 0)->data(Qt::UserRole + 1).toString() == "-2.50%"
+            && table->item(0, 0)->data(Qt::UserRole + 2).value<QColor>() == cfg.downColor
+            && table->item(0, 0)->foreground().color() == QColor(Qt::white),
+            "A negative percentage in the up pool must use the down color while its name stays white");
+        auto positiveDown = down;
+        positiveDown.stocks[0].changeRate = 1.25;
+        market.m_limitPoolProvider->dataReady(true, positiveDown);
+        check(table->item(0, 1)->data(Qt::UserRole + 1).toString() == "+1.25%"
+            && table->item(0, 1)->data(Qt::UserRole + 2).value<QColor>() == cfg.upColor,
+            "A positive percentage in the down pool must use the up color");
+        market.m_limitPoolProvider->dataReady(false, {tradeDate, {}});
+        check(table->rowCount() == 2 && table->item(0, 0)->data(Qt::UserRole).toString().isEmpty()
+            && table->item(0, 1)->text() == "仁东控股", "An empty pool must clear its names without removing the other pool");
+        market.m_limitPoolProvider->error(true, "fixture error");
+        check(table->rowCount() == 1 && table->item(0, 1)->data(Qt::UserRole).toString().isEmpty(),
+            "Failed pool requests must not leave clickable stale names");
+        tabClick(market.m_breadthDistributionTabRect);
+        check(!table->isVisible()
+            && market.m_breadthChartTabMode == MarketBreadthDetailWindow::BreadthChartTabMode::Distribution,
+            "Existing distribution chart must remain available");
+        market.hide();
+        QApplication::setStartDragTime(oldDragTime);
+    }
+};
 
 class MarketBreadthConstituentInteractionTest {
 public:
@@ -790,6 +1089,14 @@ int main(int argc, char** argv) {
     QCoreApplication::setApplicationName("startupTest-" + QUuid::createUuid().toString(QUuid::WithoutBraces));
     if (app.arguments().contains("--stock-chart-clicks")) {
         checkStockChartClicks();
+        return 0;
+    }
+    if (app.arguments().contains("--limit-pool-tabs")) {
+        LimitPoolTabsTest::run();
+        return 0;
+    }
+    if (app.arguments().contains("--breadth-header-click")) {
+        checkBreadthHeaderClick();
         return 0;
     }
     if (app.arguments().contains("--breadth-timeline")) {

@@ -3288,10 +3288,15 @@ void FloatingWindow::cancelStockChartClick() {
 
 void FloatingWindow::beginStockChartClick(QTableView* view, QMouseEvent* event) {
     cancelStockChartClick();
-    if (!view || !shouldAllowMouseInteraction() || !canShowTimelinePopup()
+    if (!view || !isEnabled() || !isVisible() || !shouldAllowMouseInteraction()
         || (event->button() != Qt::LeftButton && event->button() != Qt::RightButton)) return;
     const auto index = view->indexAt(event->position().toPoint());
-    if (!index.isValid() || m_model->rowKind(index.row()) != QuoteModel::RowKindQuote) return;
+    if (!index.isValid()) return;
+    if (m_model->rowKind(index.row()) == QuoteModel::RowKindMarketBreadth) {
+        if (!m_cfg.marketBreadthEnabled || event->button() != Qt::LeftButton) return;
+    } else if (m_model->rowKind(index.row()) != QuoteModel::RowKindQuote || !canShowTimelinePopup()) {
+        return;
+    }
     m_stockPressIndex = index;
     m_stockPressView = view;
     m_stockPressGlobal = event->globalPosition().toPoint();
@@ -3308,10 +3313,12 @@ void FloatingWindow::finishStockChartClick(QMouseEvent* event) {
         && m_stockPressTime.elapsed() < QApplication::startDragTime()
         && (event->globalPosition().toPoint() - m_stockPressGlobal).manhattanLength() < QApplication::startDragDistance();
     cancelStockChartClick();
-    if (!click || !isVisible() || !shouldAllowMouseInteraction()) return;
+    if (!click || !isEnabled() || !isVisible() || !shouldAllowMouseInteraction()) return;
     const auto released = view->indexAt(view->viewport()->mapFromGlobal(event->globalPosition().toPoint()));
     if (!released.isValid() || released.row() != index.row()) return;
-    if (daily) {
+    if (m_model->rowKind(index.row()) == QuoteModel::RowKindMarketBreadth && !daily) {
+        showMarketBreadthDetailPopup();
+    } else if (daily) {
         showStockChart(index, view, true);
     }
 }
@@ -3337,22 +3344,31 @@ void FloatingWindow::hideTimelinePopup() {
 }
 
 void FloatingWindow::toggleMarketBreadthDetailPopupFromTray() {
-    if (!m_marketBreadthDetailPopup || !m_model) {
-        return;
-    }
-
+    if (!m_marketBreadthDetailPopup || !m_model) return;
     if (m_marketBreadthDetailPopup->isVisible()) {
         m_marketBreadthDetailPopup->hidePopup();
         return;
     }
+    showMarketBreadthDetailPopup();
+}
 
+void FloatingWindow::showMarketBreadthDetailPopup() {
+    if (!m_marketBreadthDetailPopup || !m_model) return;
+    hideTimelinePopup();
     m_marketBreadthDetailPopup->setLanguage(m_model->language());
-    m_marketBreadthDetailPopup->showCenteredForSnapshot(
-        m_model->marketBreadthSnapshot(),
-        m_model->hotSectors(),
-        m_model->hotConcepts(),
-        frameGeometry()
-    );
+    if (m_marketBreadthDetailPopup->isVisible() && !m_marketBreadthDetailPopup->isMinimized()) {
+        refreshMarketBreadthDetailPopup();
+    } else {
+        m_marketBreadthDetailPopup->showCenteredForSnapshot(
+            m_model->marketBreadthSnapshot(),
+            m_model->hotSectors(),
+            m_model->hotConcepts(),
+            frameGeometry()
+        );
+        if (m_marketBreadthDetailPopup->isMinimized()) m_marketBreadthDetailPopup->showNormal();
+    }
+    m_marketBreadthDetailPopup->raise();
+    m_marketBreadthDetailPopup->activateWindow();
 }
 
 QRect FloatingWindow::marketBreadthDetailPopupGeometry() const {

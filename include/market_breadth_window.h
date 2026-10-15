@@ -1,9 +1,11 @@
 #pragma once
 
 #include "types.h"
+#include "limit_pool_provider.h"
 
 #include <QElapsedTimer>
 #include <QRect>
+#include <QPersistentModelIndex>
 #include <QTimer>
 #include <QWidget>
 
@@ -16,6 +18,7 @@ class EastMoneyIndexQuoteProvider;
 class SharedTimelineChartPopup;
 class QResizeEvent;
 class QWheelEvent;
+class QTableWidget;
 
 class MarketBreadthDetailWindow : public QWidget {
 public:
@@ -62,6 +65,7 @@ protected:
 
 private:
     friend class MarketBreadthConstituentInteractionTest;
+    friend class LimitPoolTabsTest;
     enum class HotRankTabMode {
         Auto = 0,
         Sector = 1,
@@ -73,6 +77,7 @@ private:
     enum class BreadthChartTabMode {
         Distribution = 0,
         Trend = 1,
+        LimitPool = 2,
     };
 
     enum class HotRankSortField {
@@ -95,6 +100,11 @@ private:
     void ensureHotRankDetailWindow();
     void ensureIndexQuoteProvider();
     void ensureTimelinePopup();
+    void ensureLimitPoolProvider();
+    void requestLimitPoolData(bool forceRefresh = false);
+    void updateLimitPoolTable();
+    void resetLimitPoolChartPress();
+    void showTimelinePopupForLimitPoolCell(const QModelIndex& index, bool daily);
     int popupHotRankLimit(bool concept) const;
     void requestHotRankData(bool concept, bool forceRefresh = false);
     void requestStockHeatData(HotRankTabMode mode, bool forceRefresh = false);
@@ -145,6 +155,16 @@ private:
     QVector<IndexQuoteItem> m_indexQuotes;
     QString m_lastHotRankError;
     QString m_lastStockHeatError;
+    TonghuashunLimitPoolProvider* m_limitPoolProvider = nullptr;
+    QTableWidget* m_limitPoolTable = nullptr;
+    QPersistentModelIndex m_limitPoolPressIndex;
+    QString m_limitPoolPressCode;
+    Qt::MouseButton m_limitPoolPressButton = Qt::NoButton;
+    QPoint m_limitPoolPressGlobal;
+    QElapsedTimer m_limitPoolPressTime;
+    LimitPoolSnapshot m_limitPoolSnapshots[2];
+    bool m_limitPoolLoading[2] {false, false};
+    QString m_limitPoolErrors[2];
     HotRankTabMode m_hotRankTabMode = HotRankTabMode::Auto;
     BreadthChartTabMode m_breadthChartTabMode = BreadthChartTabMode::Trend;
     bool m_pinnedFromTray = false;
@@ -163,6 +183,7 @@ private:
     QRect m_hotRankListViewportRect;
     QRect m_breadthDistributionTabRect;
     QRect m_breadthTrendTabRect;
+    QRect m_breadthLimitPoolTabRect;
     bool m_closeButtonHovered = false;
     bool m_closeButtonPressed = false;
     bool m_refreshButtonHovered = false;
@@ -176,6 +197,7 @@ private:
     bool m_hotYearPctHeaderHovered = false;
     bool m_breadthDistributionTabHovered = false;
     bool m_breadthTrendTabHovered = false;
+    bool m_breadthLimitPoolTabHovered = false;
     int m_pressedHotTab = 0;
     int m_pressedHotHeader = 0;
     int m_hoveredHotRowIndex = -1;

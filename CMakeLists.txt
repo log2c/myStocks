@@ -175,6 +175,7 @@ set(MYSTOCKS_SOURCES
     src/network_utils.cpp
     src/quote_model.cpp
     src/quote_provider.cpp
+    src/limit_pool_provider.cpp
     src/settings_dialog.cpp
     src/settings_tdx.cpp
     src/tdx_bridge.cpp
@@ -199,6 +200,7 @@ set(MYSTOCKS_HEADERS
     include/network_utils.h
     include/quote_model.h
     include/quote_provider.h
+    include/limit_pool_provider.h
     include/settings_dialog.h
     include/tdx_bridge.h
     include/tdx_quote_provider.h
@@ -363,6 +365,13 @@ if(BUILD_TESTING)
     add_test(NAME timeline_volume COMMAND MyStocksTimelineVolumeTest)
     set_tests_properties(timeline_volume PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
+    qt_add_executable(MyStocksLimitPoolTest tests/limit_pool_provider_test.cpp
+        src/limit_pool_provider.cpp src/network_utils.cpp src/network_logger.cpp include/limit_pool_provider.h)
+    target_include_directories(MyStocksLimitPoolTest PRIVATE include)
+    target_link_libraries(MyStocksLimitPoolTest PRIVATE Qt6::Gui Qt6::Network)
+    mystocks_enable_agl_stub(MyStocksLimitPoolTest)
+    add_test(NAME limit_pool_provider COMMAND MyStocksLimitPoolTest)
+
     qt_add_executable(MyStocksQuoteModelTest
         tests/quote_model_test.cpp src/quote_model.cpp src/i18n.cpp src/watchlist_utils.cpp
         include/quote_model.h)
@@ -416,6 +425,10 @@ if(BUILD_TESTING)
     add_test(NAME stock_chart_clicks COMMAND MyStocksStartupFlowTest --stock-chart-clicks)
     set_tests_properties(stock_chart_clicks PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
     add_test(NAME startup_flow COMMAND MyStocksStartupFlowTest)
+    add_test(NAME limit_pool_tabs COMMAND MyStocksStartupFlowTest --limit-pool-tabs)
+    set_tests_properties(limit_pool_tabs PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+    add_test(NAME breadth_header_click COMMAND MyStocksStartupFlowTest --breadth-header-click)
+    set_tests_properties(breadth_header_click PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
     add_test(NAME breadth_timeline COMMAND MyStocksStartupFlowTest --breadth-timeline)
     set_tests_properties(breadth_timeline PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     set_tests_properties(startup_flow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)

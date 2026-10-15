@@ -79,6 +79,7 @@ private:
     void cancelStockChartClick();
     void showStockChart(const QPersistentModelIndex& index, QTableView* view, bool daily);
     void hideTimelinePopup();
+    void showMarketBreadthDetailPopup();
     void refreshMarketBreadthDetailPopup();
     void hideMarketBreadthDetailPopup();
     void enforceWindowLevel(bool activate = false);
