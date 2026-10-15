@@ -140,7 +140,7 @@ func marketBreadth(req request) (any, error) {
 	}
 	// 880001 covers the complete A-share market. These fields are counts for
 	// boards; on ordinary equities the same field bits encode orderbook sizes.
-	bitmap := gotdx.MACFieldBitmap(gotdx.MACFieldClose, gotdx.MACFieldAmount, gotdx.MACFieldUpCount, gotdx.MACFieldDownCount, gotdx.MACFieldLimitUpCount, gotdx.MACFieldLimitDownCount, gotdx.MACFieldServerUpdateDate, gotdx.MACFieldServerUpdateTime)
+	bitmap := gotdx.MACFieldBitmap(gotdx.MACFieldClose, gotdx.MACFieldUpCount, gotdx.MACFieldDownCount, gotdx.MACFieldLimitUpCount, gotdx.MACFieldLimitDownCount, gotdx.MACFieldServerUpdateDate, gotdx.MACFieldServerUpdateTime)
 	reply, err := client(false).MACSymbolQuotes([]uint8{1}, []string{"880001"}, bitmap)
 	if err != nil {
 		reset(false)
@@ -150,8 +150,8 @@ func marketBreadth(req request) (any, error) {
 		return nil, fmt.Errorf("TDX returned no market breadth")
 	}
 	v := reply.Stocks[0].Values
-	up, down, limitUp, limitDown, amount := field(v, "up_count"), field(v, "down_count"), field(v, "limit_up_count"), field(v, "limit_down_count"), field(v, "amount")
-	if up == nil || down == nil || limitUp == nil || limitDown == nil || amount == nil {
+	up, down, limitUp, limitDown := field(v, "up_count"), field(v, "down_count"), field(v, "limit_up_count"), field(v, "limit_down_count")
+	if up == nil || down == nil || limitUp == nil || limitDown == nil {
 		return nil, fmt.Errorf("TDX market summary lacks required fields")
 	}
 	// The membership total gives the universe size; no equity quotes are summed
@@ -176,7 +176,6 @@ func marketBreadth(req request) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("TDX returned invalid trading timestamp")
 	}
-	prev := previousTurnover(updated.Format("2006-01-02"))
 	now := updated.UnixMilli()
 	point := map[string]any{"timestampMs": now, "riseCount": int(*up), "fallCount": int(*down), "limitUpCount": int(*limitUp), "limitDownCount": int(*limitDown)}
 	day := updated.Format("2006-01-02")
@@ -192,10 +191,7 @@ func marketBreadth(req request) (any, error) {
 	if len(breadthHistory) > 500 {
 		breadthHistory = breadthHistory[len(breadthHistory)-500:]
 	}
-	result := map[string]any{"upCount": int(*up), "downCount": int(*down), "flatCount": flat, "limitUpCount": int(*limitUp), "limitDownCount": int(*limitDown), "lastUpdatedAtMs": now, "turnover": amount, "turnoverPre": prev, "distribution": distribution, "overviewTimeline": append([]map[string]any(nil), breadthHistory...)}
-	if prev != nil && *prev > 0 {
-		result["turnoverChange"] = number(*amount - *prev)
-	}
+	result := map[string]any{"upCount": int(*up), "downCount": int(*down), "flatCount": flat, "limitUpCount": int(*limitUp), "limitDownCount": int(*limitDown), "lastUpdatedAtMs": now, "distribution": distribution, "overviewTimeline": append([]map[string]any(nil), breadthHistory...)}
 	breadthCache = result
 	breadthExpires = time.Now().Add(30 * time.Second)
 	return result, nil
@@ -206,21 +202,6 @@ func chinaZone() *time.Location {
 		return time.FixedZone("CST", 8*3600)
 	}
 	return z
-}
-func previousTurnover(tradeDate string) *float64 {
-	// Previous full-day value for the same complete A-share index universe.
-	bars, err := client(false).MACSymbolBars(1, "880001", types.KLINE_TYPE_DAILY, 1, 0, 4, types.AdjustNone)
-	if err != nil {
-		return nil
-	}
-	today := tradeDate
-	sort.SliceStable(bars, func(i, j int) bool { return bars[i].DateTime.Before(bars[j].DateTime) })
-	for i := len(bars) - 1; i >= 0; i-- {
-		if bars[i].DateTime.Format("2006-01-02") < today && bars[i].Amount > 0 {
-			return number(bars[i].Amount)
-		}
-	}
-	return nil
 }
 func breadthDistribution() ([]map[string]any, error) {
 	bitmap := gotdx.MACFieldBitmap(gotdx.MACFieldClose, gotdx.MACFieldPreClose)

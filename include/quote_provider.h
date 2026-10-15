@@ -200,6 +200,7 @@ signals:
 
 private:
     void finalizeFetch(int token);
+    void fetchLegacyTurnover(const MarketBreadthSnapshot& snapshot, int generation);
 
     AppConfig m_cfg;
     int m_tdxGeneration = 0;

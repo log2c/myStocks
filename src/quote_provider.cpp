@@ -50,6 +50,14 @@ inline constexpr auto kAccept = "Accept";
 inline constexpr auto kOrigin = "Origin";
 inline constexpr auto kConnection = "Connection";
 inline constexpr auto kContentType = "Content-Type";
+inline constexpr auto kCacheControl = "Cache-Control";
+inline constexpr auto kPragma = "Pragma";
+inline constexpr auto kSecFetchDest = "Sec-Fetch-Dest";
+inline constexpr auto kSecFetchMode = "Sec-Fetch-Mode";
+inline constexpr auto kSecFetchSite = "Sec-Fetch-Site";
+inline constexpr auto kSecChUa = "sec-ch-ua";
+inline constexpr auto kSecChUaMobile = "sec-ch-ua-mobile";
+inline constexpr auto kSecChUaPlatform = "sec-ch-ua-platform";
 
 inline constexpr auto kEastMoneyReferer = "https://quote.eastmoney.com/";
 inline constexpr auto kTonghuashunOrigin = "https://52etf.site";
@@ -1707,6 +1715,19 @@ void applyTonghuashunCommonHeaders(QNetworkRequest* req, const QString& userAgen
     req->setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
 }
 
+void applyLegacyTurnoverHeaders(QNetworkRequest* req, const QString& userAgent) {
+    applyTonghuashunCommonHeaders(req, userAgent);
+    req->setRawHeader(headers::kCacheControl, "no-cache");
+    req->setRawHeader(headers::kPragma, "no-cache");
+    req->setRawHeader(headers::kSecFetchDest, "empty");
+    req->setRawHeader(headers::kSecFetchMode, "cors");
+    req->setRawHeader(headers::kSecFetchSite, "cross-site");
+    req->setRawHeader(headers::kSecChUa,
+        "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\"");
+    req->setRawHeader(headers::kSecChUaMobile, "?0");
+    req->setRawHeader(headers::kSecChUaPlatform, "\"macOS\"");
+}
+
 } // namespace
 
 void AshareMarketBreadthProvider::fetch(bool forceRefresh) {
@@ -1720,8 +1741,8 @@ void AshareMarketBreadthProvider::fetch(bool forceRefresh) {
         tdx_bridge::request(this, m_cfg, {{QStringLiteral("operation"), QStringLiteral("breadth")}, {QStringLiteral("force"), forceRefresh}},
             [this, generation](const QJsonObject& row, const QString& message) {
                 if (generation != m_tdxGeneration) return;
-                m_tdxPending = false;
                 if (!message.isEmpty()) {
+                    m_tdxPending = false;
                     m_cacheValid = false;
                     emit dataReady(MarketBreadthSnapshot{});
                     emit error(message);
@@ -1737,10 +1758,6 @@ void AshareMarketBreadthProvider::fetch(bool forceRefresh) {
                 snapshot.overviewValid = snapshot.breadthValid = snapshot.upCount >= 0
                     && snapshot.flatCount >= 0 && snapshot.downCount >= 0
                     && (qint64(snapshot.upCount) + snapshot.flatCount + snapshot.downCount) > 0;
-                snapshot.turnover = row.value(QStringLiteral("turnover")).toDouble(qQNaN());
-                snapshot.turnoverPre = row.value(QStringLiteral("turnoverPre")).toDouble(qQNaN());
-                snapshot.turnoverChange = row.value(QStringLiteral("turnoverChange")).toDouble(qQNaN());
-                snapshot.turnoverValid = std::isfinite(snapshot.turnover);
                 for (const auto& value : row.value(QStringLiteral("distribution")).toArray()) {
                     const auto point = value.toObject();
                     snapshot.distribution.push_back({point.value(QStringLiteral("bucket")).toString(), point.value(QStringLiteral("value")).toInt()});
@@ -1756,9 +1773,7 @@ void AshareMarketBreadthProvider::fetch(bool forceRefresh) {
                     item.limitDownCount = point.value(QStringLiteral("limitDownCount")).toInt(-1);
                     snapshot.overviewTimeline.push_back(item);
                 }
-                m_cachedSnapshot = snapshot; m_cacheValid = true;
-                m_cacheExpiresAtMs = QDateTime::currentMSecsSinceEpoch() + app_constants::kNetworkCacheTtlMs;
-                emit dataReady(snapshot);
+                fetchLegacyTurnover(snapshot, generation);
             });
         return;
     }
@@ -1926,7 +1941,7 @@ void AshareMarketBreadthProvider::fetch(bool forceRefresh) {
     QNetworkRequest turnoverReq(QUrl(QStringLiteral(
         "https://dq.10jqka.com.cn/fuyao/market_analysis_api/chart/v1/get_chart_data?chart_key=turnover_minute"
     )));
-    applyTonghuashunCommonHeaders(&turnoverReq, m_userAgent);
+    applyLegacyTurnoverHeaders(&turnoverReq, m_userAgent);
     const network_logger::RequestTrace turnoverTrace = network_logger::logRequestStart(
         QStringLiteral("market-turnover"),
         QStringLiteral("GET"),
@@ -1974,6 +1989,58 @@ void AshareMarketBreadthProvider::fetch(bool forceRefresh) {
         m_turnoverDone = true;
         finalizeFetch(token);
     });
+}
+
+void AshareMarketBreadthProvider::fetchLegacyTurnover(
+    const MarketBreadthSnapshot& breadthSnapshot,
+    int generation
+) {
+    if (generation != m_tdxGeneration) return;
+
+    m_nam.setProxy(m_proxy);
+    QNetworkRequest request(QUrl(QStringLiteral(
+        "https://dq.10jqka.com.cn/fuyao/market_analysis_api/chart/v1/get_chart_data?chart_key=turnover_minute"
+    )));
+    applyLegacyTurnoverHeaders(&request, m_userAgent);
+    const network_logger::RequestTrace trace = network_logger::logRequestStart(
+        QStringLiteral("market-turnover"), QStringLiteral("GET"), request, m_proxy);
+    m_turnoverReply = m_nam.get(request);
+    QNetworkReply* reply = m_turnoverReply;
+    connect(reply, &QNetworkReply::finished, this,
+        [this, reply, trace, breadthSnapshot, generation]() {
+            if (reply == m_turnoverReply) m_turnoverReply = nullptr;
+            const QString networkError = reply->error() == QNetworkReply::NoError
+                ? QString() : reply->errorString();
+            const QByteArray body = reply->readAll();
+            network_logger::logRequestFinish(trace, reply, body.size(), body);
+            reply->deleteLater();
+
+            if (generation != m_tdxGeneration) return;
+            m_tdxPending = false;
+
+            MarketBreadthSnapshot snapshot = breadthSnapshot;
+            QString errorMessage;
+            if (!networkError.isEmpty()) {
+                errorMessage = QStringLiteral("market turnover request failed: %1").arg(networkError);
+            } else {
+                errorMessage = parseMarketTurnoverPayload(body, &snapshot);
+            }
+            if (!errorMessage.isEmpty()) {
+                m_cacheValid = false;
+                emit dataReady(snapshot);
+                if (errorMessage != m_lastError) {
+                    emit error(errorMessage);
+                    m_lastError = errorMessage;
+                }
+                return;
+            }
+
+            m_lastError.clear();
+            m_cachedSnapshot = snapshot;
+            m_cacheValid = true;
+            m_cacheExpiresAtMs = QDateTime::currentMSecsSinceEpoch() + app_constants::kNetworkCacheTtlMs;
+            emit dataReady(snapshot);
+        });
 }
 
 void AshareMarketBreadthProvider::finalizeFetch(int token) {
