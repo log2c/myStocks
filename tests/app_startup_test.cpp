@@ -4,6 +4,7 @@
 #include "floating_window.h"
 #include "market_breadth_window.h"
 #include "quote_model.h"
+#include "quote_provider.h"
 #include "startup_splash.h"
 #include "settings_dialog.h"
 #include <QComboBox>
@@ -28,6 +29,8 @@
 #include <QTabWidget>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QUuid>
 #include <functional>
 
@@ -48,6 +51,7 @@ int klineRequests = 0;
 QJsonObject lastTimelinePayload;
 QJsonObject lastKlinePayload;
 bool constituentFixture = false;
+QJsonObject breadthFixture;
 int memberRequests = 0;
 struct PendingSearch {
     QPointer<QObject> context;
@@ -89,6 +93,7 @@ void request(QObject* context, const AppConfig& config, QJsonObject payload, Cal
     if (operation == "klines") { ++klineRequests; lastKlinePayload = payload; }
     if (operation == "quotes") ++quoteRequests;
     QJsonObject response{{"quotes", QJsonArray()}};
+    if (operation == "breadth" && !breadthFixture.isEmpty()) response = breadthFixture;
     if (constituentFixture && operation == "members") {
         ++memberRequests;
         response = {{"items", QJsonArray{
@@ -324,6 +329,50 @@ void checkStockChartClicks() {
     events();
     check(popup->isVisible() && daily->isVisible(), "Right-click daily mode must not be restricted to the first column");
     QApplication::setStartDragTime(oldDragTime);
+}
+
+void checkBreadthTimelineAfterClose() {
+    QTcpServer turnoverProxy;
+    check(turnoverProxy.listen(QHostAddress::LocalHost), "Could not start stalled turnover fixture");
+    AppConfig cfg;
+    cfg.proxyType = "http";
+    cfg.proxyHost = "127.0.0.1";
+    cfg.proxyPort = turnoverProxy.serverPort();
+    const QDateTime open = QDateTime::fromString("2026-10-15T09:30:00+08:00", Qt::ISODate);
+    QJsonArray timeline;
+    for (int i = 0; i <= 240; ++i) {
+        const int minutes = i >= 120 ? i + 90 : i;
+        timeline.append(QJsonObject{{"timestampMs", open.addSecs(minutes * 60).toMSecsSinceEpoch()},
+            {"riseCount", 430}, {"fallCount", 5108}, {"limitUpCount", 36}, {"limitDownCount", 26}});
+    }
+    breadthFixture = {{"upCount", 430}, {"downCount", 5108}, {"flatCount", 62},
+        {"limitUpCount", 36}, {"limitDownCount", 26}, {"overviewTimeline", timeline},
+        {"lastUpdatedAtMs", open.addSecs(330 * 60).toMSecsSinceEpoch()}};
+    QVector<MarketBreadthSnapshot> snapshots;
+    AshareMarketBreadthProvider provider;
+    provider.applyConfig(cfg);
+    QObject::connect(&provider, &AshareMarketBreadthProvider::dataReady, &provider,
+        [&](const MarketBreadthSnapshot& snapshot) { snapshots.push_back(snapshot); });
+    provider.fetch(true);
+    events(50);
+    check(!snapshots.isEmpty() && snapshots.first().overviewTimeline.size() == 241
+        && snapshots.first().breadthValid && !snapshots.first().turnoverValid,
+        "Cold startup must publish complete gotdx breadth history before turnover HTTP completes");
+    const auto& points = snapshots.first().overviewTimeline;
+    check(points.first().timestampMs == open.toMSecsSinceEpoch()
+        && points.last().timestampMs == open.addSecs(330 * 60).toMSecsSinceEpoch()
+        && points.last().limitUpCount == 36 && points.last().fallCount == 5108,
+        "Provider must retain all four series and the China-time closing endpoint");
+    // Finish the unrelated HTTP request with an error and keep the valid trend.
+    for (int i = 0; i < 20 && !turnoverProxy.hasPendingConnections(); ++i) events(10);
+    check(turnoverProxy.hasPendingConnections(), "Turnover fixture must intercept the HTTP proxy request");
+    auto* socket = turnoverProxy.nextPendingConnection();
+    socket->write("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    socket->disconnectFromHost();
+    for (int i = 0; i < 20 && snapshots.size() < 2; ++i) events(10);
+    check(snapshots.size() >= 2 && snapshots.last().overviewTimeline.size() == 241,
+        "Turnover failure must preserve the gotdx breadth history");
+    breadthFixture = {};
 }
 
 class MarketBreadthConstituentInteractionTest {
@@ -741,6 +790,10 @@ int main(int argc, char** argv) {
     QCoreApplication::setApplicationName("startupTest-" + QUuid::createUuid().toString(QUuid::WithoutBraces));
     if (app.arguments().contains("--stock-chart-clicks")) {
         checkStockChartClicks();
+        return 0;
+    }
+    if (app.arguments().contains("--breadth-timeline")) {
+        checkBreadthTimelineAfterClose();
         return 0;
     }
     if (app.arguments().contains("--constituent-chart-clicks")) {

@@ -1773,6 +1773,22 @@ void AshareMarketBreadthProvider::fetch(bool forceRefresh) {
                     item.limitDownCount = point.value(QStringLiteral("limitDownCount")).toInt(-1);
                     snapshot.overviewTimeline.push_back(item);
                 }
+                // Publish the gotdx history immediately; a slow turnover HTTP
+                // request must not delay the breadth chart, including after close.
+                MarketBreadthSnapshot immediateSnapshot = snapshot;
+                const auto chinaDate = [](qint64 ms) {
+                    return QDateTime::fromMSecsSinceEpoch(ms).toOffsetFromUtc(8 * 3600).date();
+                };
+                if (m_cachedSnapshot.turnoverValid
+                    && chinaDate(m_cachedSnapshot.lastUpdatedAtMs) == chinaDate(snapshot.lastUpdatedAtMs)) {
+                    immediateSnapshot.turnover = m_cachedSnapshot.turnover;
+                    immediateSnapshot.turnoverPre = m_cachedSnapshot.turnoverPre;
+                    immediateSnapshot.turnoverChange = m_cachedSnapshot.turnoverChange;
+                    immediateSnapshot.turnoverValid = true;
+                }
+                emit dataReady(immediateSnapshot);
+                const QString trendError = row.value(QStringLiteral("trendError")).toString();
+                if (!trendError.isEmpty()) qWarning() << "[MarketBreadth]" << trendError;
                 fetchLegacyTurnover(snapshot, generation);
             });
         return;

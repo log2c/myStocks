@@ -132,7 +132,6 @@ func members(req request) (any, error) {
 
 var breadthCache map[string]any
 var breadthExpires time.Time
-var breadthHistory []map[string]any
 
 func marketBreadth(req request) (any, error) {
 	if !req.Force && breadthCache != nil && time.Now().Before(breadthExpires) {
@@ -177,21 +176,14 @@ func marketBreadth(req request) (any, error) {
 		return nil, fmt.Errorf("TDX returned invalid trading timestamp")
 	}
 	now := updated.UnixMilli()
-	point := map[string]any{"timestampMs": now, "riseCount": int(*up), "fallCount": int(*down), "limitUpCount": int(*limitUp), "limitDownCount": int(*limitDown)}
-	day := updated.Format("2006-01-02")
-	if len(breadthHistory) > 0 && breadthHistory[0]["date"] != day {
-		breadthHistory = nil
+	timeline, trendErr := marketBreadthTimeline(updated, int(count.Total))
+	// The server keeps both series after the close; startup no longer needs
+	// a process-local history of snapshots to reconstruct the trading day.
+	timeline = appendBreadthClose(timeline, updated, int(*up), int(*down), int(*limitUp), int(*limitDown))
+	result := map[string]any{"upCount": int(*up), "downCount": int(*down), "flatCount": flat, "limitUpCount": int(*limitUp), "limitDownCount": int(*limitDown), "lastUpdatedAtMs": now, "distribution": distribution, "overviewTimeline": timeline}
+	if trendErr != nil {
+		result["trendError"] = trendErr.Error()
 	}
-	point["date"] = day
-	if len(breadthHistory) > 0 && breadthHistory[len(breadthHistory)-1]["timestampMs"] == now {
-		breadthHistory[len(breadthHistory)-1] = point
-	} else {
-		breadthHistory = append(breadthHistory, point)
-	}
-	if len(breadthHistory) > 500 {
-		breadthHistory = breadthHistory[len(breadthHistory)-500:]
-	}
-	result := map[string]any{"upCount": int(*up), "downCount": int(*down), "flatCount": flat, "limitUpCount": int(*limitUp), "limitDownCount": int(*limitDown), "lastUpdatedAtMs": now, "distribution": distribution, "overviewTimeline": append([]map[string]any(nil), breadthHistory...)}
 	breadthCache = result
 	breadthExpires = time.Now().Add(30 * time.Second)
 	return result, nil

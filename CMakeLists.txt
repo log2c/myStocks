@@ -416,6 +416,8 @@ if(BUILD_TESTING)
     add_test(NAME stock_chart_clicks COMMAND MyStocksStartupFlowTest --stock-chart-clicks)
     set_tests_properties(stock_chart_clicks PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
     add_test(NAME startup_flow COMMAND MyStocksStartupFlowTest)
+    add_test(NAME breadth_timeline COMMAND MyStocksStartupFlowTest --breadth-timeline)
+    set_tests_properties(breadth_timeline PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     set_tests_properties(startup_flow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 
     qt_add_executable(MyStocksNetworkInterfaceTest tests/network_interface_test.cpp

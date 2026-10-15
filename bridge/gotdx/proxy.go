@@ -268,6 +268,5 @@ func configureProxy(p proxyConfig) error {
 	catalogWarning = ""
 	boardLists = make(map[uint16][]proto.MACBoardListItem)
 	breadthCache = nil
-	breadthHistory = nil
 	return nil
 }
