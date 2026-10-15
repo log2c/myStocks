@@ -18,6 +18,7 @@ import (
 	"unsafe"
 
 	"github.com/bensema/gotdx"
+	"github.com/bensema/gotdx/proto"
 	"github.com/bensema/gotdx/types"
 )
 
@@ -276,9 +277,13 @@ func timeline(req request) (any, error) {
 		reset(s.extended)
 		return nil, err
 	}
+	return timelineResponse(req.Code, reply)
+}
+
+func timelineResponse(code string, reply *proto.MACTickChartsReply) (any, error) {
 	points := make([]point, 0)
 	if len(reply.Charts) == 0 {
-		return nil, fmt.Errorf("TDX returned no timeline for %s", req.Code)
+		return nil, fmt.Errorf("TDX returned no timeline for %s", code)
 	}
 	sort.SliceStable(reply.Charts, func(i, j int) bool { return reply.Charts[i].Date < reply.Charts[j].Date })
 	last := len(reply.Charts) - 1
@@ -286,7 +291,7 @@ func timeline(req request) (any, error) {
 		last--
 	}
 	if last < 0 {
-		return nil, fmt.Errorf("TDX returned an empty timeline for %s", req.Code)
+		return nil, fmt.Errorf("TDX returned an empty timeline for %s", code)
 	}
 	day := reply.Charts[last]
 	date := strings.ReplaceAll(day.Date, "-", "")
@@ -299,11 +304,16 @@ func timeline(req request) (any, error) {
 			avg = nil
 		}
 		if tick.Price > 0 {
-			points = append(points, point{Time: date + " " + tick.Time, Price: tick.Price, Avg: avg, Volume: float64(tick.Vol)})
+			// In 0x123E each minute volume occupies four little-endian
+			// bytes. The SDK exposes the low word as Vol and the high word
+			// as Unknown. Recombine them; these are already per-minute
+			// values, not cumulative totals or values scaled by VolUnit.
+			volume := uint32(tick.Vol) | uint32(tick.Unknown)<<16
+			points = append(points, point{Time: date + " " + tick.Time, Price: tick.Price, Avg: avg, Volume: float64(volume)})
 		}
 	}
 	if len(points) == 0 {
-		return nil, fmt.Errorf("TDX returned an empty timeline for %s", req.Code)
+		return nil, fmt.Errorf("TDX returned an empty timeline for %s", code)
 	}
 	return map[string]any{"points": points, "preClose": number(day.PreClose)}, nil
 }

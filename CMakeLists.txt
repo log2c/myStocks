@@ -346,6 +346,13 @@ install(TARGETS MyStocks
 include(CTest)
 include(cmake/Gotdx.cmake)
 if(BUILD_TESTING)
+    qt_add_executable(MyStocksTimelineVolumeTest tests/timeline_volume_test.cpp)
+    target_include_directories(MyStocksTimelineVolumeTest PRIVATE include)
+    target_link_libraries(MyStocksTimelineVolumeTest PRIVATE Qt6::Gui)
+    mystocks_enable_agl_stub(MyStocksTimelineVolumeTest)
+    add_test(NAME timeline_volume COMMAND MyStocksTimelineVolumeTest)
+    set_tests_properties(timeline_volume PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
     qt_add_executable(MyStocksQuoteModelTest
         tests/quote_model_test.cpp src/quote_model.cpp src/i18n.cpp src/watchlist_utils.cpp
         include/quote_model.h)

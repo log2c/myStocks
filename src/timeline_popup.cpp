@@ -4,6 +4,7 @@
 #include "i18n.h"
 #include "watchlist_utils.h"
 #include "tdx_bridge.h"
+#include "timeline_volume.h"
 
 #include <QDateTime>
 #include <QGuiApplication>
@@ -699,6 +700,24 @@ protected:
         if (plot.width() < 20 || plot.height() < 20) {
             return;
         }
+        const bool hasVolume = std::any_of(m_points.cbegin(), m_points.cend(), [](const TimelinePoint& point) {
+            return std::isfinite(point.volume) && point.volume > 0.0;
+        });
+        const int volumeGap = hasVolume ? 8 : 0;
+        const int volumeHeight = hasVolume ? qBound(38, plot.height() / 4, 64) : 0;
+        QRect volumePlot;
+        if (hasVolume) {
+            volumePlot = QRect(
+                plot.left(),
+                plot.bottom() - volumeHeight + 1,
+                plot.width(),
+                volumeHeight
+            );
+            plot.setBottom(volumePlot.top() - volumeGap);
+        }
+        if (plot.height() < 20) {
+            return;
+        }
 
         painter.setPen(QPen(m_cfg.timelineChartTextColor));
         if (!m_title.isEmpty()) {
@@ -955,7 +974,21 @@ protected:
                              QStringLiteral("%1%").arg(QString::number(pct, 'f', 2)));
         }
 
-        const int xLabelY = plot.bottom() + 8;
+        if (hasVolume) {
+            const auto volumeX = [&](int i) {
+                const TimelinePoint& point = m_points.at(i);
+                return (hasTradePeriodAxis && point.time.isValid())
+                    ? xOfTradePeriodTime(point.time)
+                    : (hasSessionAxis && point.time.isValid())
+                        ? xOfSessionTime(point.time.time())
+                        : xOfIndex(i);
+            };
+            timeline_volume::draw(painter, volumePlot,
+                QRect(r.left(), volumePlot.top(), leftMargin - 6, volumePlot.height()),
+                m_points, volumeX, baseline, m_cfg, m_resolvedLanguage.startsWith(QLatin1String("en")));
+        }
+
+        const int xLabelY = (hasVolume ? volumePlot.bottom() : plot.bottom()) + 8;
         const QDate firstDate = m_tradePeriods.isEmpty() ? QDate() : m_tradePeriods.first().begin.date();
         const auto tradePeriodTimeLabel = [&](const QDateTime& dt) {
             return (dt.date() == firstDate) ? dt.toString(QStringLiteral("H:mm")) : dt.toString(QStringLiteral("M/d H:mm"));
