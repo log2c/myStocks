@@ -470,7 +470,15 @@ void checkBreadthTimelineAfterClose() {
         && points.last().timestampMs == open.addSecs(330 * 60).toMSecsSinceEpoch()
         && points.last().limitUpCount == 36 && points.last().fallCount == 5108,
         "Provider must retain all four series and the China-time closing endpoint");
-    // Finish the unrelated HTTP request with an error and keep the valid trend.
+    MarketBreadthSnapshot forecastSnapshot;
+    forecastSnapshot.turnover = 699413400000.0;
+    forecastSnapshot.turnoverForecast = 1493278705303.773;
+    check(qAbs(market_breadth::estimateFullDayTurnover(forecastSnapshot) - forecastSnapshot.turnoverForecast) < 0.5,
+        "Turnover forecast must use the prediction supplied by the turnover endpoint");
+    forecastSnapshot.turnoverForecast = qQNaN();
+    check(qAbs(market_breadth::estimateFullDayTurnover(forecastSnapshot) - forecastSnapshot.turnover) < 0.5,
+        "Turnover forecast must fall back to current turnover without a timeline or endpoint prediction");
+    // Finish the unrelated HTTPS proxy request with an error and keep the valid trend.
     for (int i = 0; i < 20 && !turnoverProxy.hasPendingConnections(); ++i) events(10);
     check(turnoverProxy.hasPendingConnections(), "Turnover fixture must intercept the HTTP proxy request");
     auto* socket = turnoverProxy.nextPendingConnection();

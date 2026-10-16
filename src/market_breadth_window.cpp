@@ -103,7 +103,7 @@ QString formatChineseMarketAmount(double value) {
     return QStringLiteral("%1亿").arg(QString::number(yiValue, 'f', precision));
 }
 
-double estimateAshareFullDayTurnover(const MarketBreadthSnapshot& snapshot) {
+double estimateAshareFullDayTurnoverFallback(const MarketBreadthSnapshot& snapshot) {
     if (!std::isfinite(snapshot.turnover) || snapshot.turnover <= 0.0) {
         return qQNaN();
     }
@@ -408,6 +408,20 @@ QRect availableScreenRectForReference(const QRect& referenceRect) {
 }
 
 } // namespace
+
+double market_breadth::estimateFullDayTurnover(const MarketBreadthSnapshot& snapshot) {
+    if (!std::isfinite(snapshot.turnover) || snapshot.turnover <= 0.0) {
+        return qQNaN();
+    }
+
+    // The turnover endpoint supplies a volume-profile-based full-day forecast.
+    // Prefer it over a uniform time-based extrapolation when it is available.
+    if (std::isfinite(snapshot.turnoverForecast) && snapshot.turnoverForecast > 0.0) {
+        return qMax(snapshot.turnover, snapshot.turnoverForecast);
+    }
+
+    return estimateAshareFullDayTurnoverFallback(snapshot);
+}
 
 class HotRankConstituentDetailWindow : public QWidget {
 public:
@@ -3570,7 +3584,7 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
         }
 
         const QRect turnoverInner = turnoverSectionRect.adjusted(0, 13, 0, 0);
-        const double estimatedFullDay = estimateAshareFullDayTurnover(m_snapshot);
+        const double estimatedFullDay = market_breadth::estimateFullDayTurnover(m_snapshot);
         const QColor compareColor = marketBreadthTurnoverChangeColor(m_snapshot.turnoverChange, m_cfg);
         const QStringList turnoverLabels {
             i18n::t("popup.marketBreadth.turnoverToday", m_language),

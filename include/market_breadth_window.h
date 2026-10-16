@@ -20,6 +20,10 @@ class QResizeEvent;
 class QWheelEvent;
 class QTableWidget;
 
+namespace market_breadth {
+double estimateFullDayTurnover(const MarketBreadthSnapshot& snapshot);
+}
+
 class MarketBreadthDetailWindow : public QWidget {
 public:
     explicit MarketBreadthDetailWindow(QWidget* parent = nullptr);

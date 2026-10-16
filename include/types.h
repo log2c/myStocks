@@ -111,6 +111,7 @@ struct MarketBreadthSnapshot {
     double turnover = qQNaN();
     double turnoverPre = qQNaN();
     double turnoverChange = qQNaN();
+    double turnoverForecast = qQNaN();
     bool turnoverValid = false;
 };
 

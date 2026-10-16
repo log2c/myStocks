@@ -1690,6 +1690,8 @@ QString parseMarketTurnoverPayload(const QByteArray& body, MarketBreadthSnapshot
         } else if (key == QLatin1String("turnover_change")) {
             snapshot->turnoverChange = value;
             hasTurnoverChange = std::isfinite(value);
+        } else if (key == QLatin1String("predict_turnover")) {
+            snapshot->turnoverForecast = value;
         }
     }
 
