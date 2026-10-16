@@ -153,6 +153,9 @@ int main(int argc, char** argv) {
     check(ties.highIndex == 0 && ties.lowIndex == 0, "Repeated extrema must have deterministic markers");
     check(daily_kline::historyCount(800, {250}) == 1049 && daily_kline::historyCount(60, {}) == 60,
         "History request must include only the enabled MA warm-up");
+    check(std::abs(daily_kline::candleWidth(8.0) - 5.6) < 1e-8
+        && daily_kline::candleWidth(80.0) == 24.0,
+        "Sparse daily histories must use readable but bounded candle widths");
     samples[1].close = qQNaN();
     const auto missing = daily_kline::movingAverage(samples, 5);
     check(!std::isfinite(missing[4]) && std::isfinite(missing[6]),

@@ -25,6 +25,13 @@ inline int historyCount(int visibleDays, const QVector<int>& periods) {
     return qBound(1, visibleDays, 800) + (normalized.isEmpty() ? 0 : normalized.last() - 1);
 }
 
+// Keep sparse histories readable. A short post-listing history has a wide
+// slot when it is stretched across the chart; capping the candle width keeps
+// the candle and volume bars balanced without making regular charts bulky.
+inline double candleWidth(double slot) {
+    return qBound(1.0, slot * 0.7, 24.0);
+}
+
 // Full-period simple moving averages of closing prices. Missing history is
 // unavailable, never a shorter partial average that looks like a valid MA250.
 template<typename Bars>

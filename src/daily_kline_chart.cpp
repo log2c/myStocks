@@ -168,8 +168,9 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
     const QString language = i18n::resolveLanguage(m_cfg.language);
     const int visibleCount = qMin(m_cfg.dailyKlineDays, int(m_bars.size()));
     const int visibleStart = m_bars.size() - visibleCount;
+    const int titleCount = visibleCount > 0 ? visibleCount : m_cfg.dailyKlineDays;
     const QString title = (m_name.isEmpty() ? m_code : m_name + " " + m_code)
-        + " · " + i18n::t("popup.daily.title", language).arg(visibleCount > 0 ? visibleCount : m_cfg.dailyKlineDays);
+        + " · " + i18n::t("popup.daily.title", language).arg(titleCount).arg(m_cfg.dailyKlineDays);
     p.drawText(QRect(bounds.left(), bounds.top(), bounds.width(), 24), Qt::AlignLeft | Qt::AlignVCenter,
         p.fontMetrics().elidedText(title, Qt::ElideRight, bounds.width()));
     if (!m_status.isEmpty() || m_bars.isEmpty()) {
@@ -226,7 +227,7 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
     const auto y = [&](double value) { return price.bottom() - (value - lowest) / (highest - lowest) * (price.height() - 1); };
     const double slot = static_cast<double>(price.width()) / visibleCount;
     const auto x = [&](int i) { return price.left() + (i - visibleStart + 0.5) * slot; };
-    const double candleWidth = std::max(1.0, std::min(10.0, slot * 0.7));
+    const double candleWidth = daily_kline::candleWidth(slot);
     for (int i = 0; i <= 4; ++i) {
         const int yy = price.top() + (price.height() - 1) * i / 4;
         p.setPen(m_cfg.timelineChartTextColor);
