@@ -189,7 +189,16 @@ func resolve(code string) (symbol, error) {
 func quoteFromValues(code, name string, values map[string]any) quote {
 	q := quote{Code: code, Name: name, Price: field(values, "close"),
 		PreClose: field(values, "pre_close"), RiseSpeed: field(values, "speed_pct")}
-	if q.Price != nil && *q.Price == 0 {
+	// Mainland quotes may retain a nonzero last price while the server has
+	// already cleared today's open and volume. That retained price must not
+	// produce a fictitious daily change before the instrument starts trading.
+	open, volume := field(values, "open"), field(values, "vol")
+	unopened := false
+	if open != nil && *open == 0 && volume != nil && *volume == 0 {
+		s, err := resolve(code)
+		unopened = err == nil && !s.extended
+	}
+	if (q.Price != nil && *q.Price == 0) || unopened {
 		q.ResetData = true
 		q.Price = nil
 		q.RiseSpeed = nil
@@ -233,7 +242,7 @@ func quotes(req request) map[string]any {
 		for offset := 0; offset < len(codes); offset += 80 {
 			end := min(offset+80, len(codes))
 			reply, err := client(extended).MACSymbolQuotes(markets[offset:end], codes[offset:end],
-				gotdx.MACFieldBitmap(gotdx.MACFieldPreClose, gotdx.MACFieldClose, gotdx.MACFieldSpeedPct))
+				gotdx.MACFieldBitmap(gotdx.MACFieldPreClose, gotdx.MACFieldOpen, gotdx.MACFieldClose, gotdx.MACFieldVol, gotdx.MACFieldSpeedPct))
 			if err != nil {
 				reset(extended)
 				errors = append(errors, err.Error())

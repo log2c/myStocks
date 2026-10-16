@@ -71,17 +71,40 @@ func quotePeer(t *testing.T, reject bool) (string, *atomic.Int32) {
 					if len(payload) != 22+24*n {
 						return
 					}
-					body := make([]byte, 26+80*n)
+					// Match the requested dynamic fields, including close-only
+					// route probes and full quotes with opening state.
+					fields := make([]uint32, 0)
+					for bit := 0; bit < 160; bit++ {
+						if payload[bit/8]&(1<<uint(bit%8)) == 0 {
+							continue
+						}
+						var value uint32
+						switch bit {
+						case 0: // previous close
+							value = math.Float32bits(10)
+						case 1: // open
+							value = math.Float32bits(10.5)
+						case 4: // close
+							value = math.Float32bits(11)
+						case 5: // volume
+							value = 100
+						case 37: // rise speed
+							value = math.Float32bits(0.5)
+						}
+						fields = append(fields, value)
+					}
+					rowLength := 68 + 4*len(fields)
+					body := make([]byte, 26+rowLength*n)
 					copy(body[:20], payload[:20])
 					binary.LittleEndian.PutUint32(body[20:24], uint32(n))
 					binary.LittleEndian.PutUint16(body[24:26], uint16(n))
 					for i := 0; i < n; i++ {
-						row := body[26+i*80 : 26+(i+1)*80]
+						row := body[26+i*rowLength : 26+(i+1)*rowLength]
 						copy(row[:24], payload[22+i*24:22+(i+1)*24])
 						copy(row[24:68], "Fixture")
-						binary.LittleEndian.PutUint32(row[68:72], math.Float32bits(10))
-						binary.LittleEndian.PutUint32(row[72:76], math.Float32bits(11))
-						binary.LittleEndian.PutUint32(row[76:80], math.Float32bits(0.5))
+						for j, value := range fields {
+							binary.LittleEndian.PutUint32(row[68+4*j:72+4*j], value)
+						}
 					}
 					response := make([]byte, proto.MessageHeaderBytes)
 					copy(response[5:9], header[1:5])

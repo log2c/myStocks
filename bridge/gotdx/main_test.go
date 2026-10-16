@@ -165,3 +165,53 @@ func TestPreOpenQuoteUsesPreviousClose(t *testing.T) {
 		t.Fatal("live quotes must retain prices, changes and valid zero rise speed")
 	}
 }
+
+func TestUnopenedMainlandQuotesIgnoreRetainedPrices(t *testing.T) {
+	for _, code := range []string{"1.000001", "0.399001", "tdx:main:1:000001", "tdx:main:0:399006", "1.600519", "1.510300", "tdx:main:1:881319"} {
+		t.Run(code, func(t *testing.T) {
+			values := map[string]any{
+				"close": float32(18), "pre_close": float32(18.5),
+				"open": float32(0), "vol": uint32(0), "speed_pct": float32(-2),
+			}
+			q := quoteFromValues(code, "Unopened", values)
+			if !q.ResetData || q.Price == nil || *q.Price != 18.5 {
+				t.Fatalf("unopened quote must use previous close despite retained price: %+v", q)
+			}
+			if q.Pct != nil || q.Change != nil || q.RiseSpeed != nil {
+				t.Fatalf("unopened quote must hide retained intraday changes: %+v", q)
+			}
+			delete(values, "pre_close")
+			q = quoteFromValues(code, "Unopened", values)
+			if !q.ResetData || q.Price != nil || q.Pct != nil {
+				t.Fatal("unavailable previous close must not fall back to a retained price")
+			}
+		})
+	}
+}
+
+func TestOpeningStateDoesNotHideLiveQuotes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		code   string
+		values map[string]any
+	}{
+		{"opened with no volume", "1.000001", map[string]any{"open": float32(20), "vol": uint32(0)}},
+		{"auction traded", "1.600519", map[string]any{"open": float32(0), "vol": uint32(100)}},
+		{"missing open", "1.000001", map[string]any{"vol": uint32(0)}},
+		{"missing volume", "1.000001", map[string]any{"open": float32(0)}},
+		{"invalid open", "1.000001", map[string]any{"open": math.NaN(), "vol": uint32(0)}},
+		{"Hong Kong", "116.00700", map[string]any{"open": float32(0), "vol": uint32(0)}},
+		{"Hong Kong index", "tdx:ex:27:HSI", map[string]any{"open": float32(0), "vol": uint32(0)}},
+		{"futures", "114.AU0", map[string]any{"open": float32(0), "vol": uint32(0)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.values["close"] = float32(21)
+			tc.values["pre_close"] = float32(20)
+			tc.values["speed_pct"] = float32(0)
+			q := quoteFromValues(tc.code, "Live", tc.values)
+			if q.ResetData || q.Price == nil || *q.Price != 21 || q.Pct == nil || *q.Pct != 5 || q.Change == nil || *q.Change != 1 || q.RiseSpeed == nil || *q.RiseSpeed != 0 {
+				t.Fatalf("live or incomplete opening state must preserve the quote: %+v", q)
+			}
+		})
+	}
+}

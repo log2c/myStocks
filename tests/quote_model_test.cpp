@@ -68,6 +68,35 @@ int main(int argc, char** argv) {
     check(model.data(model.index(3, ColRiseSpeed), Qt::DisplayRole).toString().isEmpty(),
         "Index rows must not display rise speed");
 
+    // The bridge can detect an unopened index even when its retained price and
+    // percentage look like a real decline rather than a -100% reset sentinel.
+    indexQuote.resetData = true;
+    indexQuote.price = 3890.0;
+    indexQuote.preClose = 3900.0;
+    indexQuote.pct = -0.26;
+    indexQuote.change = -10.0;
+    model.updateQuotes({indexQuote});
+    check(model.data(model.index(3, ColPrice), Qt::DisplayRole).toString() == "3900.000",
+        "Unopened index must display the previous close instead of the retained price");
+    for (int column : {ColPrice, ColIndicator}) {
+        check(model.data(model.index(3, column), Qt::ForegroundRole).value<QColor>() == cfg.flatColor,
+            "Unopened index must not retain a green price or directional indicator");
+    }
+    for (int column : {ColPct, ColChange, ColIndicator, ColRiseSpeed}) {
+        check(model.data(model.index(3, column), Qt::DisplayRole).toString().isEmpty(),
+            "Unopened index must hide retained intraday changes");
+    }
+    check(!model.trayTooltipText().contains("-0.26%"),
+        "Tray tooltip must not show the unopened index's retained decline");
+    indexQuote.resetData = false;
+    indexQuote.price = 3910.0;
+    indexQuote.pct = 0.26;
+    indexQuote.change = 10.0;
+    model.updateQuotes({indexQuote});
+    check(model.data(model.index(3, ColPct), Qt::DisplayRole).toString() == "+0.26%"
+        && model.data(model.index(3, ColPrice), Qt::ForegroundRole).value<QColor>() == cfg.upColor,
+        "Index percentage and directional color must recover when trading starts");
+
     QVector<QuoteItem> preOpenReset;
     for (const QString& code : {"tdx:main:1:600519", "116.00700", "1.510300", "1.000001", "1.600519"}) {
         QuoteItem reset;
