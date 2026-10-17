@@ -87,6 +87,26 @@ protected:
     }
 };
 
+// QListView scrolls by blitting the already painted viewport and then repainting
+// only the strip its item layout says is newly exposed. Windows styles scroll per
+// item, so that strip is derived from the cached item geometry instead of the
+// scrollbar delta, and QWindowsBackingStore::scroll copies raw backing store
+// pixels. Whenever the two disagree, the copied pixels sit at the wrong offset
+// and the leftovers are visible as ghost rows. Repainting the whole viewport after
+// each scroll makes the result independent of that blit; macOS scrolls per pixel
+// and does not need it.
+class ItemListWidget : public QListWidget {
+public:
+    using QListWidget::QListWidget;
+protected:
+    void scrollContentsBy(int dx, int dy) override {
+        QListWidget::scrollContentsBy(dx, dy);
+#ifdef WIN32
+        viewport()->update();
+#endif
+    }
+};
+
 struct IndexPreset {
     QString code;
     QString name;
@@ -1835,7 +1855,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
     const QStringList names = i18n::columnNames(m_uiLanguage);
     const QVector<int> columnOrder = watchlist_utils::normalizedColumnOrder(m_cfg.columnOrder);
 
-    m_columnList = new QListWidget(w);
+    m_columnList = new ItemListWidget(w);
     m_columnList->setDragDropMode(QAbstractItemView::InternalMove);
     m_columnList->setDefaultDropAction(Qt::MoveAction);
     m_columnList->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -2435,7 +2455,7 @@ QWidget* SettingsDialog::buildStocksTab() {
     vbox->addWidget(m_stockSearchStatus);
 
     // --- Suggestion list (floating overlay, not in layout) ---
-    m_stockSuggestList = new QListWidget(this);
+    m_stockSuggestList = new ItemListWidget(this);
     m_stockSuggestList->setObjectName(QStringLiteral("stockSearchResults"));
     m_stockSuggestList->setMaximumHeight(160);
     m_stockSuggestList->setFrameShape(QFrame::StyledPanel);
@@ -2687,7 +2707,7 @@ QWidget* SettingsDialog::buildIndexSectorTab() {
     QLabel* indexHint = new QLabel(trText("settings.indexSector.indexHint"), indexGroup);
     indexHint->setWordWrap(true);
 
-    m_indexList = new QListWidget(indexGroup);
+    m_indexList = new ItemListWidget(indexGroup);
     m_indexList->setDragDropMode(QAbstractItemView::InternalMove);
     m_indexList->setDefaultDropAction(Qt::MoveAction);
     m_indexList->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -3054,7 +3074,7 @@ QWidget* SettingsDialog::buildGroupsTab() {
         mainRow->addLayout(leftVbox, 0);
         leftVbox->addWidget(new QLabel(trText("settings.group.list"), w));
 
-        m_groupList = new QListWidget(w);
+        m_groupList = new ItemListWidget(w);
         m_groupList->setMaximumWidth(180);
         m_groupList->setMinimumHeight(240);
         leftVbox->addWidget(m_groupList, 1);
@@ -3189,7 +3209,7 @@ QWidget* SettingsDialog::buildGroupsTab() {
             mhdr->addWidget(mUp); mhdr->addWidget(mDown);
             rightVbox->addLayout(mhdr);
 
-            m_groupMemberList = new QListWidget(w);
+            m_groupMemberList = new ItemListWidget(w);
             m_groupMemberList->setEnabled(false);
             m_groupMemberList->setMaximumHeight(130);
             rightVbox->addWidget(m_groupMemberList);
@@ -3227,7 +3247,7 @@ QWidget* SettingsDialog::buildGroupsTab() {
                 trText("settings.group.members")
                     + QStringLiteral(" (") + trText("settings.group.membersHint") + QStringLiteral(")"),
                 w));
-            m_groupStockList = new QListWidget(w);
+            m_groupStockList = new ItemListWidget(w);
             m_groupStockList->setEnabled(false);
             rightVbox->addWidget(m_groupStockList, 1);
             refreshGroupStockChoices();
