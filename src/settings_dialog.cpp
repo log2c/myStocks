@@ -5,6 +5,8 @@
 #include "i18n.h"
 #include "network_logger.h"
 #include "network_utils.h"
+#include "tdx_bridge.h"
+#include "daily_kline_indicators.h"
 #include "updater.h"
 #include "watchlist_utils.h"
 
@@ -70,6 +72,41 @@ protected:
     }
 };
 
+// Keep Return in the search field from activating the dialog's default button.
+class StockSearchEdit : public QLineEdit {
+public:
+    using QLineEdit::QLineEdit;
+protected:
+    void keyPressEvent(QKeyEvent* event) override {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            emit returnPressed();
+            event->accept();
+            return;
+        }
+        QLineEdit::keyPressEvent(event);
+    }
+};
+
+// QListView scrolls by blitting the already painted viewport and then repainting
+// only the strip its item layout says is newly exposed. Windows styles scroll per
+// item, so that strip is derived from the cached item geometry instead of the
+// scrollbar delta, and QWindowsBackingStore::scroll copies raw backing store
+// pixels. Whenever the two disagree, the copied pixels sit at the wrong offset
+// and the leftovers are visible as ghost rows. Repainting the whole viewport after
+// each scroll makes the result independent of that blit; macOS scrolls per pixel
+// and does not need it.
+class ItemListWidget : public QListWidget {
+public:
+    using QListWidget::QListWidget;
+protected:
+    void scrollContentsBy(int dx, int dy) override {
+        QListWidget::scrollContentsBy(dx, dy);
+#ifdef WIN32
+        viewport()->update();
+#endif
+    }
+};
+
 struct IndexPreset {
     QString code;
     QString name;
@@ -78,36 +115,39 @@ struct IndexPreset {
 
 const QVector<IndexPreset>& indexPresets() {
     static const QVector<IndexPreset> presets {
-        {QStringLiteral("1.000001"), QStringLiteral("上证指数"), QStringLiteral("沪市主板综合指数")},
-        {QStringLiteral("0.399001"), QStringLiteral("深证成指"), QStringLiteral("深市核心宽基指数")},
-        {QStringLiteral("0.399006"), QStringLiteral("创业板指"), QStringLiteral("创业板市场代表指数")},
-        {QStringLiteral("1.000688"), QStringLiteral("科创50"), QStringLiteral("科创板龙头 50 只")},
-        {QStringLiteral("1.000300"), QStringLiteral("沪深300"), QStringLiteral("沪深两市核心蓝筹")},
-        {QStringLiteral("1.000905"), QStringLiteral("中证500"), QStringLiteral("A股中盘代表指数")},
-        {QStringLiteral("100.HSI"), QStringLiteral("恒生指数"), QStringLiteral("港股大盘基准指数")},
-        {QStringLiteral("124.HSTECH"), QStringLiteral("恒生科技指数"), QStringLiteral("港股科技龙头指数")},
-        {QStringLiteral("100.XIN9"), QStringLiteral("富时中国A50"), QStringLiteral("离岸A50指数")},
+        {QStringLiteral("tdx:main:1:000001"), QStringLiteral("上证指数"), QStringLiteral("沪市主板综合指数")},
+        {QStringLiteral("tdx:main:0:399001"), QStringLiteral("深证成指"), QStringLiteral("深市核心宽基指数")},
+        {QStringLiteral("tdx:main:0:399006"), QStringLiteral("创业板指"), QStringLiteral("创业板市场代表指数")},
+        {QStringLiteral("1.000680"), QStringLiteral("科创综指"), QStringLiteral("科创板综合指数")},
+        {QStringLiteral("tdx:main:1:000300"), QStringLiteral("沪深300"), QStringLiteral("沪深两市核心蓝筹")},
+        {QStringLiteral("tdx:main:1:000905"), QStringLiteral("中证500"), QStringLiteral("A股中盘代表指数")},
+        {QStringLiteral("tdx:ex:27:HSI"), QStringLiteral("恒生指数"), QStringLiteral("港股大盘基准指数")},
+        {QStringLiteral("tdx:ex:27:HZ5017"), QStringLiteral("恒生科技指数"), QStringLiteral("港股科技龙头指数")},
     };
 
     return presets;
+}
+
+QString indexPresetKey(const QString& rawCode) {
+    const QString code = normalizeApiWatchCode(rawCode);
+    if (watchlist_utils::isTdxCode(code)) return watchCodeKey(code);
+    const QString market = code.section(QLatin1Char('.'), 0, 0);
+    const QString symbol = code.section(QLatin1Char('.'), 1);
+    if (market == QLatin1String("0") || market == QLatin1String("1")) {
+        return watchCodeKey(QStringLiteral("tdx:main:%1:%2").arg(market, symbol));
+    }
+    if (market == QLatin1String("100") || market == QLatin1String("124")) {
+        return watchCodeKey(QStringLiteral("tdx:ex:27:%1").arg(symbol == QLatin1String("HSTECH")
+            ? QStringLiteral("HZ5017") : symbol));
+    }
+    return watchCodeKey(code);
 }
 
 bool isPredefinedIndexCode(const QString& rawCode) {
     return watchlist_utils::isPredefinedIndexCode(rawCode);
 }
 
-namespace headers {
 
-inline constexpr auto kUserAgent = "User-Agent";
-inline constexpr auto kReferer = "Referer";
-inline constexpr auto kAccept = "Accept";
-inline constexpr auto kConnection = "Connection";
-inline constexpr auto kContentType = "Content-Type";
-
-inline constexpr auto kEastMoneyReferer = "https://quote.eastmoney.com/";
-inline constexpr auto kEastMoneyContentType = "application/json;charset=UTF-8";
-
-} // namespace headers
 
 inline constexpr int kStockSearchDebounceMs = 400;
 inline constexpr int kStockSearchMinLength = 2;
@@ -495,6 +535,7 @@ SettingsDialog::SettingsDialog(
     tabs->setDocumentMode(true);
     tabs->addTab(makeScrollableTab(buildGeneralTab(), tabs), trText("settings.tab.general"));
     tabs->addTab(makeScrollableTab(buildNetworkTab(), tabs), trText("settings.tab.network"));
+    tabs->addTab(makeScrollableTab(buildTdxTab(), tabs), trText("settings.tab.tdx"));
     tabs->addTab(makeScrollableTab(buildDisplayTab(), tabs), trText("settings.tab.display"));
     tabs->addTab(makeScrollableTab(buildStocksTab(), tabs), trText("settings.tab.data"));
     tabs->addTab(buildIndexSectorTab(), trText("settings.tab.indexSector"));
@@ -516,7 +557,16 @@ SettingsDialog::SettingsDialog(
         cancelBtn->setAutoDefault(false);
         cancelBtn->setDefault(false);
     }
-    connect(box, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(box, &QDialogButtonBox::accepted, this, [this]() {
+        for (int i = 0; i < 2; ++i) {
+            if (!m_tdxAutoSelect[i]->isChecked()
+                && !tdxServerAddresses(i == 1).contains(m_tdxServerSelection[i])) {
+                QMessageBox::warning(this, trText("settings.tab.tdx"), trText("settings.tdx.selectRequired"));
+                return;
+            }
+        }
+        accept();
+    });
     connect(box, &QDialogButtonBox::rejected, this, &QDialog::reject);
     root->addWidget(box);
 
@@ -544,7 +594,23 @@ AppConfig SettingsDialog::config() const {
         m_marketBreadthHotkeyEdit->keySequence()
     ).toString(QKeySequence::PortableText);
     out.startupShowFloatingWindow = m_startupShowFloatingWindowCheck->isChecked();
+    out.quoteSource = normalizeQuoteSource(m_quoteSourceCombo->currentData().toString());
+    out.tdxUserId = m_tdxUserIdEdit->text().trimmed();
+    out.tdxRememberToken = m_tdxRememberTokenCheck->isChecked();
+    out.tdxToken = m_tdxTokenEdit->text();
+    out.tdxMainAutoSelect = m_tdxAutoSelect[0]->isChecked();
+    out.tdxExAutoSelect = m_tdxAutoSelect[1]->isChecked();
+    out.tdxMainServer = m_tdxServerSelection[0];
+    out.tdxExServer = m_tdxServerSelection[1];
+    out.tdxMainServerPool = m_tdxServersLoading ? m_cfg.tdxMainServerPool : tdxServerAddresses(false);
+    out.tdxExServerPool = m_tdxServersLoading ? m_cfg.tdxExServerPool : tdxServerAddresses(true);
+    // Keep the default pool implicit so SDK updates can supply replacement nodes.
+    if (!m_tdxServersLoading) {
+        if (out.tdxMainServerPool == m_tdxBuiltinServerPools[0]) out.tdxMainServerPool.clear();
+        if (out.tdxExServerPool == m_tdxBuiltinServerPools[1]) out.tdxExServerPool.clear();
+    }
     out.userAgent = m_userAgentEdit->text().trimmed();
+    out.networkInterface = m_networkInterfaceCombo->currentData().toString();
     out.proxyType = m_proxyTypeCombo->currentData().toString();
     out.proxyHost = m_proxyHostEdit->text().trimmed();
     out.proxyPort = m_proxyPortSpin->value();
@@ -607,6 +673,13 @@ AppConfig SettingsDialog::config() const {
     out.timelineChartEnabled = m_timelineChartEnabledCheck
         ? m_timelineChartEnabledCheck->isChecked()
         : out.timelineChartEnabled;
+    out.dailyKlineDays = m_dailyKlineDaysSpin ? m_dailyKlineDaysSpin->value() : out.dailyKlineDays;
+    out.dailyKlineMAPeriods.clear();
+    for (auto it = m_dailyKlineMAChecks.cbegin(); it != m_dailyKlineMAChecks.cend(); ++it) {
+        if (it.value()->isChecked()) out.dailyKlineMAPeriods.append(it.key());
+    }
+    out.timelineChartHoverDelayMs = m_timelineChartHoverDelaySpin
+        ? m_timelineChartHoverDelaySpin->value() : out.timelineChartHoverDelayMs;
     out.timelineChartRefreshSecs = m_timelineChartRefreshSecsSpin
         ? qBound(10, m_timelineChartRefreshSecsSpin->value(), 3600)
         : out.timelineChartRefreshSecs;
@@ -806,7 +879,7 @@ void SettingsDialog::reloadDialogDataFromYaml() {
     QVector<StockItem> filteredStocks;
     filteredStocks.reserve(reloadedStocks.size());
     for (const StockItem& stock : reloadedStocks) {
-        if (!isPredefinedIndexCode(stock.code)) {
+        if (watchlist_utils::isTdxCompatibleCode(stock.code) && !isPredefinedIndexCode(stock.code)) {
             filteredStocks.push_back(stock);
         }
     }
@@ -1191,10 +1264,36 @@ QWidget* SettingsDialog::buildNetworkTab() {
     QFormLayout* form = new QFormLayout(w);
     applyCompactFormLayout(form);
 
+    m_quoteSourceCombo = new QComboBox(w);
+    m_quoteSourceCombo->addItem(trText("settings.quoteSource.tdx"), "tdx");
+    const int sourceIndex = m_quoteSourceCombo->findData(normalizeQuoteSource(m_cfg.quoteSource));
+    m_quoteSourceCombo->setCurrentIndex(sourceIndex < 0 ? 0 : sourceIndex);
+    connect(m_quoteSourceCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        ++m_stockSearchGeneration;
+        if (m_stockSearchReply) { m_stockSearchReply->abort(); m_stockSearchReply->deleteLater(); m_stockSearchReply = nullptr; }
+        if (m_stockSuggestList) { m_stockSuggestList->clear(); m_stockSuggestList->hide(); }
+    });
+
     m_userAgentEdit = new QLineEdit(m_cfg.userAgent, w);
     if (m_userAgentEdit->text().trimmed().isEmpty()) {
         m_userAgentEdit->setText(defaultChrome100UserAgent());
     }
+
+    m_networkInterfaceCombo = new QComboBox(w);
+    m_networkInterfaceCombo->setObjectName(QStringLiteral("networkInterfaceCombo"));
+    m_networkInterfaceCombo->addItem(trText("settings.network.interfaceAuto"), QString());
+    for (const auto& iface : network_utils::availableInterfaces()) {
+        m_networkInterfaceCombo->addItem(iface.label + (iface.up ? QString() : trText("settings.network.interfaceDown")), iface.id);
+    }
+    int interfaceIndex = m_networkInterfaceCombo->findData(m_cfg.networkInterface);
+    if (interfaceIndex < 0 && !m_cfg.networkInterface.isEmpty()) {
+        m_networkInterfaceCombo->addItem(trText("settings.network.interfaceMissing").arg(m_cfg.networkInterface), m_cfg.networkInterface);
+        interfaceIndex = m_networkInterfaceCombo->count() - 1;
+    }
+    m_networkInterfaceCombo->setCurrentIndex(qMax(0, interfaceIndex));
+    m_networkInterfaceCombo->setToolTip(trText("settings.network.interfaceHint"));
+    m_networkInterfaceCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_networkInterfaceCombo->setMinimumContentsLength(28);
 
     m_proxyTypeCombo = new QComboBox(w);
     m_proxyTypeCombo->addItem(trText("settings.proxy.none"), "none");
@@ -1218,6 +1317,8 @@ QWidget* SettingsDialog::buildNetworkTab() {
     m_proxyPasswordEdit = new QLineEdit(m_cfg.proxyPassword, w);
     m_proxyPasswordEdit->setEchoMode(QLineEdit::Password);
 
+    form->addRow(trText("settings.general.quoteSource"), m_quoteSourceCombo);
+    form->addRow(trText("settings.network.interface"), m_networkInterfaceCombo);
     form->addRow(trText("settings.general.userAgent"), m_userAgentEdit);
     form->addRow(trText("settings.general.proxyType"), m_proxyTypeCombo);
     form->addRow(trText("settings.general.proxyHost"), m_proxyHostEdit);
@@ -1570,6 +1671,16 @@ QWidget* SettingsDialog::buildDisplayTab() {
     applyNumericSpinBoxWidth(m_marketBreadthRefreshSecsSpin);
     timelineForm->addRow(trText("settings.display.marketBreadthRefresh"), m_marketBreadthRefreshSecsSpin);
 
+    m_timelineChartHoverDelaySpin = new QSpinBox(w);
+    m_timelineChartHoverDelaySpin->setObjectName(QStringLiteral("timelineChartHoverDelaySpin"));
+    m_timelineChartHoverDelaySpin->setRange(0, 10000);
+    m_timelineChartHoverDelaySpin->setSingleStep(100);
+    m_timelineChartHoverDelaySpin->setSuffix(trText("settings.display.timelineHoverDelaySuffix"));
+    m_timelineChartHoverDelaySpin->setValue(qBound(0, m_cfg.timelineChartHoverDelayMs, 10000));
+    m_timelineChartHoverDelaySpin->setToolTip(trText("settings.display.timelineHoverHint"));
+    applyNumericSpinBoxWidth(m_timelineChartHoverDelaySpin);
+    timelineForm->addRow(trText("settings.display.timelineHoverDelay"), m_timelineChartHoverDelaySpin);
+
     m_timelineChartRefreshSecsSpin = new QSpinBox(w);
     m_timelineChartRefreshSecsSpin->setRange(10, 3600);
     m_timelineChartRefreshSecsSpin->setSingleStep(1);
@@ -1577,6 +1688,32 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_timelineChartRefreshSecsSpin->setValue(qBound(10, m_cfg.timelineChartRefreshSecs, 3600));
     applyNumericSpinBoxWidth(m_timelineChartRefreshSecsSpin);
     timelineForm->addRow(trText("settings.display.timelineRefresh"), m_timelineChartRefreshSecsSpin);
+
+    m_dailyKlineDaysSpin = new QSpinBox(w);
+    m_dailyKlineDaysSpin->setObjectName(QStringLiteral("dailyKlineDaysSpin"));
+    m_dailyKlineDaysSpin->setRange(1, 800);
+    m_dailyKlineDaysSpin->setValue(qBound(1, m_cfg.dailyKlineDays, 800));
+    m_dailyKlineDaysSpin->setSuffix(trText("settings.display.dailyDaysSuffix"));
+    m_dailyKlineDaysSpin->setToolTip(trText("settings.display.dailyHint"));
+    applyNumericSpinBoxWidth(m_dailyKlineDaysSpin);
+    timelineForm->addRow(trText("settings.display.dailyDays"), m_dailyKlineDaysSpin);
+
+    QWidget* dailyMARow = new QWidget(w);
+    QGridLayout* dailyMALayout = new QGridLayout(dailyMARow);
+    dailyMALayout->setContentsMargins(0, 0, 0, 0);
+    int maIndex = 0;
+    for (int period : {5, 10, 20, 30, 60, 120, 250}) {
+        auto* check = new QCheckBox(QStringLiteral("MA%1").arg(period), dailyMARow);
+        check->setObjectName(QStringLiteral("dailyKlineMA%1Check").arg(period));
+        check->setChecked(m_cfg.dailyKlineMAPeriods.contains(period));
+        QPixmap swatch(12, 12);
+        swatch.fill(daily_kline::movingAverageColor(period));
+        check->setIcon(QIcon(swatch));
+        m_dailyKlineMAChecks.insert(period, check);
+        dailyMALayout->addWidget(check, maIndex / 4, maIndex % 4);
+        ++maIndex;
+    }
+    timelineForm->addRow(trText("settings.display.dailyMA"), dailyMARow);
 
     m_timelineChartFixedRangeCheck = new QCheckBox(trText("settings.display.timelineFixedRange"), w);
     m_timelineChartFixedRangeCheck->setChecked(m_cfg.timelineChartFixedRangeEnabled);
@@ -1652,14 +1789,17 @@ QWidget* SettingsDialog::buildDisplayTab() {
     addCompactFormRow(timelineForm, resetTimelineColorsButton);
 
     QWidget* timelineRefreshLabel = timelineForm->labelForField(m_timelineChartRefreshSecsSpin);
+    QWidget* timelineHoverLabel = timelineForm->labelForField(m_timelineChartHoverDelaySpin);
     QWidget* marketBreadthRefreshLabel = timelineForm->labelForField(m_marketBreadthRefreshSecsSpin);
-    const auto updateTimelineControlsState = [this, timelineRefreshLabel, marketBreadthRefreshLabel]() {
+    const auto updateTimelineControlsState = [this, timelineRefreshLabel, timelineHoverLabel, marketBreadthRefreshLabel]() {
         const bool enabled = m_timelineChartEnabledCheck && m_timelineChartEnabledCheck->isChecked();
         const bool marketBreadthEnabled = m_marketBreadthEnabledCheck
             && m_marketBreadthEnabledCheck->isChecked();
         if (m_timelineChartRefreshSecsSpin) {
             m_timelineChartRefreshSecsSpin->setEnabled(enabled);
         }
+        m_timelineChartHoverDelaySpin->setEnabled(enabled);
+        if (timelineHoverLabel) timelineHoverLabel->setEnabled(enabled);
         if (m_marketBreadthRefreshSecsSpin) {
             m_marketBreadthRefreshSecsSpin->setEnabled(marketBreadthEnabled);
         }
@@ -1715,7 +1855,7 @@ QWidget* SettingsDialog::buildDisplayTab() {
     const QStringList names = i18n::columnNames(m_uiLanguage);
     const QVector<int> columnOrder = watchlist_utils::normalizedColumnOrder(m_cfg.columnOrder);
 
-    m_columnList = new QListWidget(w);
+    m_columnList = new ItemListWidget(w);
     m_columnList->setDragDropMode(QAbstractItemView::InternalMove);
     m_columnList->setDefaultDropAction(Qt::MoveAction);
     m_columnList->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -1865,6 +2005,7 @@ QWidget* SettingsDialog::buildOtherTab() {
             req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                              QNetworkRequest::NoLessSafeRedirectPolicy);
 
+            m_syncNam->setProxy(network_utils::proxyFromConfig(config()));
             QNetworkReply* fetchReply = m_syncNam->get(req);
             connect(fetchReply, &QNetworkReply::finished, this,
                 [this, fetchReply, uploadBtn, downloadBtn, token, gistId]() {
@@ -2028,6 +2169,7 @@ QWidget* SettingsDialog::buildOtherTab() {
                         patchReq.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                                               QNetworkRequest::NoLessSafeRedirectPolicy);
 
+                        m_syncNam->setProxy(network_utils::proxyFromConfig(config()));
                         QNetworkReply* patchReply = m_syncNam->sendCustomRequest(
                             patchReq, "PATCH",
                             QJsonDocument(body).toJson(QJsonDocument::Compact));
@@ -2293,18 +2435,28 @@ QWidget* SettingsDialog::buildStocksTab() {
     searchLayout->setContentsMargins(0, 0, 0, 0);
     searchLayout->setSpacing(5);
 
-    m_stockSearchEdit = new QLineEdit(searchRow);
+    m_stockSearchEdit = new StockSearchEdit(searchRow);
+    m_stockSearchEdit->setObjectName(QStringLiteral("stockSearchEdit"));
     m_stockSearchEdit->setPlaceholderText(trText("settings.stocks.searchPlaceholder"));
 
     m_stockSearchBtn = new QPushButton(trText("settings.stocks.search"), searchRow);
+    m_stockSearchBtn->setObjectName(QStringLiteral("stockSearchButton"));
     m_stockSearchBtn->setMinimumWidth(76);
 
     searchLayout->addWidget(m_stockSearchEdit, 1);
     searchLayout->addWidget(m_stockSearchBtn);
     vbox->addWidget(searchRow);
 
+    m_stockSearchStatus = new QLabel(w);
+    m_stockSearchStatus->setObjectName(QStringLiteral("stockSearchStatus"));
+    m_stockSearchStatus->setTextFormat(Qt::PlainText);
+    m_stockSearchStatus->setWordWrap(true);
+    m_stockSearchStatus->hide();
+    vbox->addWidget(m_stockSearchStatus);
+
     // --- Suggestion list (floating overlay, not in layout) ---
-    m_stockSuggestList = new QListWidget(this);
+    m_stockSuggestList = new ItemListWidget(this);
+    m_stockSuggestList->setObjectName(QStringLiteral("stockSearchResults"));
     m_stockSuggestList->setMaximumHeight(160);
     m_stockSuggestList->setFrameShape(QFrame::StyledPanel);
     m_stockSuggestList->hide();
@@ -2415,17 +2567,18 @@ QWidget* SettingsDialog::buildStocksTab() {
         m_stockTable->setCurrentCell(newRow, 0);
     });
 
-    // Filter spaces; trigger debounce on 3+ chars
+    // Filter spaces; search after the minimum length and debounce interval
     connect(m_stockSearchEdit, &QLineEdit::textEdited, this, [this](const QString& rawText) {
         QString text = rawText;
         text.remove(QLatin1Char(' '));
         if (text != rawText) {
             m_stockSearchEdit->setText(text);
         }
+        m_stockSearchStatus->hide();
+        m_stockSuggestList->clear();
+        m_stockSuggestList->hide();
         if (text.length() < kStockSearchMinLength) {
             m_stockSearchDebounce->stop();
-            m_stockSuggestList->clear();
-            m_stockSuggestList->hide();
             return;
         }
         m_stockSearchDebounce->start();
@@ -2436,6 +2589,8 @@ QWidget* SettingsDialog::buildStocksTab() {
         m_stockSearchDebounce->stop();
         doStockSearch(true);
     });
+
+    connect(m_stockSearchEdit, &QLineEdit::returnPressed, m_stockSearchBtn, &QPushButton::click);
 
     // Debounce fires: make network request
     connect(m_stockSearchDebounce, &QTimer::timeout, this, [this]() {
@@ -2453,6 +2608,10 @@ QWidget* SettingsDialog::buildStocksTab() {
             return;
         }
 
+        if (watchlist_utils::isTdxCompatibleCode(code)) {
+            const int tdxIndex = m_quoteSourceCombo->findData(QStringLiteral("tdx"));
+            if (tdxIndex >= 0) m_quoteSourceCombo->setCurrentIndex(tdxIndex);
+        }
         StockTableWidget* tbl = static_cast<StockTableWidget*>(m_stockTable);
         if (tbl->containsCode(code)) {
             showIconMessageBox(
@@ -2490,7 +2649,7 @@ QWidget* SettingsDialog::buildStocksTab() {
             QVector<StockItem> filteredStocks;
             filteredStocks.reserve(reloadedStocks.size());
             for (const StockItem& stock : reloadedStocks) {
-                if (!isPredefinedIndexCode(stock.code)) {
+                if (watchlist_utils::isTdxCompatibleCode(stock.code) && !isPredefinedIndexCode(stock.code)) {
                     filteredStocks.push_back(stock);
                 }
             }
@@ -2548,7 +2707,7 @@ QWidget* SettingsDialog::buildIndexSectorTab() {
     QLabel* indexHint = new QLabel(trText("settings.indexSector.indexHint"), indexGroup);
     indexHint->setWordWrap(true);
 
-    m_indexList = new QListWidget(indexGroup);
+    m_indexList = new ItemListWidget(indexGroup);
     m_indexList->setDragDropMode(QAbstractItemView::InternalMove);
     m_indexList->setDefaultDropAction(Qt::MoveAction);
     m_indexList->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -2560,7 +2719,7 @@ QWidget* SettingsDialog::buildIndexSectorTab() {
     QSet<QString> checkedKeys;
     QStringList orderedKeys;
     for (const StockItem& selected : m_indexes) {
-        const QString key = watchCodeKey(selected.code);
+        const QString key = indexPresetKey(selected.code);
         if (key.isEmpty()) {
             continue;
         }
@@ -2570,10 +2729,19 @@ QWidget* SettingsDialog::buildIndexSectorTab() {
 
     QHash<QString, IndexPreset> presetByKey;
     for (const IndexPreset& preset : indexPresets()) {
-        const QString key = watchCodeKey(preset.code);
+        const QString key = indexPresetKey(preset.code);
         presetByKey.insert(key, preset);
         if (!orderedKeys.contains(key)) {
             orderedKeys.push_back(key);
+        }
+    }
+
+    // Saved legacy index identifiers are supported by TDX too. Keep their
+    // original identifiers/selection when opening and saving the index editor.
+    for (const auto& selected : m_indexes) {
+        const QString key = indexPresetKey(selected.code);
+        if (watchlist_utils::isTdxCompatibleCode(selected.code)) {
+            presetByKey.insert(key, {selected.code, selected.name, QString()});
         }
     }
 
@@ -2719,55 +2887,56 @@ void SettingsDialog::doStockSearch(bool forceSearch) {
         m_stockSearchReply = nullptr;
     }
 
-    QUrl url(QStringLiteral("https://searchapi.eastmoney.com/api/Info/Search"));
-    QUrlQuery query;
-    query.addQueryItem(QStringLiteral("type"), QStringLiteral("14"));
-    query.addQueryItem(
-        QStringLiteral("and14"),
-        QStringLiteral("MultiMatch/Name,Code,PinYin/%1/true").arg(keyword)
-    );
-    query.addQueryItem(QStringLiteral("pageIndex14"), QStringLiteral("1"));
-    query.addQueryItem(QStringLiteral("pageSize14"), QString::number(kStockSearchResultLimit));
-    url.setQuery(query);
-
-    QNetworkRequest req(url);
-    req.setRawHeader(headers::kUserAgent, network_utils::effectiveUserAgent(m_cfg).toUtf8());
-    req.setRawHeader(headers::kReferer, headers::kEastMoneyReferer);
-    req.setRawHeader(headers::kAccept, "*/*");
-    req.setRawHeader(headers::kConnection, "keep-alive");
-    req.setRawHeader(headers::kContentType, headers::kEastMoneyContentType);
-    req.setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
-
-    const network_logger::RequestTrace trace = network_logger::logRequestStart(
-        QStringLiteral("eastmoney-search"),
-        QStringLiteral("GET"),
-        req,
-        m_stockSearchNam->proxy()
-    );
-
-    m_stockSearchReply = m_stockSearchNam->get(req);
-    connect(m_stockSearchReply, &QNetworkReply::finished, this, [this, trace]() {
-        if (!m_stockSearchReply) {
-            return;
-        }
-
-        const QNetworkReply::NetworkError netErr = m_stockSearchReply->error();
-        const QByteArray data = m_stockSearchReply->readAll();
-
-        network_logger::logRequestFinish(trace, m_stockSearchReply, data.size(), data);
-
-        m_stockSearchReply->deleteLater();
-        m_stockSearchReply = nullptr;
-
-        if (netErr != QNetworkReply::NoError) {
-            qWarning() << "[StockSearch] network error" << netErr;
-            m_stockSuggestList->clear();
-            m_stockSuggestList->hide();
-            return;
-        }
-
-        parseSearchResult(data);
-    });
+    {
+        if (m_tdxSearchPending) return;
+        m_tdxSearchPending = true;
+        const int generation = ++m_stockSearchGeneration;
+        AppConfig searchConfig = m_cfg;
+        searchConfig.networkInterface = m_networkInterfaceCombo->currentData().toString();
+        searchConfig.proxyType = m_proxyTypeCombo->currentData().toString();
+        searchConfig.proxyHost = m_proxyHostEdit->text().trimmed();
+        searchConfig.proxyPort = m_proxyPortSpin->value();
+        searchConfig.proxyUser = m_proxyUserEdit->text();
+        searchConfig.proxyPassword = m_proxyPasswordEdit->text();
+        m_stockSuggestList->clear();
+        m_stockSuggestList->hide();
+        m_stockSearchStatus->setText(trText("settings.tdx.searchLoading"));
+        m_stockSearchStatus->show();
+        m_stockSearchEdit->setToolTip(QString());
+        tdx_bridge::request(this, searchConfig,
+            {{QStringLiteral("operation"), QStringLiteral("search")}, {QStringLiteral("keyword"), keyword},
+             {QStringLiteral("count"), kStockSearchResultLimit}},
+            [this, keyword, generation](const QJsonObject& response, const QString& error) {
+                m_tdxSearchPending = false;
+                if (generation != m_stockSearchGeneration) { doStockSearch(false); return; }
+                if (keyword != m_stockSearchEdit->text().trimmed()) { doStockSearch(false); return; }
+                if (!error.isEmpty()) {
+                    m_stockSuggestList->clear(); m_stockSuggestList->hide();
+                    qWarning() << "[StockSearch]" << error;
+                    m_stockSearchStatus->setText(trText("settings.stocks.searchError").arg(error));
+                    m_stockSearchStatus->show();
+                    return;
+                }
+                QJsonArray items;
+                for (const auto& value : response.value(QStringLiteral("items")).toArray()) {
+                    const auto item = value.toObject();
+                    items.append(QJsonObject{{QStringLiteral("QuoteID"), item.value(QStringLiteral("code"))},
+                        {QStringLiteral("Name"), item.value(QStringLiteral("name"))},
+                        {QStringLiteral("SecurityTypeName"), item.value(QStringLiteral("kind"))}});
+                }
+                m_stockSearchEdit->setToolTip(QString());
+                const QString warning = response.value(QStringLiteral("warning")).toString();
+                if (!warning.isEmpty()) {
+                    m_stockSearchStatus->setText(trText("settings.stocks.searchPartial").arg(warning));
+                } else {
+                    m_stockSearchStatus->setText(items.isEmpty()
+                        ? trText("settings.stocks.searchEmpty") : QString());
+                }
+                m_stockSearchStatus->setVisible(!m_stockSearchStatus->text().isEmpty());
+                parseSearchResult(QJsonDocument(QJsonObject{{QStringLiteral("Data"), items}}).toJson());
+            });
+        return;
+    }
 }
 
 QString SettingsDialog::groupMemberDisplayName(const QString& code) const {
@@ -2846,6 +3015,7 @@ void SettingsDialog::refreshCurrentGroupSelection() {
         m_groupMemberList->clear();
         m_groupMemberList->setEnabled(true);
         for (const QString& code : group.stockCodes) {
+            if (!watchlist_utils::isTdxCompatibleCode(code)) continue;
             QListWidgetItem* item = new QListWidgetItem(
                 groupMemberDisplayName(code),
                 m_groupMemberList
@@ -2904,7 +3074,7 @@ QWidget* SettingsDialog::buildGroupsTab() {
         mainRow->addLayout(leftVbox, 0);
         leftVbox->addWidget(new QLabel(trText("settings.group.list"), w));
 
-        m_groupList = new QListWidget(w);
+        m_groupList = new ItemListWidget(w);
         m_groupList->setMaximumWidth(180);
         m_groupList->setMinimumHeight(240);
         leftVbox->addWidget(m_groupList, 1);
@@ -3039,7 +3209,7 @@ QWidget* SettingsDialog::buildGroupsTab() {
             mhdr->addWidget(mUp); mhdr->addWidget(mDown);
             rightVbox->addLayout(mhdr);
 
-            m_groupMemberList = new QListWidget(w);
+            m_groupMemberList = new ItemListWidget(w);
             m_groupMemberList->setEnabled(false);
             m_groupMemberList->setMaximumHeight(130);
             rightVbox->addWidget(m_groupMemberList);
@@ -3077,7 +3247,7 @@ QWidget* SettingsDialog::buildGroupsTab() {
                 trText("settings.group.members")
                     + QStringLiteral(" (") + trText("settings.group.membersHint") + QStringLiteral(")"),
                 w));
-            m_groupStockList = new QListWidget(w);
+            m_groupStockList = new ItemListWidget(w);
             m_groupStockList->setEnabled(false);
             rightVbox->addWidget(m_groupStockList, 1);
             refreshGroupStockChoices();
@@ -3201,7 +3371,7 @@ QWidget* SettingsDialog::buildAboutTab() {
         m_checkUpdateBtn->setEnabled(false);
         m_checkUpdateStatus->setText(trText("settings.about.checking"));
         m_downloadProgress->setVisible(false);
-        m_updater->setConfig(m_cfg);
+        m_updater->setConfig(config());
         m_updater->checkForUpdates();
     });
 

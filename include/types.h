@@ -4,6 +4,7 @@
 #include <QMap>
 #include <QRect>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <QtGlobal>
 
@@ -17,6 +18,7 @@ enum QuoteColumn {
     ColCost,
     ColCostPct,
     ColBreakevenGain,
+    ColRiseSpeed, // append to preserve saved column IDs
     ColCount
 };
 
@@ -42,6 +44,11 @@ struct QuoteItem {
     double pct = qQNaN();
     double change = qQNaN();
     double cost = qQNaN(); // cost basis
+    double riseSpeed = qQNaN();
+    double preClose = qQNaN();
+    // Pre-open reset rows display yesterday's close with a flat-price visual state.
+    // Intraday change, indicators and rise speed remain blank.
+    bool resetData = false;
 };
 
 struct HotRankItem {
@@ -104,6 +111,7 @@ struct MarketBreadthSnapshot {
     double turnover = qQNaN();
     double turnoverPre = qQNaN();
     double turnoverChange = qQNaN();
+    double turnoverForecast = qQNaN();
     bool turnoverValid = false;
 };
 
@@ -164,6 +172,19 @@ inline QString normalizeHotRankSortOrder(const QString& rawOrder) {
     return QStringLiteral("desc");
 }
 
+inline QString normalizeQuoteSource(const QString& source) {
+    Q_UNUSED(source);
+    return QStringLiteral("tdx");
+}
+
+inline QVector<int> normalizeDailyKlineMAPeriods(const QVector<int>& periods) {
+    QVector<int> normalized;
+    for (int period : {5, 10, 20, 30, 60, 120, 250}) {
+        if (periods.contains(period)) normalized.append(period);
+    }
+    return normalized;
+}
+
 struct AppConfig {
     int pollMs = 3000;
     double opacity = 0.9;
@@ -172,7 +193,18 @@ struct AppConfig {
     bool startupShowFloatingWindow = true;
     QString language = "auto";
 
+    QString quoteSource = "tdx";
+    QString tdxUserId;
+    QString tdxToken; // session token, only persisted on explicit opt-in
+    bool tdxRememberToken = false;
+    bool tdxMainAutoSelect = true;
+    bool tdxExAutoSelect = true;
+    QString tdxMainServer;
+    QString tdxExServer;
+    QStringList tdxMainServerPool; // empty uses the SDK's built-in MAC servers
+    QStringList tdxExServerPool;
     QString userAgent = defaultChrome100UserAgent();
+    QString networkInterface; // empty lets the operating system select a route
     QString proxyType = "none";
     QString proxyHost;
     int proxyPort = 0;
@@ -217,7 +249,8 @@ struct AppConfig {
         {ColIndicator, false},
         {ColCost, false},
         {ColCostPct, false},
-        {ColBreakevenGain, false}
+        {ColBreakevenGain, false},
+        {ColRiseSpeed, true}
     };
 
     QVector<int> columnOrder {
@@ -229,7 +262,8 @@ struct AppConfig {
         ColIndicator,
         ColCost,
         ColCostPct,
-        ColBreakevenGain
+        ColBreakevenGain,
+        ColRiseSpeed
     };
 
     // 0 means auto max width based on current column content/header.
@@ -242,7 +276,8 @@ struct AppConfig {
         {ColIndicator, 0},
         {ColCost, 0},
         {ColCostPct, 0},
-        {ColBreakevenGain, 0}
+        {ColBreakevenGain, 0},
+        {ColRiseSpeed, 0}
     };
 
     bool hoverReadingEnabled = true;
@@ -251,6 +286,9 @@ struct AppConfig {
     bool hoverReadingTransparentBackgroundEnabled = true;
     bool timelineChartEnabled = true;
     int timelineChartRefreshSecs = 10;
+    int timelineChartHoverDelayMs = 500;
+    int dailyKlineDays = 60;
+    QVector<int> dailyKlineMAPeriods{5, 10, 20, 30};
     bool marketBreadthEnabled = true;
     int marketBreadthRefreshSecs = 10;
     bool timelineChartFixedRangeEnabled = false;

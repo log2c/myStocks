@@ -4,6 +4,9 @@
 #include "types.h"
 
 #include <QFrame>
+#include <QElapsedTimer>
+#include <QPersistentModelIndex>
+#include <QPointer>
 #include <QHBoxLayout>
 #include <QPoint>
 #include <QTableView>
@@ -14,6 +17,7 @@
 #include <functional>
 
 class TimelineChartPopup;
+class SharedTimelineChartPopup;
 class MarketBreadthDetailWindow;
 
 class FloatingWindow : public QWidget {
@@ -23,6 +27,7 @@ public:
     ~FloatingWindow() override;
 
     void applyConfig(const AppConfig& cfg);
+    void setLoading(bool loading);
     void toggleMarketBreadthDetailPopupFromTray();
     QRect marketBreadthDetailPopupGeometry() const;
     void setMarketBreadthDetailPopupGeometry(const QRect& rect);
@@ -68,9 +73,15 @@ private:
     void refreshMousePassthroughState(bool force = false);
     bool setMousePassthroughActive(bool active);
     bool canShowTimelinePopup() const;
-    void updateHoverPopupsForViewport(const QPoint& viewportPos, QTableView* sourceView = nullptr);
-    void updateTimelinePopupForHover(const QPoint& viewportPos, QTableView* sourceView = nullptr);
+    void scheduleTimelineHover(QTableView* view, const QPoint& pos);
+    void cancelTimelineHover();
+    void beginStockChartClick(QTableView* view, QMouseEvent* event);
+    void finishStockChartClick(QMouseEvent* event);
+    void cancelStockChartClick();
+    void showStockChart(const QPersistentModelIndex& index, QTableView* view);
     void hideTimelinePopup();
+    void hideHoverTimelinePopup();
+    void showMarketBreadthDetailPopup();
     void refreshMarketBreadthDetailPopup();
     void hideMarketBreadthDetailPopup();
     void enforceWindowLevel(bool activate = false);
@@ -91,9 +102,21 @@ private:
     QTableView* m_table = nullptr;       // top section: index rows + header
     QTableView* m_stockTable = nullptr;  // bottom section: stock rows (group-filtered)
     TimelineChartPopup* m_timelinePopup = nullptr;
+    SharedTimelineChartPopup* m_klineDetailPopup = nullptr;
     MarketBreadthDetailWindow* m_marketBreadthDetailPopup = nullptr;
-    QString m_timelineHoverCode;
-    QString m_timelineHoverName;
+    QTimer m_timelineHoverTimer;
+    QPersistentModelIndex m_timelineHoverIndex;
+    QPointer<QTableView> m_timelineHoverView;
+    QPoint m_timelineHoverPos;
+    QPersistentModelIndex m_displayedChartIndex;
+    QPointer<QTableView> m_displayedChartView;
+    bool m_timelinePopupShownByHover = false;
+    QElapsedTimer m_stockPressTime;
+    QPersistentModelIndex m_stockPressIndex;
+    QPointer<QTableView> m_stockPressView;
+    QPoint m_stockPressGlobal;
+    Qt::MouseButton m_stockPressButton = Qt::NoButton;
+    bool m_stockPressMoved = false;
     QRect m_marketBreadthDetailAnchorRect;
 
     AppConfig m_cfg;

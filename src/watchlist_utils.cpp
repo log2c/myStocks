@@ -1,6 +1,7 @@
 #include "watchlist_utils.h"
 
 #include <QSet>
+#include <QRegularExpression>
 
 namespace {
 
@@ -14,6 +15,8 @@ const QSet<QString>& predefinedAshareIndexAliases() {
         QStringLiteral("0.399006"),
         QStringLiteral("399006"),
         QStringLiteral("sz399006"),
+        QStringLiteral("1.000680"),
+        QStringLiteral("sh000680"),
         QStringLiteral("1.000688"),
         QStringLiteral("sh000688"),
         QStringLiteral("1.000300"),
@@ -104,12 +107,46 @@ QVector<int> normalizedColumnOrder(const QVector<int>& order) {
     return out;
 }
 
+bool isTdxCode(const QString& code) {
+    static const QRegularExpression pattern(QStringLiteral("^tdx:(main|ex):([0-9]{1,3}):([A-Za-z0-9_.-]{1,22})$"), QRegularExpression::CaseInsensitiveOption);
+    const auto match = pattern.match(code.trimmed());
+    return match.hasMatch() && match.captured(2).toInt() <= 255;
+}
+bool isTdxCompatibleCode(const QString& rawCode) {
+    const QString code = normalizeApiWatchCode(rawCode);
+    if (isTdxCode(code)) return true;
+    const QString market = code.section(QLatin1Char('.'), 0, 0);
+    const QString symbol = code.section(QLatin1Char('.'), 1);
+    if (symbol.isEmpty()) return false;
+    if (market == QLatin1String("0") || market == QLatin1String("1") || market == QLatin1String("2")) {
+        return symbol.size() == 6 && isDigitsOnly(symbol);
+    }
+    if (market == QLatin1String("116")) return symbol.size() == 5 && isDigitsOnly(symbol);
+    if (market == QLatin1String("100") || market == QLatin1String("124")) {
+        return symbol == QLatin1String("HSI") || symbol == QLatin1String("HSCEI") || symbol == QLatin1String("HSTECH");
+    }
+    if (market == QLatin1String("133")) return symbol == QLatin1String("USDCNH");
+    return (market == QLatin1String("113") || market == QLatin1String("114")
+        || market == QLatin1String("115") || market == QLatin1String("8"))
+        && !normalizeFutureCode(code).isEmpty();
+}
+
+bool isTdxExtendedCode(const QString& code) {
+    return isTdxCode(code) && code.trimmed().startsWith(QStringLiteral("tdx:ex:"), Qt::CaseInsensitive);
+}
+QString tdxSymbol(const QString& code) {
+    return isTdxCode(code) ? code.trimmed().section(QLatin1Char(':'), 3).toUpper() : QString();
+}
 QString normalizeApiWatchCode(const QString& rawCode) {
     const QString raw = rawCode.trimmed();
     if (raw.isEmpty()) {
         return {};
     }
 
+    if (isTdxCode(raw)) {
+        const auto parts = raw.split(QLatin1Char(':'));
+        return QStringLiteral("tdx:%1:%2:%3").arg(parts[1].toLower(), QString::number(parts[2].toInt()), parts[3].toUpper());
+    }
     const QString key = watchCodeKey(raw);
     if (key == QStringLiteral("xin9") || key == QStringLiteral("100.xin9")) {
         return QStringLiteral("100.XIN9");
@@ -221,6 +258,8 @@ QString normalizeApiWatchCode(const QString& rawCode) {
 }
 
 QString normalizeSectorCode(const QString& rawCode) {
+    if (isTdxCode(rawCode) && !isTdxExtendedCode(rawCode) && tdxSymbol(rawCode).startsWith(QStringLiteral("88")))
+        return normalizeApiWatchCode(rawCode);
     QString code = rawCode.trimmed();
     if (code.isEmpty()) {
         return {};
@@ -238,6 +277,7 @@ QString normalizeSectorCode(const QString& rawCode) {
 }
 
 QString normalizeFutureCode(const QString& rawCode) {
+    if (isTdxExtendedCode(rawCode)) return normalizeApiWatchCode(rawCode);
     const QString raw = rawCode.trimmed();
     if (raw.isEmpty()) {
         return {};
@@ -300,6 +340,7 @@ QString normalizeHongKongIndexCode(const QString& rawCode) {
 }
 
 bool isPredefinedAshareIndexCode(const QString& rawCode) {
+    if (isTdxCode(rawCode)) return !isTdxExtendedCode(rawCode) && isPredefinedIndexCode(rawCode);
     const QString code = watchCodeKey(rawCode);
     if (code.isEmpty()) {
         return false;
@@ -315,6 +356,16 @@ bool isPredefinedIndexCode(const QString& rawCode) {
     if (code.isEmpty()) {
         return false;
     }
+    if (isTdxCode(rawCode)) {
+        static const QSet<QString> nativeIndexes {
+            QStringLiteral("tdx:main:1:000001"), QStringLiteral("tdx:main:0:399001"),
+            QStringLiteral("tdx:main:0:399006"), QStringLiteral("tdx:main:1:000688"),
+            QStringLiteral("tdx:main:1:000680"),
+            QStringLiteral("tdx:main:1:000300"), QStringLiteral("tdx:main:1:000905"),
+            QStringLiteral("tdx:ex:27:hsi"), QStringLiteral("tdx:ex:27:hz5017")
+        };
+        return nativeIndexes.contains(watchCodeKey(normalizeApiWatchCode(rawCode)));
+    }
     if (code.startsWith(QStringLiteral("bk")) || code.startsWith(QStringLiteral("90."))) {
         return false;
     }
@@ -322,6 +373,10 @@ bool isPredefinedIndexCode(const QString& rawCode) {
 }
 
 bool isHongKongCode(const QString& rawCode) {
+    if (isTdxExtendedCode(rawCode)) {
+        const int market = rawCode.trimmed().section(QLatin1Char(':'), 2, 2).toInt();
+        return market == 27 || market == 31 || market == 48 || market == 49 || market == 71;
+    }
     const QString code = watchCodeKey(rawCode);
     if (code.isEmpty()) {
         return false;
@@ -339,13 +394,23 @@ bool isHongKongCode(const QString& rawCode) {
 
 QVector<StockItem> defaultWatchStocks() {
     return {
-        {QStringLiteral("1.600519"), QStringLiteral("Kweichow Moutai")},
-        {QStringLiteral("0.000001"), QStringLiteral("Ping An Bank")},
-        {QStringLiteral("0.300750"), QStringLiteral("CATL")}
+        {QStringLiteral("tdx:main:1:600519"), QStringLiteral("Kweichow Moutai")},
+        {QStringLiteral("tdx:main:0:000001"), QStringLiteral("Ping An Bank")},
+        {QStringLiteral("tdx:main:0:300750"), QStringLiteral("CATL")}
     };
 }
 
 bool isCostEditableCode(const QString& rawCode) {
+    if (isTdxCode(rawCode) && !isTdxExtendedCode(rawCode)) {
+        const int market = rawCode.trimmed().section(QLatin1Char(':'), 2, 2).toInt();
+        const QString symbol = tdxSymbol(rawCode);
+        return market <= 2 && symbol.size() == 6 && isDigitsOnly(symbol)
+            && !isPredefinedIndexCode(rawCode) && !symbol.startsWith(QStringLiteral("88"));
+    }
+    if (isTdxExtendedCode(rawCode)) {
+        const int market = rawCode.trimmed().section(QLatin1Char(':'), 2, 2).toInt();
+        return market == 31 || market == 48 || market == 49 || market == 71;
+    }
     const QString code = watchCodeKey(rawCode);
     if (code.isEmpty()) {
         return false;
@@ -356,7 +421,7 @@ bool isCostEditableCode(const QString& rawCode) {
     if (dot > 0 && dot < code.size() - 1) {
         const QString market = code.left(dot);
         const QString symbol = code.mid(dot + 1);
-        if ((market == QLatin1String("0") || market == QLatin1String("1"))
+        if ((market == QLatin1String("0") || market == QLatin1String("1") || market == QLatin1String("2"))
             && symbol.size() == 6
             && isDigitsOnly(symbol)
             && !isPredefinedAshareIndexCode(rawCode)) {

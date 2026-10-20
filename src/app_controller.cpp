@@ -9,7 +9,9 @@
 #include "network_utils.h"
 #include "quote_model.h"
 #include "quote_provider.h"
+#include "tdx_quote_provider.h"
 #include "settings_dialog.h"
+#include "startup_splash.h"
 #include "updater.h"
 #include "watchlist_utils.h"
 
@@ -39,6 +41,7 @@
 #include <QNetworkRequest>
 #include <QScreen>
 #include <QSettings>
+#include <QStandardPaths>
 #include <QSet>
 #include <QStyle>
 #include <QSystemTrayIcon>
@@ -123,14 +126,18 @@ bool openDirectoryPath(const QString& dirPath) {
 
 QVector<StockItem> defaultCommonIndexes() {
     return {
-        {QStringLiteral("1.000001"), QStringLiteral("上证指数")},
-        {QStringLiteral("0.399006"), QStringLiteral("创业板指")},
-        {QStringLiteral("1.000688"), QStringLiteral("科创50")},
-        {QStringLiteral("124.HSTECH"), QStringLiteral("恒生科技指数")},
+        {QStringLiteral("tdx:main:1:000001"), QStringLiteral("上证指数")},
+        {QStringLiteral("tdx:main:0:399006"), QStringLiteral("创业板指")},
+        {QStringLiteral("1.000680"), QStringLiteral("科创综指")},
+        {QStringLiteral("tdx:ex:27:HZ5017"), QStringLiteral("恒生科技指数")},
     };
 }
 
 QString userDataDirPath() {
+    if (QStandardPaths::isTestModeEnabled()) {
+        return QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation))
+            .filePath(QStringLiteral("myStocks-test-data"));
+    }
     return QDir(QDir::homePath()).filePath(QStringLiteral(".myStocks"));
 }
 
@@ -139,14 +146,26 @@ QString userDataYamlPath() {
 }
 
 QString defaultBootstrapDataYamlText() {
-    return QStringLiteral("ver: 1\n\nstocks:\n  - code: 1.688256\n");
+    return QStringLiteral("ver: 1\n\nstocks:\n  - code: tdx:main:1:688256\n");
 }
 
 } // namespace
 
 AppController::AppController(QObject* parent)
     : QObject(parent) {
-    m_cfg = ConfigManager::loadConfig();
+    // Only connection and language settings are needed before route selection.
+    m_cfg = ConfigManager::loadConnectionConfig();
+    m_resolvedLanguage = i18n::resolveLanguage(m_cfg.language);
+    setupTray();
+    QTimer::singleShot(0, this, [this]() { beginLoading(true); });
+}
+
+AppController::~AppController() {
+    delete m_splash;
+    delete m_window;
+}
+
+void AppController::initializeApplication() {
     app_logging::setLogConfig(m_cfg.logEnabled, m_cfg.logLevel);
     m_resolvedLanguage = i18n::resolveLanguage(m_cfg.language);
 
@@ -185,10 +204,6 @@ AppController::AppController(QObject* parent)
         }
     }
 
-    if (m_stocks.isEmpty()) {
-        m_stocks = watchlist_utils::defaultWatchStocks();
-        qInfo() << "Stock list is empty; fallback defaults loaded count=" << m_stocks.size();
-    }
     m_lastIgnoredYamlIndexCodes = ignoredYamlIndexes;
 
     loadExtraWatchItems();
@@ -239,6 +254,7 @@ AppController::AppController(QObject* parent)
     );
     m_window->setGeometry(m_cfg.windowRect);
     m_window->applyConfig(m_cfg);
+    m_window->setLoading(true);
     if (m_cfg.startupShowFloatingWindow) {
         m_window->show();
         if (m_cfg.floatingWindowAlwaysOnTop) {
@@ -278,7 +294,6 @@ AppController::AppController(QObject* parent)
     m_timer = new QTimer(this);
     m_timer->setInterval(qMax(500, m_cfg.pollMs));
     connect(m_timer, &QTimer::timeout, this, [this]() { refreshQuotes(); });
-    m_timer->start();
 
     m_hotRankTimer = new QTimer(this);
     m_hotRankTimer->setInterval(qMax(10000, m_cfg.hotRankPollSecs * 1000));
@@ -288,21 +303,12 @@ AppController::AppController(QObject* parent)
     m_marketBreadthTimer = new QTimer(this);
     m_marketBreadthTimer->setInterval(qMax(10000, m_cfg.marketBreadthRefreshSecs * 1000));
     connect(m_marketBreadthTimer, &QTimer::timeout, this, [this]() { refreshMarketBreadth(); });
-    if (m_cfg.marketBreadthEnabled) {
-        m_marketBreadthTimer->start();
-    }
 
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this]() {
         qInfo() << "Application aboutToQuit. Persisting runtime config.";
         captureRuntimeWindowGeometries(&m_cfg);
-        ConfigManager::saveConfig(m_cfg);
+        if (m_initialized) ConfigManager::saveConfig(m_cfg);
     });
-
-    refreshQuotes(true);
-    refreshHotRanks(true);
-    if (m_window && m_window->isVisible()) {
-        refreshMarketBreadth(true);
-    }
 
     // Auto-check for updates ~10 s after startup (non-blocking).
     m_updater = new Updater(this);
@@ -565,7 +571,7 @@ QVector<StockItem> AppController::filterYamlStocks(
     QStringList ignored;
     for (const StockItem& item : loaded) {
         const QString code = normalizeApiWatchCode(item.code);
-        if (code.isEmpty()) {
+        if (!watchlist_utils::isTdxCompatibleCode(code)) {
             continue;
         }
 
@@ -606,7 +612,7 @@ bool AppController::pruneGroupsForDeletedStocks(const QString& dataPath) {
         const int oldSize = group.stockCodes.size();
         QStringList pruned;
         for (const QString& code : group.stockCodes) {
-            if (stockKeys.contains(watchCodeKey(code))) {
+            if (!watchlist_utils::isTdxCompatibleCode(code) || stockKeys.contains(watchCodeKey(code))) {
                 pruned.append(code);
             } else {
                 qInfo() << "pruneGroupsForDeletedStocks: removed" << code
@@ -760,31 +766,45 @@ void AppController::loadExtraWatchItems() {
     m_indexes.reserve(decodedIndexes.size());
 
     QSet<QString> indexSeen;
+    bool migratedStarIndex = false;
     for (const StockItem& index : decodedIndexes) {
-        const QString normalizedCode = normalizeApiWatchCode(index.code);
-        if (normalizedCode.isEmpty() || !isPredefinedIndexCode(normalizedCode)) {
+        QString normalizedCode = normalizeApiWatchCode(index.code);
+        QString displayName = index.name.trimmed();
+        if (normalizedCode == QStringLiteral("1.000688")
+            || normalizedCode == QStringLiteral("tdx:main:1:000688")) {
+            normalizedCode = QStringLiteral("1.000680");
+            displayName = QStringLiteral("科创综指");
+            migratedStarIndex = true;
+        }
+        if (!watchlist_utils::isTdxCompatibleCode(normalizedCode) || !isPredefinedIndexCode(normalizedCode)) {
             continue;
         }
 
-        const QString key = watchCodeKey(normalizedCode);
+        const QString key = normalizedCode == QStringLiteral("tdx:main:1:000680")
+            ? QStringLiteral("1.000680") : watchCodeKey(normalizedCode);
         if (indexSeen.contains(key)) {
             continue;
         }
         indexSeen.insert(key);
 
-        m_indexes.push_back({normalizedCode, index.name.trimmed()});
+        m_indexes.push_back({normalizedCode, displayName});
     }
 
     if (!hasStoredIndexes && m_indexes.isEmpty()) {
         m_indexes = defaultCommonIndexes();
     }
+    if (migratedStarIndex) saveExtraWatchItems();
 }
 
 void AppController::saveExtraWatchItems() const {
     std::unique_ptr<QSettings> settings = ConfigManager::createAppSettings();
     QSettings& s = *settings;
 
-    s.setValue(app_constants::kWatchIndexesKey, encodeWatchItems(m_indexes));
+    QVector<StockItem> persistedIndexes = m_indexes;
+    for (const auto& index : decodeWatchItems(s.value(app_constants::kWatchIndexesKey).toStringList())) {
+        if (!watchlist_utils::isTdxCompatibleCode(index.code)) persistedIndexes.append(index);
+    }
+    s.setValue(app_constants::kWatchIndexesKey, encodeWatchItems(persistedIndexes));
     s.sync();
 }
 
@@ -803,10 +823,11 @@ void AppController::toggleWindow() {
         }
         refreshMarketBreadth(true);
     }
+    if (m_loading && m_splash) m_splash->showFor(m_window);
 }
 
 void AppController::toggleMarketBreadthDetailWindow() {
-    if (!m_window) {
+    if (m_loading || !m_routesReady || !m_window) {
         return;
     }
 
@@ -856,6 +877,7 @@ void AppController::resetFloatingWindowPosition() {
 }
 
 void AppController::openSettings() {
+    if (m_loading || !m_initialized) return;
     qInfo() << "Open settings dialog.";
 
     AppConfig updatedCfg = m_cfg;
@@ -1008,14 +1030,14 @@ void AppController::openSettings() {
     rebuildProvider();
     rebuildHotRankProvider();
     updateTrayTooltip();
-    refreshQuotes(true);
-    refreshHotRanks(true);
-    if (m_window && m_window->isVisible()) {
-        refreshMarketBreadth(true);
-    }
+    beginLoading(false);
 }
 
 void AppController::reloadStocksFromYaml() {
+    beginLoading(!m_initialized);
+}
+
+void AppController::loadStocksAfterRoutes() {
     qInfo() << "Manual reload from data.yaml requested.";
 
     const QString dataPath = findDataYaml();
@@ -1044,8 +1066,10 @@ void AppController::reloadStocksFromYaml() {
     m_probeCheckedAt = QDateTime();
     m_probeTradingDay = true;
 
-    // Also reload groups
-    m_groups = ConfigManager::loadGroupsFromYaml(dataPath);
+    // Also reload groups and their persisted visual order.
+    int yamlGroupAllPos = -1;
+    m_groups = ConfigManager::loadGroupsFromYaml(dataPath, &yamlGroupAllPos);
+    if (yamlGroupAllPos >= 0) m_cfg.groupAllPosition = yamlGroupAllPos;
     pruneGroupsForDeletedStocks(dataPath);
     if (m_activeGroupIndex > m_groups.size()) {
         m_activeGroupIndex = 0;
@@ -1143,7 +1167,7 @@ bool AppController::updateYamlWatchStock(const QString& code, const QString& nam
 }
 
 void AppController::refreshQuotes(bool force) {
-    if (!m_provider) {
+    if (m_loading || !m_routesReady || !m_provider) {
         return;
     }
 
@@ -1166,7 +1190,7 @@ void AppController::refreshHotRanks(bool force) {
 }
 
 void AppController::refreshMarketBreadth(bool force) {
-    if (!m_marketBreadthProvider || !m_cfg.marketBreadthEnabled) {
+    if (m_loading || !m_routesReady || !m_marketBreadthProvider || !m_cfg.marketBreadthEnabled) {
         return;
     }
 
@@ -1341,7 +1365,7 @@ void AppController::setupTray() {
 }
 
 void AppController::updateTrayTooltip() {
-    if (!m_tray) {
+    if (!m_tray || !m_model) {
         return;
     }
     if (!m_cfg.trayTooltipEnabled) {
@@ -1550,9 +1574,9 @@ void AppController::rebuildProvider() {
         m_marketBreadthProvider = nullptr;
     }
 
-    m_provider = new EastMoneyQuoteProvider(this);
+    m_provider = new TdxQuoteProvider(this);
 
-    qInfo() << "Rebuild provider done. source=eastmoney";
+    qInfo() << "Rebuild provider done. source=" << m_cfg.quoteSource;
 
     m_provider->setLanguage(m_resolvedLanguage);
     m_provider->applyConfig(m_cfg);
@@ -1997,6 +2021,7 @@ void AppController::doGistAutoUpload() {
                      QNetworkRequest::NoLessSafeRedirectPolicy);
 
     qInfo() << "[Gist] auto-uploading data.yaml to gist" << gistId;
+    m_gistNam->setProxy(network_utils::proxyFromConfig(m_cfg));
     QNetworkReply* reply = m_gistNam->sendCustomRequest(
         req, "PATCH", QJsonDocument(body).toJson(QJsonDocument::Compact));
 
@@ -2073,6 +2098,7 @@ void AppController::checkAndPullGistOnStartup() {
                      QNetworkRequest::NoLessSafeRedirectPolicy);
 
     qInfo() << "[Gist] startup: checking remote version. knownUpdatedAt=" << knownRemoteUpdatedAt;
+    m_gistNam->setProxy(network_utils::proxyFromConfig(m_cfg));
     QNetworkReply* reply = m_gistNam->get(req);
 
     connect(reply, &QNetworkReply::finished, this, [this, reply, dataPath, knownRemoteUpdatedAt]() {

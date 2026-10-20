@@ -25,7 +25,7 @@ if(APPLE)
     endif()
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network Concurrent)
 
 if(APPLE)
     # Qt's prebuilt macOS package exports the deprecated AGL framework through
@@ -112,6 +112,13 @@ if(APPLE)
     )
 endif()
 
+function(mystocks_enable_agl_stub target)
+    if(APPLE AND TARGET AGL_stub)
+        add_dependencies(${target} AGL_stub)
+        target_link_options(${target} BEFORE PRIVATE "-F${_agl_stub_dir}")
+    endif()
+endfunction()
+
 if(APPLE AND NOT DEFINED yaml-cpp_DIR)
     set(_yaml_cpp_prefix_candidates
         "/opt/homebrew/opt/yaml-cpp"
@@ -157,6 +164,8 @@ set(MYSTOCKS_SOURCES
     resources.qrc
     src/app_logging.cpp
     src/app_controller.cpp
+    src/app_startup.cpp
+    src/startup_splash.cpp
     src/config_manager.cpp
     src/crash_logging.cpp
     src/floating_window.cpp
@@ -166,8 +175,13 @@ set(MYSTOCKS_SOURCES
     src/network_utils.cpp
     src/quote_model.cpp
     src/quote_provider.cpp
+    src/limit_pool_provider.cpp
     src/settings_dialog.cpp
+    src/settings_tdx.cpp
+    src/tdx_bridge.cpp
+    src/tdx_quote_provider.cpp
     src/timeline_popup.cpp
+    src/daily_kline_chart.cpp
     src/updater.cpp
     src/watchlist_utils.cpp
 )
@@ -176,6 +190,7 @@ set(MYSTOCKS_HEADERS
     include/app_constants.h
     include/app_logging.h
     include/app_controller.h
+    include/startup_splash.h
     include/config_manager.h
     include/crash_logging.h
     include/floating_window.h
@@ -185,8 +200,13 @@ set(MYSTOCKS_HEADERS
     include/network_utils.h
     include/quote_model.h
     include/quote_provider.h
+    include/limit_pool_provider.h
     include/settings_dialog.h
+    include/tdx_bridge.h
+    include/tdx_quote_provider.h
     include/timeline_popup.h
+    include/daily_kline_chart.h
+    include/daily_kline_indicators.h
     include/types.h
     include/updater.h
     include/watchlist_utils.h
@@ -202,6 +222,7 @@ target_include_directories(MyStocks PRIVATE include)
 target_link_libraries(MyStocks PRIVATE
     Qt6::Widgets
     Qt6::Network
+    Qt6::Concurrent
     $<IF:$<TARGET_EXISTS:yaml-cpp::yaml-cpp>,yaml-cpp::yaml-cpp,yaml-cpp>
 )
 
@@ -266,10 +287,7 @@ if(APPLE)
     # Ensure the AGL stub framework is built before we link, and put its
     # directory on the framework search path so any leftover "-framework AGL"
     # flag from Qt or its dependencies resolves against the stub.
-    if(TARGET AGL_stub)
-        add_dependencies(MyStocks AGL_stub)
-        target_link_options(MyStocks BEFORE PRIVATE "-F${_agl_stub_dir}")
-    endif()
+    mystocks_enable_agl_stub(MyStocks)
 
     set(MYSTOCKS_MAC_ICON_NAME "MyStocks.icns")
     set(MYSTOCKS_MAC_ICON_SOURCE "${CMAKE_SOURCE_DIR}/assets/icons/icon.png")
@@ -329,3 +347,111 @@ install(TARGETS MyStocks
     BUNDLE DESTINATION .
     RUNTIME DESTINATION bin
 )
+
+include(CTest)
+include(cmake/Gotdx.cmake)
+if(BUILD_TESTING)
+    qt_add_executable(MyStocksDailyKlineTest tests/daily_kline_test.cpp src/daily_kline_chart.cpp src/i18n.cpp)
+    target_include_directories(MyStocksDailyKlineTest PRIVATE include)
+    target_link_libraries(MyStocksDailyKlineTest PRIVATE Qt6::Widgets)
+    mystocks_enable_agl_stub(MyStocksDailyKlineTest)
+    add_test(NAME daily_kline COMMAND MyStocksDailyKlineTest)
+    set_tests_properties(daily_kline PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    qt_add_executable(MyStocksTimelineVolumeTest tests/timeline_volume_test.cpp)
+    target_include_directories(MyStocksTimelineVolumeTest PRIVATE include)
+    target_link_libraries(MyStocksTimelineVolumeTest PRIVATE Qt6::Gui)
+    mystocks_enable_agl_stub(MyStocksTimelineVolumeTest)
+    add_test(NAME timeline_volume COMMAND MyStocksTimelineVolumeTest)
+    set_tests_properties(timeline_volume PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    qt_add_executable(MyStocksLimitPoolTest tests/limit_pool_provider_test.cpp
+        src/limit_pool_provider.cpp src/network_utils.cpp src/network_logger.cpp include/limit_pool_provider.h)
+    target_include_directories(MyStocksLimitPoolTest PRIVATE include)
+    target_link_libraries(MyStocksLimitPoolTest PRIVATE Qt6::Gui Qt6::Network)
+    mystocks_enable_agl_stub(MyStocksLimitPoolTest)
+    add_test(NAME limit_pool_provider COMMAND MyStocksLimitPoolTest)
+
+    qt_add_executable(MyStocksQuoteModelTest
+        tests/quote_model_test.cpp src/quote_model.cpp src/i18n.cpp src/watchlist_utils.cpp
+        include/quote_model.h)
+    target_include_directories(MyStocksQuoteModelTest PRIVATE include)
+    target_link_libraries(MyStocksQuoteModelTest PRIVATE Qt6::Widgets)
+    mystocks_enable_agl_stub(MyStocksQuoteModelTest)
+    add_test(NAME quote_model COMMAND MyStocksQuoteModelTest)
+    qt_add_executable(MyStocksTdxConfigTest
+        tests/tdx_config_test.cpp src/config_manager.cpp src/app_logging.cpp
+        src/crash_logging.cpp src/i18n.cpp src/watchlist_utils.cpp)
+    target_include_directories(MyStocksTdxConfigTest PRIVATE include)
+    target_link_libraries(MyStocksTdxConfigTest PRIVATE Qt6::Widgets
+        $<IF:$<TARGET_EXISTS:yaml-cpp::yaml-cpp>,yaml-cpp::yaml-cpp,yaml-cpp>)
+    if(WIN32)
+        target_link_libraries(MyStocksTdxConfigTest PRIVATE Dbghelp)
+    endif()
+    mystocks_enable_agl_stub(MyStocksTdxConfigTest)
+    add_test(NAME tdx_config COMMAND MyStocksTdxConfigTest)
+    set_tests_properties(tdx_config PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    qt_add_executable(MyStocksStartupSplashTest
+        tests/startup_splash_test.cpp src/startup_splash.cpp src/i18n.cpp include/startup_splash.h)
+    target_include_directories(MyStocksStartupSplashTest PRIVATE include)
+    target_link_libraries(MyStocksStartupSplashTest PRIVATE Qt6::Widgets)
+    mystocks_enable_agl_stub(MyStocksStartupSplashTest)
+    add_test(NAME startup_splash COMMAND MyStocksStartupSplashTest)
+    set_tests_properties(startup_splash PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    set(_startup_test_sources ${MYSTOCKS_SOURCES})
+    list(REMOVE_ITEM _startup_test_sources main.cpp src/tdx_bridge.cpp)
+    qt_add_executable(MyStocksStartupFlowTest tests/app_startup_test.cpp
+        ${_startup_test_sources} ${MYSTOCKS_HEADERS})
+    target_include_directories(MyStocksStartupFlowTest PRIVATE include)
+    target_compile_definitions(MyStocksStartupFlowTest PRIVATE
+        APP_VERSION_STRING="${PROJECT_VERSION}"
+        APP_GITHUB_URL="https://github.com/log2c/myStocks")
+    target_link_libraries(MyStocksStartupFlowTest PRIVATE Qt6::Widgets Qt6::Network Qt6::Concurrent
+        $<IF:$<TARGET_EXISTS:yaml-cpp::yaml-cpp>,yaml-cpp::yaml-cpp,yaml-cpp>)
+    if(WIN32 OR APPLE)
+        target_link_libraries(MyStocksStartupFlowTest PRIVATE QHotkey::QHotkey)
+    endif()
+    if(WIN32)
+        target_link_libraries(MyStocksStartupFlowTest PRIVATE Dbghelp)
+        if(MSVC)
+            set_target_properties(MyStocksStartupFlowTest PROPERTIES
+                MSVC_RUNTIME_LIBRARY "${_mystocks_msvc_runtime}")
+        endif()
+    endif()
+    mystocks_enable_agl_stub(MyStocksStartupFlowTest)
+    add_test(NAME constituent_chart_clicks COMMAND MyStocksStartupFlowTest --constituent-chart-clicks)
+    set_tests_properties(constituent_chart_clicks PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+    add_test(NAME stock_chart_clicks COMMAND MyStocksStartupFlowTest --stock-chart-clicks)
+    set_tests_properties(stock_chart_clicks PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+    add_test(NAME startup_flow COMMAND MyStocksStartupFlowTest)
+    add_test(NAME limit_pool_tabs COMMAND MyStocksStartupFlowTest --limit-pool-tabs)
+    set_tests_properties(limit_pool_tabs PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+    add_test(NAME breadth_header_click COMMAND MyStocksStartupFlowTest --breadth-header-click)
+    set_tests_properties(breadth_header_click PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
+    add_test(NAME breadth_timeline COMMAND MyStocksStartupFlowTest --breadth-timeline)
+    set_tests_properties(breadth_timeline PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    set_tests_properties(startup_flow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
+
+    qt_add_executable(MyStocksNetworkInterfaceTest tests/network_interface_test.cpp
+        src/network_utils.cpp src/tdx_bridge.cpp)
+    target_include_directories(MyStocksNetworkInterfaceTest PRIVATE include)
+    target_link_libraries(MyStocksNetworkInterfaceTest PRIVATE Qt6::Gui Qt6::Network Qt6::Concurrent)
+    mystocks_enable_agl_stub(MyStocksNetworkInterfaceTest)
+    add_dependencies(MyStocksNetworkInterfaceTest MyStocksGotdx)
+    if(APPLE)
+        set_target_properties(MyStocksNetworkInterfaceTest PROPERTIES MACOSX_BUNDLE TRUE)
+        set(_network_test_runtime "$<TARGET_BUNDLE_DIR:MyStocksNetworkInterfaceTest>/Contents/Frameworks")
+    else()
+        set(_network_test_runtime "$<TARGET_FILE_DIR:MyStocksNetworkInterfaceTest>")
+    endif()
+    add_custom_target(MyStocksNetworkTestRuntime
+        DEPENDS "${_tdx_library}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${_network_test_runtime}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_tdx_library}" "${_network_test_runtime}"
+        VERBATIM)
+    add_dependencies(MyStocksNetworkInterfaceTest MyStocksNetworkTestRuntime)
+    add_test(NAME network_interface COMMAND MyStocksNetworkInterfaceTest)
+    set_tests_properties(network_interface PROPERTIES TIMEOUT 30)
+
+endif()

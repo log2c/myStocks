@@ -41,6 +41,7 @@ public:
         QString* errorMessage = nullptr
     );
     static QString appSettingsFilePath();
+    static AppConfig loadConnectionConfig();
     static AppConfig loadConfig();
     static void saveConfig(const AppConfig& cfg);
 };

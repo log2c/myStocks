@@ -3,21 +3,31 @@
 #include "app_constants.h"
 #include "i18n.h"
 #include "watchlist_utils.h"
+#include "tdx_bridge.h"
+#include "timeline_volume.h"
+#include "daily_kline_chart.h"
 
 #include <QDateTime>
 #include <QGuiApplication>
+#include <QButtonGroup>
+#include <QAbstractButton>
+#include <QApplication>
 #include <QHash>
+#include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMouseEvent>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPushButton>
 #include <QScreen>
 #include <QTimer>
 #include <QTimeZone>
+#include <QToolButton>
 #include <QUrl>
 #include <QUrlQuery>
 #include <QVBoxLayout>
@@ -44,7 +54,7 @@ inline constexpr int kTimelinePopupScreenMarginPx = 12;
 
 #if defined(Q_OS_MACOS)
 static void* macWindowHandleForWidget(const QWidget* widget) {
-    if (!widget) {
+    if (!widget || QGuiApplication::platformName() != QStringLiteral("cocoa")) {
         return nullptr;
     }
     void* nsView = reinterpret_cast<void*>(widget->winId());
@@ -212,6 +222,11 @@ bool isFutureTimelineSupportedCode(const QString& rawCode) {
 }
 
 TimelineMarket timelineMarketOfCode(const QString& rawCode) {
+    if (watchlist_utils::isTdxCode(rawCode)) {
+        if (watchlist_utils::isHongKongCode(rawCode)) return TimelineMarket::HongKong;
+        if (watchlist_utils::isTdxExtendedCode(rawCode)) return TimelineMarket::Future;
+        return watchlist_utils::tdxSymbol(rawCode).startsWith(QStringLiteral("88")) ? TimelineMarket::Sector : TimelineMarket::Ashare;
+    }
     if (isAshareTimelineSupportedCode(rawCode)) {
         return TimelineMarket::Ashare;
     }
@@ -270,6 +285,7 @@ double fixedRangeLimitPctForAshareStock(const QString& rawCode) {
 QString toTimelineSecId(const QString& rawCode) {
     const QString raw = rawCode.trimmed();
     const QString code = raw.toLower();
+    if (watchlist_utils::isTdxCode(raw)) return watchlist_utils::normalizeApiWatchCode(raw);
     const TimelineMarket marketType = timelineMarketOfCode(raw);
     if (code.isEmpty() || marketType == TimelineMarket::Unknown) {
         return {};
@@ -621,7 +637,9 @@ bool parseTimelinePayload(
 class TimelineChartWidget : public QWidget {
 public:
     explicit TimelineChartWidget(QWidget* parent = nullptr) : QWidget(parent) {
+        setObjectName(QStringLiteral("timelineChart"));
         setMinimumSize(280, 180);
+        setMouseTracking(true);
     }
 
     void setConfig(const AppConfig& cfg) {
@@ -657,12 +675,52 @@ public:
     }
 
 protected:
+    void mouseMoveEvent(QMouseEvent* event) override {
+        if (!event) {
+            QWidget::mouseMoveEvent(event);
+            return;
+        }
+        if (property("dailyKlineVisible").toBool()) {
+            m_hoverValid = false;
+            setProperty("hoverPrice", QVariant());
+            setProperty("hoverPct", QVariant());
+            QWidget::mouseMoveEvent(event);
+            return;
+        }
+        const QPoint pos = event->position().toPoint();
+        const bool hovered = m_hoverPlotRect.contains(pos);
+        if (hovered != m_hoverValid || (hovered && pos != m_hoverPos)) {
+            m_hoverPos = pos;
+            m_hoverValid = hovered;
+            if (!hovered) {
+                setProperty("hoverPrice", QVariant());
+                setProperty("hoverPct", QVariant());
+            }
+            update();
+        }
+        QWidget::mouseMoveEvent(event);
+    }
+
+    void leaveEvent(QEvent* event) override {
+        if (m_hoverValid) {
+            m_hoverValid = false;
+            setProperty("hoverPrice", QVariant());
+            setProperty("hoverPct", QVariant());
+            update();
+        }
+        QWidget::leaveEvent(event);
+    }
+
     void paintEvent(QPaintEvent* event) override {
         Q_UNUSED(event);
 
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing, true);
         painter.fillRect(rect(), m_cfg.timelineChartBgColor);
+        m_hoverPlotRect = QRect();
+        // Daily mode shares this background, while the transparent child draws
+        // its candles. Suppress timeline contents to prevent ghosting beneath it.
+        if (property("dailyKlineVisible").toBool()) return;
 
         const QRect r = rect().adjusted(12, 12, -12, -12);
         if (r.width() < 80 || r.height() < 80) {
@@ -690,6 +748,24 @@ protected:
             r.height() - headerHeight - bottomMargin - headerToPlotGap
         );
         if (plot.width() < 20 || plot.height() < 20) {
+            return;
+        }
+        const bool hasVolume = std::any_of(m_points.cbegin(), m_points.cend(), [](const TimelinePoint& point) {
+            return std::isfinite(point.volume) && point.volume > 0.0;
+        });
+        const int volumeGap = hasVolume ? 8 : 0;
+        const int volumeHeight = hasVolume ? qBound(38, plot.height() / 4, 64) : 0;
+        QRect volumePlot;
+        if (hasVolume) {
+            volumePlot = QRect(
+                plot.left(),
+                plot.bottom() - volumeHeight + 1,
+                plot.width(),
+                volumeHeight
+            );
+            plot.setBottom(volumePlot.top() - volumeGap);
+        }
+        if (plot.height() < 20) {
             return;
         }
 
@@ -948,7 +1024,19 @@ protected:
                              QStringLiteral("%1%").arg(QString::number(pct, 'f', 2)));
         }
 
-        const int xLabelY = plot.bottom() + 8;
+        if (hasVolume) {
+            const auto volumeX = [&](int i) {
+                const TimelinePoint& point = m_points.at(i);
+                return (hasTradePeriodAxis && point.time.isValid())
+                    ? xOfTradePeriodTime(point.time)
+                    : (hasSessionAxis && point.time.isValid())
+                        ? xOfSessionTime(point.time.time())
+                        : xOfIndex(i);
+            };
+            timeline_volume::draw(painter, volumePlot, m_points, volumeX, baseline, m_cfg);
+        }
+
+        const int xLabelY = (hasVolume ? volumePlot.bottom() : plot.bottom()) + 8;
         const QDate firstDate = m_tradePeriods.isEmpty() ? QDate() : m_tradePeriods.first().begin.date();
         const auto tradePeriodTimeLabel = [&](const QDateTime& dt) {
             return (dt.date() == firstDate) ? dt.toString(QStringLiteral("H:mm")) : dt.toString(QStringLiteral("M/d H:mm"));
@@ -1150,18 +1238,40 @@ protected:
                     break;
                 }
             }
+            // Day extremes are derived from the latest minute series so the
+            // header keeps updating with every intraday refresh.
+            double dayHigh = qQNaN();
+            double dayLow = qQNaN();
+            for (const TimelinePoint& point : m_points) {
+                if (!std::isfinite(point.price)) continue;
+                dayHigh = std::isfinite(dayHigh) ? qMax(dayHigh, point.price) : point.price;
+                dayLow = std::isfinite(dayLow) ? qMin(dayLow, point.price) : point.price;
+            }
             const auto priceStr = [](double v) { return std::isfinite(v) ? QString::number(v, 'f', 2) : QStringLiteral("--"); };
             const QString s0 = priceStr(lastPoint.price);
             const QString s1 = QStringLiteral("%1%").arg(signedNumber(latestPct, 2));
             const QString s2 = signedNumber(latestChange, 3);
             const QString s3 = std::isfinite(latestAvgPrice) ? priceStr(latestAvgPrice) : QString();
+            const QString s4 = std::isfinite(dayHigh)
+                ? QStringLiteral("%1 %2").arg(
+                    i18n::t("popup.timeline.hoverHighShort", m_resolvedLanguage), priceStr(dayHigh))
+                : QString();
+            const QString s5 = std::isfinite(dayLow)
+                ? QStringLiteral("%1 %2").arg(
+                    i18n::t("popup.timeline.hoverLowShort", m_resolvedLanguage), priceStr(dayLow))
+                : QString();
             QFontMetrics fm(painter.font());
             const int gap = fm.horizontalAdvance(QStringLiteral("  "));
             const int w0 = fm.horizontalAdvance(s0);
             const int w1 = fm.horizontalAdvance(s1);
             const int w2 = fm.horizontalAdvance(s2);
             const int w3 = s3.isEmpty() ? 0 : fm.horizontalAdvance(s3);
-            const int totalW = w0 + gap + w1 + gap + w2 + (w3 > 0 ? gap + w3 : 0);
+            const int w4 = s4.isEmpty() ? 0 : fm.horizontalAdvance(s4);
+            const int w5 = s5.isEmpty() ? 0 : fm.horizontalAdvance(s5);
+            const int totalW = w0 + gap + w1 + gap + w2
+                + (w3 > 0 ? gap + w3 : 0)
+                + (w4 > 0 ? gap + w4 : 0)
+                + (w5 > 0 ? gap + w5 : 0);
             const bool hasBreakevenGainText = breakevenGainTotalWidth > 0;
             const QRect& marketInfoRect = hasBreakevenGainText ? breakevenGainRect : headerRect;
             const int titleAdvance = fm.horizontalAdvance(m_title + QStringLiteral("  "));
@@ -1184,11 +1294,26 @@ protected:
             painter.drawText(x, y, w1, h, Qt::AlignLeft | Qt::AlignVCenter, s1);
             x += w1 + gap;
             painter.drawText(x, y, w2, h, Qt::AlignLeft | Qt::AlignVCenter, s2);
+            x += w2;
             if (w3 > 0) {
-                x += w2 + gap;
+                x += gap;
                 painter.setPen(QPen(m_cfg.timelineChartAvgLineColor));
                 painter.drawText(x, y, w3, h, Qt::AlignLeft | Qt::AlignVCenter, s3);
+                x += w3;
             }
+            if (w4 > 0) {
+                x += gap;
+                painter.setPen(QPen(m_cfg.timelineChartUpColor));
+                painter.drawText(x, y, w4, h, Qt::AlignLeft | Qt::AlignVCenter, s4);
+                x += w4;
+            }
+            if (w5 > 0) {
+                x += gap;
+                painter.setPen(QPen(m_cfg.timelineChartDownColor));
+                painter.drawText(x, y, w5, h, Qt::AlignLeft | Qt::AlignVCenter, s5);
+            }
+            setProperty("dayHigh", dayHigh);
+            setProperty("dayLow", dayLow);
         }
 
         if (hasCostProfitText) {
@@ -1241,6 +1366,102 @@ protected:
                 painter.setFont(normalFont);
             }
         }
+
+        m_hoverPlotRect = plot;
+        if (m_hoverValid && plot.contains(m_hoverPos)) {
+            const auto xOfPoint = [&](int index) {
+                const TimelinePoint& point = m_points.at(index);
+                return (hasTradePeriodAxis && point.time.isValid())
+                    ? xOfTradePeriodTime(point.time)
+                    : (hasSessionAxis && point.time.isValid())
+                        ? xOfSessionTime(point.time.time())
+                        : xOfIndex(index);
+            };
+            // The crosshair follows the series: pick the minute bar nearest
+            // to the cursor's horizontal position instead of the y height.
+            int hoverIndex = -1;
+            int bestDistance = std::numeric_limits<int>::max();
+            for (int i = 0; i < m_points.size(); ++i) {
+                if (!std::isfinite(m_points.at(i).price)) continue;
+                const int distance = std::abs(xOfPoint(i) - m_hoverPos.x());
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    hoverIndex = i;
+                }
+            }
+            const double price = hoverIndex >= 0 ? m_points.at(hoverIndex).price : qQNaN();
+            const double pct = toPct(price, baseline);
+            if (hoverIndex < 0 || !std::isfinite(price) || !std::isfinite(pct)) return;
+            painter.save();
+            const int hx = qBound(plot.left(), xOfPoint(hoverIndex), plot.right());
+            const int hy = qBound(plot.top(), yOfPct(pct), plot.bottom());
+
+            QColor crossColor = m_cfg.timelineChartTextColor;
+            crossColor.setAlpha(120);
+            QPen crossPen(crossColor, 1.0, Qt::CustomDashLine);
+            crossPen.setDashPattern({4.0, 3.0});
+            painter.setPen(crossPen);
+            painter.drawLine(hx, plot.top(), hx, plot.bottom());
+            painter.drawLine(plot.left(), hy, plot.right(), hy);
+
+            const auto colorByPct = [&](double value) {
+                if (!std::isfinite(value)) return m_cfg.timelineChartTextColor;
+                if (value > 0.0) return m_cfg.timelineChartUpColor;
+                if (value < 0.0) return m_cfg.timelineChartDownColor;
+                return m_cfg.timelineChartTextColor;
+            };
+            const QString priceText = QString::number(price, 'f', 2);
+            const QString pctText = QStringLiteral("%1%").arg(signedNumber(pct, 2));
+            const QString pricePrefix = i18n::t("popup.timeline.hoverPrice", m_resolvedLanguage)
+                + QStringLiteral(": ");
+            const QString changePrefix = QStringLiteral("  ")
+                + i18n::t("popup.kline.hoverChange", m_resolvedLanguage) + QStringLiteral(": ");
+
+            QFont hoverFont = painter.font();
+            hoverFont.setBold(true);
+            const QFontMetrics hoverMetrics(hoverFont);
+            const int pricePrefixWidth = hoverMetrics.horizontalAdvance(pricePrefix);
+            const int priceWidth = hoverMetrics.horizontalAdvance(priceText);
+            const int changePrefixWidth = hoverMetrics.horizontalAdvance(changePrefix);
+            const int pctWidth = hoverMetrics.horizontalAdvance(pctText);
+            const int boxW = pricePrefixWidth + priceWidth + changePrefixWidth + pctWidth + 12;
+            const int boxH = hoverMetrics.height() + 8;
+            int boxX = hx + 12;
+            int boxY = hy + 12;
+            if (boxX + boxW > r.right()) boxX = hx - 12 - boxW;
+            if (boxY + boxH > r.bottom()) boxY = hy - 12 - boxH;
+            boxX = qBound(r.left(), boxX, qMax(r.left(), r.right() - boxW));
+            boxY = qBound(r.top(), boxY, qMax(r.top(), r.bottom() - boxH));
+
+            QColor boxBg = m_cfg.timelineChartBgColor;
+            boxBg.setAlpha(235);
+            QColor boxBorder = m_cfg.timelineChartGridColor;
+            boxBorder.setAlpha(180);
+            painter.setPen(QPen(boxBorder, 1.0));
+            painter.setBrush(boxBg);
+            painter.drawRoundedRect(QRect(boxX, boxY, boxW, boxH), 4, 4);
+            painter.setBrush(Qt::NoBrush);
+
+            painter.setFont(hoverFont);
+            const int textY = boxY + 4;
+            int textX = boxX + 6;
+            painter.setPen(m_cfg.timelineChartTextColor);
+            painter.drawText(textX, textY, pricePrefixWidth, hoverMetrics.height(),
+                Qt::AlignLeft | Qt::AlignVCenter, pricePrefix);
+            textX += pricePrefixWidth;
+            painter.drawText(textX, textY, priceWidth, hoverMetrics.height(),
+                Qt::AlignLeft | Qt::AlignVCenter, priceText);
+            textX += priceWidth;
+            painter.drawText(textX, textY, changePrefixWidth, hoverMetrics.height(),
+                Qt::AlignLeft | Qt::AlignVCenter, changePrefix);
+            textX += changePrefixWidth;
+            painter.setPen(colorByPct(pct));
+            painter.drawText(textX, textY, pctWidth, hoverMetrics.height(),
+                Qt::AlignLeft | Qt::AlignVCenter, pctText);
+            painter.restore();
+            setProperty("hoverPrice", price);
+            setProperty("hoverPct", pct);
+        }
     }
 
 private:
@@ -1250,6 +1471,9 @@ private:
     QString m_code;
     QString m_status;
     QVector<TimelinePoint> m_points;
+    QPoint m_hoverPos;
+    QRect m_hoverPlotRect;
+    bool m_hoverValid = false;
     QVector<TradePeriod> m_tradePeriods;
     double m_preClose = qQNaN();
     double m_cost = qQNaN();
@@ -1271,8 +1495,57 @@ public:
 
         QVBoxLayout* layout = new QVBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(0);
+
+        m_periodBar = new QWidget(this);
+        m_periodBar->setObjectName(QStringLiteral("klinePeriodBar"));
+        m_periodBar->setMouseTracking(true);
+        m_periodBar->installEventFilter(this);
+        auto* periodLayout = new QHBoxLayout(m_periodBar);
+        periodLayout->setContentsMargins(10, 7, 8, 3);
+        periodLayout->setSpacing(6);
+        m_periodGroup = new QButtonGroup(this);
+        auto* closeButton = new QToolButton(m_periodBar);
+        closeButton->setObjectName(QStringLiteral("klineCloseButton"));
+        closeButton->setText(QStringLiteral("×"));
+        closeButton->setToolTip(QStringLiteral("Close"));
+        closeButton->setCursor(Qt::PointingHandCursor);
+        closeButton->setMouseTracking(true);
+        closeButton->installEventFilter(this);
+#if defined(Q_OS_MACOS) || defined(Q_OS_MAC)
+        closeButton->setFixedSize(12, 12);
+        periodLayout->addWidget(closeButton);
+        periodLayout->addSpacing(6);
+#else
+        closeButton->setFixedSize(26, 18);
+#endif
+        const struct { const char* label; int mode; } modes[] = {
+            {"popup.kline.intraday", 0}, {"popup.kline.daily", 1},
+            {"popup.kline.weekly", 2}, {"popup.kline.monthly", 3},
+        };
+        for (const auto& mode : modes) {
+            auto* button = new QPushButton(m_periodBar);
+            button->setCheckable(true);
+            button->setProperty("klineMode", mode.mode);
+            button->setMouseTracking(true);
+            button->installEventFilter(this);
+            m_periodGroup->addButton(button, mode.mode);
+            periodLayout->addWidget(button);
+        }
+        periodLayout->addStretch(1);
+#if !defined(Q_OS_MACOS) && !defined(Q_OS_MAC)
+        periodLayout->addWidget(closeButton);
+#endif
+        connect(m_periodGroup, &QButtonGroup::idClicked, this, [this](int mode) {
+            selectDetailMode(mode);
+        });
+        connect(closeButton, &QToolButton::clicked, this, [this]() { hidePopup(); });
+        m_periodBar->hide();
+
         m_chart = new TimelineChartWidget(this);
-        layout->addWidget(m_chart);
+        m_dailyChart = new DailyKlineChart(m_chart);
+        layout->addWidget(m_periodBar);
+        layout->addWidget(m_chart, 1);
 
         m_refreshTimer = new QTimer(this);
         connect(m_refreshTimer, &QTimer::timeout, this, [this]() {
@@ -1285,20 +1558,106 @@ public:
     }
 
     void applyConfig(const AppConfig& cfg) {
+        const bool sourceChanged = normalizeQuoteSource(m_cfg.quoteSource) != normalizeQuoteSource(cfg.quoteSource)
+            || m_cfg.tdxUserId != cfg.tdxUserId || m_cfg.tdxToken != cfg.tdxToken
+            || m_cfg.networkInterface != cfg.networkInterface
+            || m_cfg.proxyType != cfg.proxyType || m_cfg.proxyHost != cfg.proxyHost || m_cfg.proxyPort != cfg.proxyPort
+            || m_cfg.proxyUser != cfg.proxyUser || m_cfg.proxyPassword != cfg.proxyPassword;
+        if (sourceChanged) {
+            ++m_requestToken;
+            cancelPendingReply();
+            m_timelineCache.clear();
+        }
         m_cfg = cfg;
         m_chart->setConfig(cfg);
+        applyDetailBarStyle();
+        updateDetailButtonTexts();
+        m_dailyChart->setContext(cfg, m_code, m_name);
         if (!isVisible()) {
             return;
         }
-        if (isCurrentMarketTradingTimeNow()) {
+        if (sourceChanged && !m_code.isEmpty() && m_chartMode == 0) fetchTimeline(true);
+        if (m_chartMode == 0 && isCurrentMarketTradingTimeNow()) {
             startRefreshTimer();
         } else {
             stopRefreshTimer();
         }
     }
 
-    void showForStock(const QString& code, const QString& name, const QRect& anchorRect, int baseWidth, double cost = qQNaN()) {
+    void showForStock(const QString& code, const QString& name, const QRect& anchorRect, int baseWidth, double cost = qQNaN(), bool daily = false) {
         Q_UNUSED(baseWidth);
+        showForStockInternal(code, name, anchorRect, cost, daily ? 1 : 0, false);
+    }
+
+    void showDetailForStock(const QString& code, const QString& name, const QRect& anchorRect, double cost = qQNaN()) {
+        showForStockInternal(code, name, anchorRect, cost, 0, true);
+    }
+
+    void hidePopup() {
+        ++m_requestToken;
+        stopRefreshTimer();
+        if (m_reply) {
+            QNetworkReply* pendingReply = m_reply;
+            m_reply = nullptr;
+            pendingReply->abort();
+            pendingReply->deleteLater();
+        }
+        m_code.clear();
+        m_name.clear();
+        m_hongKongHalfDayDate = QDate();
+        m_periodBar->hide();
+        hide();
+    }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        const bool isPeriodControl = watched == m_periodBar
+            || (m_periodGroup && m_periodGroup->buttons().contains(qobject_cast<QAbstractButton*>(watched)))
+            || (m_periodBar && watched == m_periodBar->findChild<QToolButton*>(QStringLiteral("klineCloseButton")));
+        if (!m_periodBar || !m_periodBar->isVisible() || !isPeriodControl) {
+            return QWidget::eventFilter(watched, event);
+        }
+
+        if (event->type() == QEvent::MouseButtonPress) {
+            auto* mouse = static_cast<QMouseEvent*>(event);
+            if (mouse->button() == Qt::LeftButton) {
+                m_periodBarPressGlobal = mouse->globalPosition().toPoint();
+                m_periodBarDragOffset = m_periodBarPressGlobal - frameGeometry().topLeft();
+                m_periodBarDragging = false;
+            }
+        } else if (event->type() == QEvent::MouseMove && m_periodBarPressGlobal != QPoint()) {
+            auto* mouse = static_cast<QMouseEvent*>(event);
+            if ((mouse->buttons() & Qt::LeftButton)
+                && (mouse->globalPosition().toPoint() - m_periodBarPressGlobal).manhattanLength()
+                    >= QApplication::startDragDistance()) {
+                m_periodBarDragging = true;
+                if (auto* button = qobject_cast<QAbstractButton*>(watched)) {
+                    button->setDown(false);
+                }
+                move(mouse->globalPosition().toPoint() - m_periodBarDragOffset);
+                return true;
+            }
+        } else if (event->type() == QEvent::MouseButtonRelease) {
+            auto* mouse = static_cast<QMouseEvent*>(event);
+            if (mouse->button() == Qt::LeftButton) {
+                const bool dragged = m_periodBarDragging;
+                m_periodBarPressGlobal = QPoint();
+                m_periodBarDragging = false;
+                if (dragged) return true;
+            }
+        }
+        return QWidget::eventFilter(watched, event);
+    }
+
+private:
+    void showForStockInternal(
+        const QString& code,
+        const QString& name,
+        const QRect& anchorRect,
+        double cost,
+        int requestedMode,
+        bool detail
+    ) {
         if (code.trimmed().isEmpty() || !isTimelinePopupSupportedCode(code)) {
             hidePopup();
             return;
@@ -1307,11 +1666,18 @@ public:
         const bool changed = (m_code.compare(code, Qt::CaseInsensitive) != 0);
         m_code = code.trimmed();
         m_name = name.trimmed();
+        setProperty("chartCode", m_code);
         m_cost = cost;
+        m_periodBar->setVisible(detail);
+        updateDetailButtonTexts();
+        applyDetailBarStyle();
+        m_dailyChart->setContext(m_cfg, m_code, m_name);
         if (changed) {
             m_hongKongHalfDayDate = QDate();
         }
 
+        // Keep the detailed chart on the same footprint as the existing
+        // intraday/daily popup; the period bar consumes part of the chart area.
         const int popupWidth = kTimelinePopupFixedWidth;
         const int popupHeight = kTimelinePopupFixedHeight;
         resize(popupWidth, popupHeight);
@@ -1351,28 +1717,85 @@ public:
             raise();
         }
         enforceTimelinePopupWindowLevel(this);
-        if (changed) {
+        selectDetailMode(requestedMode, false);
+        if (changed && requestedMode == 0) {
+            ++m_requestToken;
             fetchTimeline(true);
         }
-        if (isCurrentMarketTradingTimeNow()) {
+        if (requestedMode == 0 && isCurrentMarketTradingTimeNow()) {
             startRefreshTimer();
         } else {
             stopRefreshTimer();
         }
     }
 
-    void hidePopup() {
-        stopRefreshTimer();
-        if (m_reply) {
-            QNetworkReply* pendingReply = m_reply;
-            m_reply = nullptr;
-            pendingReply->abort();
-            pendingReply->deleteLater();
+    void updateDetailButtonTexts() {
+        if (!m_periodGroup) return;
+        const QString language = i18n::resolveLanguage(m_cfg.language);
+        const char* labels[] = {
+            "popup.kline.intraday", "popup.kline.daily", "popup.kline.weekly", "popup.kline.monthly",
+        };
+        for (int mode = 0; mode < 4; ++mode) {
+            if (auto* button = m_periodGroup->button(mode)) {
+                button->setText(i18n::t(labels[mode], language));
+            }
         }
-        m_code.clear();
-        m_name.clear();
-        m_hongKongHalfDayDate = QDate();
-        hide();
+    }
+
+    void applyDetailBarStyle() {
+        if (!m_periodBar) return;
+        const QString background = m_cfg.timelineChartBgColor.name(QColor::HexArgb);
+        const QString text = m_cfg.timelineChartTextColor.name(QColor::HexArgb);
+        const QString grid = m_cfg.timelineChartGridColor.name(QColor::HexArgb);
+        QString style = QStringLiteral(
+            "#klinePeriodBar { background: %1; border-bottom: 1px solid %2; }"
+            "#klinePeriodBar QPushButton { color: %3; background: transparent; border: 1px solid transparent;"
+            " padding: 3px 8px; border-radius: 3px; }"
+            "#klinePeriodBar QPushButton:checked { border-color: %2; background: rgba(255,255,255,30); }"
+            "#klinePeriodBar QPushButton:hover { background: rgba(255,255,255,18); }"
+        ).arg(background, grid, text);
+#if defined(Q_OS_MACOS) || defined(Q_OS_MAC)
+        // Match the traffic-light close control used by the market overview.
+        style += QStringLiteral(
+            "#klineCloseButton { background: #ff5f57; border: 1px solid rgba(0,0,0,80); border-radius: 6px;"
+            " color: transparent; font-size: 10px; padding: 0; }"
+            "#klineCloseButton:hover { background: #ff6b63; color: rgba(80,32,24,220); }"
+            "#klineCloseButton:pressed { background: #e4544d; color: rgba(80,32,24,220); }"
+        );
+#else
+        const QString textRgb = QStringLiteral("%1,%2,%3")
+            .arg(m_cfg.timelineChartTextColor.red())
+            .arg(m_cfg.timelineChartTextColor.green())
+            .arg(m_cfg.timelineChartTextColor.blue());
+        // Match the market overview's rounded Windows/Linux close control.
+        style += QStringLiteral(
+            "#klineCloseButton { background: rgba(%1,30); border: 1px solid rgba(%1,88); border-radius: 3px;"
+            " color: rgba(%1,210); font-size: 16px; padding: 0; }"
+            "#klineCloseButton:hover { background: rgba(232,17,35,220); border-color: rgba(255,255,255,80); color: rgba(255,255,255,240); }"
+            "#klineCloseButton:pressed { background: rgba(201,12,31,230); border-color: rgba(255,255,255,96); color: rgba(255,255,255,250); }"
+        ).arg(textRgb);
+#endif
+        m_periodBar->setStyleSheet(style);
+    }
+
+    void selectDetailMode(int mode, bool userInitiated = true) {
+        Q_UNUSED(userInitiated);
+        mode = qBound(0, mode, 3);
+        m_chartMode = mode;
+        if (m_periodGroup) {
+            if (auto* button = m_periodGroup->button(mode)) button->setChecked(true);
+        }
+        const KlinePeriod period = mode == 1 ? KlinePeriod::Daily
+            : mode == 2 ? KlinePeriod::Weekly
+            : mode == 3 ? KlinePeriod::Monthly
+            : KlinePeriod::None;
+        m_dailyChart->setPinnedPeriod(period);
+        if (mode == 0) {
+            if (isCurrentMarketTradingTimeNow()) startRefreshTimer();
+            if (!m_code.isEmpty()) fetchTimeline(true);
+        } else {
+            stopRefreshTimer();
+        }
     }
 
 private:
@@ -1495,11 +1918,50 @@ private:
         const TimelineMarket marketType = timelineMarketOfCode(m_code);
         cancelPendingReply();
 
-        const QString cacheKey = timelineRequestCacheKey(secId, days, keepLastTradingDayOnly);
+        const QString cacheKey = normalizeQuoteSource(m_cfg.quoteSource) + QLatin1Char(':')
+            + timelineRequestCacheKey(secId, days, keepLastTradingDayOnly);
         if (tryUseCachedTimeline(cacheKey, days, fallbackAllowed, token)) {
             return;
         }
 
+        if (normalizeQuoteSource(m_cfg.quoteSource) == QStringLiteral("tdx")) {
+            if (m_tdxPending) return;
+            m_tdxPending = true;
+            tdx_bridge::request(this, m_cfg,
+                {{QStringLiteral("operation"), QStringLiteral("timeline")},
+                 {QStringLiteral("code"), m_code}, {QStringLiteral("name"), m_name}},
+                [this, token, cacheKey](const QJsonObject& object, const QString& error) {
+                    m_tdxPending = false;
+                    if (token != m_requestToken) {
+                        if (isVisible() && !m_code.isEmpty()) fetchTimeline(true);
+                        return;
+                    }
+                    if (!error.isEmpty()) { m_chart->setStatusText(QStringLiteral("TDX: %1").arg(error)); return; }
+                    QVector<TimelinePoint> points;
+                    for (const QJsonValue& value : object.value(QStringLiteral("points")).toArray()) {
+                        const QJsonObject row = value.toObject();
+                        const QDateTime time = QDateTime::fromString(row.value(QStringLiteral("time")).toString(), QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+                        const double price = row.value(QStringLiteral("price")).toDouble(qQNaN());
+                        if (!time.isValid() || !std::isfinite(price)) continue;
+                        TimelinePoint point;
+                        point.time = time;
+                        point.price = price;
+                        point.avgPrice = row.value(QStringLiteral("avg")).toDouble(qQNaN());
+                        point.volume = row.value(QStringLiteral("volume")).toDouble(qQNaN());
+                        points.push_back(point);
+                    }
+                    const double preClose = object.value(QStringLiteral("preClose")).toDouble(qQNaN());
+                    cacheTimelineResult(cacheKey, points, preClose, {});
+                    applyTimelineResult(points, preClose, {});
+                });
+            m_chart->setStatusText(QStringLiteral("Loading %1 ...").arg(m_name.isEmpty() ? m_code : m_name));
+            return;
+        }
+
+        if (watchlist_utils::isTdxCode(m_code)) {
+            m_chart->setStatusText(QStringLiteral("This symbol requires the TongdaXin data source"));
+            return;
+        }
         QUrl url(QStringLiteral("https://push2delay.eastmoney.com/api/qt/stock/trends2/get"));
         QUrlQuery query;
         const QString callback = QStringLiteral("jQuery%1_%2")
@@ -1568,6 +2030,7 @@ private:
     }
 
     void fetchTimeline(bool fallbackAllowed) {
+        if (normalizeQuoteSource(m_cfg.quoteSource) == QStringLiteral("tdx") && m_tdxPending) return;
         ++m_requestToken;
         const QString title = m_name.isEmpty() ? m_code : QStringLiteral("%1  %2").arg(m_name, m_code);
         m_chart->setStatusText(QStringLiteral("Loading %1 ...").arg(title));
@@ -1576,7 +2039,10 @@ private:
 
     QWidget* m_parentWindow = nullptr;
     AppConfig m_cfg;
+    QWidget* m_periodBar = nullptr;
+    QButtonGroup* m_periodGroup = nullptr;
     TimelineChartWidget* m_chart = nullptr;
+    DailyKlineChart* m_dailyChart = nullptr;
     QTimer* m_refreshTimer = nullptr;
     QNetworkAccessManager m_nam;
     QNetworkReply* m_reply = nullptr;
@@ -1586,6 +2052,11 @@ private:
     QDate m_hongKongHalfDayDate;
     QHash<QString, TimelineCacheEntry> m_timelineCache;
     int m_requestToken = 0;
+    bool m_tdxPending = false;
+    int m_chartMode = 0;
+    QPoint m_periodBarPressGlobal;
+    QPoint m_periodBarDragOffset;
+    bool m_periodBarDragging = false;
 };
 
 SharedTimelineChartPopup::SharedTimelineChartPopup(QWidget* parent)
@@ -1608,10 +2079,22 @@ void SharedTimelineChartPopup::showForStock(
     const QString& name,
     const QRect& anchorRect,
     int baseWidth,
+    double cost,
+    bool daily
+) {
+    if (d) {
+        d->showForStock(code, name, anchorRect, baseWidth, cost, daily);
+    }
+}
+
+void SharedTimelineChartPopup::showDetailForStock(
+    const QString& code,
+    const QString& name,
+    const QRect& anchorRect,
     double cost
 ) {
     if (d) {
-        d->showForStock(code, name, anchorRect, baseWidth, cost);
+        d->showDetailForStock(code, name, anchorRect, cost);
     }
 }
 

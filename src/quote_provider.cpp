@@ -1,4 +1,6 @@
 #include "quote_provider.h"
+#include "tdx_quote_provider.h"
+#include "tdx_bridge.h"
 
 #include "app_constants.h"
 #include "network_logger.h"
@@ -48,6 +50,14 @@ inline constexpr auto kAccept = "Accept";
 inline constexpr auto kOrigin = "Origin";
 inline constexpr auto kConnection = "Connection";
 inline constexpr auto kContentType = "Content-Type";
+inline constexpr auto kCacheControl = "Cache-Control";
+inline constexpr auto kPragma = "Pragma";
+inline constexpr auto kSecFetchDest = "Sec-Fetch-Dest";
+inline constexpr auto kSecFetchMode = "Sec-Fetch-Mode";
+inline constexpr auto kSecFetchSite = "Sec-Fetch-Site";
+inline constexpr auto kSecChUa = "sec-ch-ua";
+inline constexpr auto kSecChUaMobile = "sec-ch-ua-mobile";
+inline constexpr auto kSecChUaPlatform = "sec-ch-ua-platform";
 
 inline constexpr auto kEastMoneyReferer = "https://quote.eastmoney.com/";
 inline constexpr auto kTonghuashunOrigin = "https://52etf.site";
@@ -457,20 +467,19 @@ QStringList extractTonghuashunStockTags(const QJsonObject& row) {
 
 const QVector<QPair<QString, QString>>& indexQuoteConfig() {
     static const QVector<QPair<QString, QString>> kConfig = {
-        {QStringLiteral("1.000001"),   QStringLiteral("上证指数")},
-        {QStringLiteral("0.399001"),   QStringLiteral("深证成指")},
-        {QStringLiteral("0.399006"),   QStringLiteral("创业板指")},
-        {QStringLiteral("1.000688"),   QStringLiteral("科创50")},
-        {QStringLiteral("47.800005"),  QStringLiteral("A股均价")},
-        {QStringLiteral("100.HSI"),    QStringLiteral("恒生指数")},
-        {QStringLiteral("124.HSTECH"), QStringLiteral("恒生科技")},
-        {QStringLiteral("104.CN00Y"),   QStringLiteral("富时中国A50")},
-        {QStringLiteral("133.USDCNH"), QStringLiteral("美元/人民币")},
-        {QStringLiteral("118.AUTD"),       QStringLiteral("黄金T+D")},
-        {QStringLiteral("100.NDX"), QStringLiteral("纳斯达克")},
-        {QStringLiteral("100.SPX"),    QStringLiteral("标普500")},
-        {QStringLiteral("100.N225"),   QStringLiteral("日经225")},
-        {QStringLiteral("100.KS11"),   QStringLiteral("韩国KOSPI")},
+        {QStringLiteral("tdx:main:1:000001"),   QStringLiteral("上证指数")},
+        {QStringLiteral("tdx:main:0:399001"),   QStringLiteral("深证成指")},
+        {QStringLiteral("tdx:main:0:399006"),   QStringLiteral("创业板指")},
+        {QStringLiteral("1.000680"),   QStringLiteral("科创综指")},
+        {QStringLiteral("tdx:ex:27:HSI"),    QStringLiteral("恒生指数")},
+        {QStringLiteral("tdx:ex:27:HZ5017"), QStringLiteral("恒生科技")},
+        {QStringLiteral("tdx:ex:10:USDCNH"), QStringLiteral("美元/人民币")},
+        {QStringLiteral("tdx:ex:12:A_IXIC"), QStringLiteral("纳斯达克综合")},
+        {QStringLiteral("tdx:ex:74:DJIA"), QStringLiteral("道琼斯BuyWrite")},
+        {QStringLiteral("tdx:main:1:880003"), QStringLiteral("平均股价")},
+        {QStringLiteral("tdx:ex:30:AUL8"), QStringLiteral("黄金主连")},
+        {QStringLiteral("tdx:ex:12:CNY0"), QStringLiteral("富时A50期指连续")},
+        {QStringLiteral("tdx:ex:17:BZ00W"), QStringLiteral("布油金融主连")},
     };
     return kConfig;
 }
@@ -533,6 +542,8 @@ void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
     }
 
     if (secIds.isEmpty()) {
+        if (std::any_of(stocks.cbegin(), stocks.cend(), [](const StockItem& item) { return watchlist_utils::isTdxCode(item.code); }))
+            emit error(QStringLiteral("通达信代码需要选择通达信数据源"));
         emit quotesReady({});
         return;
     }
@@ -587,6 +598,7 @@ void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
 }
 
 QString EastMoneyQuoteProvider::toSecId(const QString& rawCode) {
+    if (watchlist_utils::isTdxCode(rawCode)) return {};
     const QString sector = normalizedSectorCode(rawCode);
     if (!sector.isEmpty()) {
         return "90." + sector;
@@ -783,6 +795,7 @@ void EastMoneyQuoteProvider::handleResponse(
                     const QString remoteName = firstNonEmptyStringFromObject(row, {"f14", "f58"});
                     q.name = remoteName.isEmpty() ? stock.name : remoteName;
                     q.price = last;
+                    q.riseSpeed = firstNumber(row, {"f22"});
                     q.change = std::isnan(changeRaw)
                         ? derivedChange
                         : (isFuture ? changeRaw : chooseRawOrDiv100(changeRaw, 30.0, derivedChange));
@@ -813,6 +826,10 @@ EastMoneyHotRankProvider::EastMoneyHotRankProvider(QObject* parent)
     : QObject(parent) {}
 
 void EastMoneyHotRankProvider::applyConfig(const AppConfig& cfg) {
+    m_cfg = cfg;
+    ++m_tdxGeneration;
+    m_tdxPending = false;
+    m_tdxConceptPending = false;
     m_userAgent = network_utils::effectiveUserAgent(cfg);
     m_proxy = network_utils::proxyFromConfig(cfg);
 
@@ -864,6 +881,55 @@ void EastMoneyHotRankProvider::fetchHotList(
     const QString& sortOrder,
     bool forceRefresh
 ) {
+    if (normalizeQuoteSource(m_cfg.quoteSource) == QStringLiteral("tdx")) {
+        const QString field = normalizeHotRankSortField(sortField);
+        const QString order = normalizeHotRankSortOrder(sortOrder);
+        const QString key = QStringLiteral("%1|%2|%3").arg(limit).arg(field, order);
+        auto& cached = concept ? m_cachedHotConcepts : m_cachedHotSectors;
+        auto& cacheKey = concept ? m_hotConceptCacheRequestKey : m_hotSectorCacheRequestKey;
+        auto& expires = concept ? m_hotConceptCacheExpiresAtMs : m_hotSectorCacheExpiresAtMs;
+        auto& valid = concept ? m_hotConceptCacheValid : m_hotSectorCacheValid;
+        auto& pending = concept ? m_tdxConceptPending : m_tdxPending;
+        if (!forceRefresh && valid && cacheKey == key && QDateTime::currentMSecsSinceEpoch() < expires) {
+            if (concept) emit hotConceptsReady(cached); else emit hotSectorsReady(cached);
+            return;
+        }
+        if (pending) return;
+        pending = true;
+        const int generation = m_tdxGeneration;
+        tdx_bridge::request(this, m_cfg,
+            {{QStringLiteral("operation"), QStringLiteral("hot_boards")},
+             {QStringLiteral("kind"), concept ? QStringLiteral("concept") : QStringLiteral("sector")},
+             {QStringLiteral("count"), qBound(1, limit, 1000)},
+             {QStringLiteral("sortField"), field}, {QStringLiteral("sortOrder"), order}},
+            [this, concept, key, generation](const QJsonObject& object, const QString& message) {
+                if (generation != m_tdxGeneration) return;
+                (concept ? m_tdxConceptPending : m_tdxPending) = false;
+                if (!message.isEmpty()) { emit error(message); return; }
+                QVector<HotRankItem> items;
+                auto num = [](const QJsonObject& row, const char* name) {
+                    return row.value(QString::fromLatin1(name)).toDouble(qQNaN());
+                };
+                for (const auto& value : object.value(QStringLiteral("items")).toArray()) {
+                    const auto row = value.toObject();
+                    HotRankItem item;
+                    item.code = row.value(QStringLiteral("code")).toString();
+                    item.name = row.value(QStringLiteral("name")).toString();
+                    item.detailFs = row.value(QStringLiteral("detailFs")).toString();
+                    item.watchCode = row.value(QStringLiteral("watchCode")).toString();
+                    item.pct = num(row, "pct"); item.change = num(row, "change");
+                    item.mainNetInflow = num(row, "mainNetInflow"); item.yearPct = num(row, "yearPct");
+                    items.push_back(item);
+                }
+                (concept ? m_cachedHotConcepts : m_cachedHotSectors) = items;
+                (concept ? m_hotConceptCacheRequestKey : m_hotSectorCacheRequestKey) = key;
+                (concept ? m_hotConceptCacheValid : m_hotSectorCacheValid) = true;
+                (concept ? m_hotConceptCacheExpiresAtMs : m_hotSectorCacheExpiresAtMs) = QDateTime::currentMSecsSinceEpoch() + app_constants::kNetworkCacheTtlMs;
+                if (concept) emit hotConceptsReady(items); else emit hotSectorsReady(items);
+            });
+        return;
+    }
+
     m_nam.setProxy(m_proxy);
 
     const QString normalizedSortField = normalizeHotRankSortField(sortField);
@@ -1092,6 +1158,10 @@ EastMoneyHotRankDetailProvider::EastMoneyHotRankDetailProvider(QObject* parent)
     : QObject(parent) {}
 
 void EastMoneyHotRankDetailProvider::applyConfig(const AppConfig& cfg) {
+    m_cfg = cfg;
+    ++m_tdxGeneration;
+    m_tdxPending = false;
+    m_tdxDesiredFs.clear();
     m_userAgent = network_utils::effectiveUserAgent(cfg);
     m_proxy = network_utils::proxyFromConfig(cfg);
     m_cacheValid = false;
@@ -1111,6 +1181,44 @@ void EastMoneyHotRankDetailProvider::fetch(const QString& fs, int limit, bool fo
     const QString normalizedFs = fs.trimmed();
     if (normalizedFs.isEmpty()) {
         emit error(fs, QStringLiteral("eastmoney hot detail fs missing"));
+        return;
+    }
+
+    if (normalizeQuoteSource(m_cfg.quoteSource) == QStringLiteral("tdx")) {
+        if (m_tdxPending) { m_tdxDesiredFs = normalizedFs; return; }
+        if (!forceRefresh && m_cacheValid && m_cachedFs == normalizedFs && QDateTime::currentMSecsSinceEpoch() < m_cacheExpiresAtMs) {
+            emit dataReady(normalizedFs, m_cachedItems); return;
+        }
+        m_tdxPending = true;
+        const int generation = m_tdxGeneration;
+        tdx_bridge::request(this, m_cfg,
+            {{QStringLiteral("operation"), QStringLiteral("members")},
+             {QStringLiteral("code"), normalizedFs}, {QStringLiteral("count"), qBound(1, limit, 1000)}},
+            [this, generation, normalizedFs](const QJsonObject& object, const QString& message) {
+                if (generation != m_tdxGeneration) return;
+                m_tdxPending = false;
+                if (!m_tdxDesiredFs.isEmpty() && m_tdxDesiredFs != normalizedFs) {
+                    const QString desired = m_tdxDesiredFs; m_tdxDesiredFs.clear(); fetch(desired); return;
+                }
+                m_tdxDesiredFs.clear();
+                if (!message.isEmpty()) { emit error(normalizedFs, message); return; }
+                QVector<HotRankDetailItem> items;
+                for (const auto& value : object.value(QStringLiteral("items")).toArray()) {
+                    const auto row = value.toObject();
+                    HotRankDetailItem item;
+                    item.code = row.value(QStringLiteral("code")).toString(); item.watchCode = item.code;
+                    item.name = row.value(QStringLiteral("name")).toString();
+                    item.price = row.value(QStringLiteral("price")).toDouble(qQNaN());
+                    item.pct = row.value(QStringLiteral("pct")).toDouble(qQNaN());
+                    item.marketCap = row.value(QStringLiteral("marketCap")).toDouble(qQNaN());
+                    item.turnover = row.value(QStringLiteral("turnover")).toDouble(qQNaN());
+                    item.yearPct = row.value(QStringLiteral("yearPct")).toDouble(qQNaN());
+                    items.push_back(item);
+                }
+                m_cachedFs = normalizedFs; m_cachedItems = items; m_cacheValid = true;
+                m_cacheExpiresAtMs = QDateTime::currentMSecsSinceEpoch() + app_constants::kNetworkCacheTtlMs;
+                emit dataReady(normalizedFs, items);
+            });
         return;
     }
 
@@ -1272,6 +1380,9 @@ AshareMarketBreadthProvider::AshareMarketBreadthProvider(QObject* parent)
     : QObject(parent) {}
 
 void AshareMarketBreadthProvider::applyConfig(const AppConfig& cfg) {
+    m_cfg = cfg;
+    ++m_tdxGeneration;
+    m_tdxPending = false;
     m_userAgent = network_utils::effectiveUserAgent(cfg);
     m_proxy = network_utils::proxyFromConfig(cfg);
     m_cacheValid = false;
@@ -1579,6 +1690,8 @@ QString parseMarketTurnoverPayload(const QByteArray& body, MarketBreadthSnapshot
         } else if (key == QLatin1String("turnover_change")) {
             snapshot->turnoverChange = value;
             hasTurnoverChange = std::isfinite(value);
+        } else if (key == QLatin1String("predict_turnover")) {
+            snapshot->turnoverForecast = value;
         }
     }
 
@@ -1604,9 +1717,85 @@ void applyTonghuashunCommonHeaders(QNetworkRequest* req, const QString& userAgen
     req->setTransferTimeout(network_logger::kNetworkRequestTimeoutMs);
 }
 
+void applyLegacyTurnoverHeaders(QNetworkRequest* req, const QString& userAgent) {
+    applyTonghuashunCommonHeaders(req, userAgent);
+    req->setRawHeader(headers::kCacheControl, "no-cache");
+    req->setRawHeader(headers::kPragma, "no-cache");
+    req->setRawHeader(headers::kSecFetchDest, "empty");
+    req->setRawHeader(headers::kSecFetchMode, "cors");
+    req->setRawHeader(headers::kSecFetchSite, "cross-site");
+    req->setRawHeader(headers::kSecChUa,
+        "\"Chromium\";v=\"154\", \"Google Chrome\";v=\"154\", \"Not A(Brand\";v=\"99\"");
+    req->setRawHeader(headers::kSecChUaMobile, "?0");
+    req->setRawHeader(headers::kSecChUaPlatform, "\"macOS\"");
+}
+
 } // namespace
 
 void AshareMarketBreadthProvider::fetch(bool forceRefresh) {
+    if (normalizeQuoteSource(m_cfg.quoteSource) == QStringLiteral("tdx")) {
+        if (m_tdxPending) return;
+        if (!forceRefresh && m_cacheValid && QDateTime::currentMSecsSinceEpoch() < m_cacheExpiresAtMs) {
+            emit dataReady(m_cachedSnapshot); return;
+        }
+        m_tdxPending = true;
+        const int generation = m_tdxGeneration;
+        tdx_bridge::request(this, m_cfg, {{QStringLiteral("operation"), QStringLiteral("breadth")}, {QStringLiteral("force"), forceRefresh}},
+            [this, generation](const QJsonObject& row, const QString& message) {
+                if (generation != m_tdxGeneration) return;
+                if (!message.isEmpty()) {
+                    m_tdxPending = false;
+                    m_cacheValid = false;
+                    emit dataReady(MarketBreadthSnapshot{});
+                    emit error(message);
+                    return;
+                }
+                MarketBreadthSnapshot snapshot;
+                snapshot.upCount = row.value(QStringLiteral("upCount")).toInt(-1);
+                snapshot.flatCount = row.value(QStringLiteral("flatCount")).toInt(-1);
+                snapshot.downCount = row.value(QStringLiteral("downCount")).toInt(-1);
+                snapshot.limitUpCount = row.value(QStringLiteral("limitUpCount")).toInt();
+                snapshot.limitDownCount = row.value(QStringLiteral("limitDownCount")).toInt();
+                snapshot.lastUpdatedAtMs = static_cast<qint64>(row.value(QStringLiteral("lastUpdatedAtMs")).toDouble());
+                snapshot.overviewValid = snapshot.breadthValid = snapshot.upCount >= 0
+                    && snapshot.flatCount >= 0 && snapshot.downCount >= 0
+                    && (qint64(snapshot.upCount) + snapshot.flatCount + snapshot.downCount) > 0;
+                for (const auto& value : row.value(QStringLiteral("distribution")).toArray()) {
+                    const auto point = value.toObject();
+                    snapshot.distribution.push_back({point.value(QStringLiteral("bucket")).toString(), point.value(QStringLiteral("value")).toInt()});
+                }
+                snapshot.distributionValid = !snapshot.distribution.isEmpty();
+                for (const auto& value : row.value(QStringLiteral("overviewTimeline")).toArray()) {
+                    const auto point = value.toObject();
+                    MarketBreadthTimelinePoint item;
+                    item.timestampMs = static_cast<qint64>(point.value(QStringLiteral("timestampMs")).toDouble());
+                    item.riseCount = point.value(QStringLiteral("riseCount")).toInt(-1);
+                    item.fallCount = point.value(QStringLiteral("fallCount")).toInt(-1);
+                    item.limitUpCount = point.value(QStringLiteral("limitUpCount")).toInt(-1);
+                    item.limitDownCount = point.value(QStringLiteral("limitDownCount")).toInt(-1);
+                    snapshot.overviewTimeline.push_back(item);
+                }
+                // Publish the gotdx history immediately; a slow turnover HTTP
+                // request must not delay the breadth chart, including after close.
+                MarketBreadthSnapshot immediateSnapshot = snapshot;
+                const auto chinaDate = [](qint64 ms) {
+                    return QDateTime::fromMSecsSinceEpoch(ms).toOffsetFromUtc(8 * 3600).date();
+                };
+                if (m_cachedSnapshot.turnoverValid
+                    && chinaDate(m_cachedSnapshot.lastUpdatedAtMs) == chinaDate(snapshot.lastUpdatedAtMs)) {
+                    immediateSnapshot.turnover = m_cachedSnapshot.turnover;
+                    immediateSnapshot.turnoverPre = m_cachedSnapshot.turnoverPre;
+                    immediateSnapshot.turnoverChange = m_cachedSnapshot.turnoverChange;
+                    immediateSnapshot.turnoverValid = true;
+                }
+                emit dataReady(immediateSnapshot);
+                const QString trendError = row.value(QStringLiteral("trendError")).toString();
+                if (!trendError.isEmpty()) qWarning() << "[MarketBreadth]" << trendError;
+                fetchLegacyTurnover(snapshot, generation);
+            });
+        return;
+    }
+
     m_nam.setProxy(m_proxy);
 
     if (forceRefresh) {
@@ -1770,7 +1959,7 @@ void AshareMarketBreadthProvider::fetch(bool forceRefresh) {
     QNetworkRequest turnoverReq(QUrl(QStringLiteral(
         "https://dq.10jqka.com.cn/fuyao/market_analysis_api/chart/v1/get_chart_data?chart_key=turnover_minute"
     )));
-    applyTonghuashunCommonHeaders(&turnoverReq, m_userAgent);
+    applyLegacyTurnoverHeaders(&turnoverReq, m_userAgent);
     const network_logger::RequestTrace turnoverTrace = network_logger::logRequestStart(
         QStringLiteral("market-turnover"),
         QStringLiteral("GET"),
@@ -1818,6 +2007,58 @@ void AshareMarketBreadthProvider::fetch(bool forceRefresh) {
         m_turnoverDone = true;
         finalizeFetch(token);
     });
+}
+
+void AshareMarketBreadthProvider::fetchLegacyTurnover(
+    const MarketBreadthSnapshot& breadthSnapshot,
+    int generation
+) {
+    if (generation != m_tdxGeneration) return;
+
+    m_nam.setProxy(m_proxy);
+    QNetworkRequest request(QUrl(QStringLiteral(
+        "https://dq.10jqka.com.cn/fuyao/market_analysis_api/chart/v1/get_chart_data?chart_key=turnover_minute"
+    )));
+    applyLegacyTurnoverHeaders(&request, m_userAgent);
+    const network_logger::RequestTrace trace = network_logger::logRequestStart(
+        QStringLiteral("market-turnover"), QStringLiteral("GET"), request, m_proxy);
+    m_turnoverReply = m_nam.get(request);
+    QNetworkReply* reply = m_turnoverReply;
+    connect(reply, &QNetworkReply::finished, this,
+        [this, reply, trace, breadthSnapshot, generation]() {
+            if (reply == m_turnoverReply) m_turnoverReply = nullptr;
+            const QString networkError = reply->error() == QNetworkReply::NoError
+                ? QString() : reply->errorString();
+            const QByteArray body = reply->readAll();
+            network_logger::logRequestFinish(trace, reply, body.size(), body);
+            reply->deleteLater();
+
+            if (generation != m_tdxGeneration) return;
+            m_tdxPending = false;
+
+            MarketBreadthSnapshot snapshot = breadthSnapshot;
+            QString errorMessage;
+            if (!networkError.isEmpty()) {
+                errorMessage = QStringLiteral("market turnover request failed: %1").arg(networkError);
+            } else {
+                errorMessage = parseMarketTurnoverPayload(body, &snapshot);
+            }
+            if (!errorMessage.isEmpty()) {
+                m_cacheValid = false;
+                emit dataReady(snapshot);
+                if (errorMessage != m_lastError) {
+                    emit error(errorMessage);
+                    m_lastError = errorMessage;
+                }
+                return;
+            }
+
+            m_lastError.clear();
+            m_cachedSnapshot = snapshot;
+            m_cacheValid = true;
+            m_cacheExpiresAtMs = QDateTime::currentMSecsSinceEpoch() + app_constants::kNetworkCacheTtlMs;
+            emit dataReady(snapshot);
+        });
 }
 
 void AshareMarketBreadthProvider::finalizeFetch(int token) {
@@ -2116,6 +2357,29 @@ EastMoneyIndexQuoteProvider::EastMoneyIndexQuoteProvider(QObject* parent)
     : QObject(parent) {}
 
 void EastMoneyIndexQuoteProvider::applyConfig(const AppConfig& cfg) {
+    if (m_tdxProvider) {
+        disconnect(m_tdxProvider, nullptr, this, nullptr);
+        m_tdxProvider->deleteLater();
+        m_tdxProvider = nullptr;
+    }
+    if (normalizeQuoteSource(cfg.quoteSource) == QStringLiteral("tdx")) {
+        m_tdxProvider = new TdxQuoteProvider(this);
+        m_tdxProvider->applyConfig(cfg);
+        connect(m_tdxProvider, &IQuoteProvider::quotesReady, this, [this](const QVector<QuoteItem>& quotes) {
+            QHash<QString, QuoteItem> byCode;
+            for (const auto& quote : quotes) byCode.insert(quote.code, quote);
+            QVector<IndexQuoteItem> items;
+            for (const auto& preset : indexQuoteConfig()) {
+                const auto quote = byCode.value(preset.first);
+                items.push_back({preset.first, preset.second, quote.price, quote.change, quote.pct});
+            }
+            m_cachedItems = items;
+            m_cacheExpiresAtMs = QDateTime::currentMSecsSinceEpoch() + app_constants::kNetworkCacheTtlMs;
+            m_cacheValid = true;
+            emit dataReady(items);
+        });
+        connect(m_tdxProvider, &IQuoteProvider::error, this, &EastMoneyIndexQuoteProvider::error);
+    }
     m_userAgent = network_utils::effectiveUserAgent(cfg);
     m_proxy = network_utils::proxyFromConfig(cfg);
     m_cacheValid = false;
@@ -2154,10 +2418,18 @@ void EastMoneyIndexQuoteProvider::fetch(bool forceRefresh) {
     }
 
     const QVector<QPair<QString, QString>>& config = indexQuoteConfig();
+    if (m_tdxProvider) {
+        QVector<StockItem> stocks;
+        for (const auto& preset : config) stocks.push_back({preset.first, preset.second});
+        m_tdxProvider->fetchQuotes(stocks);
+        return;
+    }
     QStringList secIds;
     secIds.reserve(config.size());
     for (const auto& pair : config) {
-        secIds.push_back(pair.first);
+        if (!watchlist_utils::isTdxCode(pair.first)) {
+            secIds.push_back(pair.first);
+        }
     }
 
     QUrl url(QStringLiteral("https://push2delay.eastmoney.com/api/qt/ulist.np/get"));

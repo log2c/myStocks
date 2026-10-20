@@ -6,6 +6,8 @@
 #include <QColor>
 
 #include <cmath>
+#include <algorithm>
+#include <limits>
 
 namespace {
 
@@ -36,7 +38,8 @@ QVector<int> visibleLogicalColumns(const AppConfig& cfg) {
 // Returns true for ChiNext (创业板 300/301) and STAR Market (科创板 688/689)
 // which use a 20% limit but we show ▲▲▲/▼▼▼ at ±10% per display rules.
 bool isHighLimitCode(const QString& rawCode) {
-    QString code = rawCode.trimmed().toLower();
+    QString code = watchlist_utils::isTdxCode(rawCode)
+        ? watchlist_utils::tdxSymbol(rawCode).toLower() : rawCode.trimmed().toLower();
     if (code.startsWith("sh") || code.startsWith("sz")) {
         code = code.mid(2);
     }
@@ -117,6 +120,23 @@ bool hasBreakevenGain(const QuoteItem& quote) {
         && std::isfinite(quote.price)
         && quote.price > 0.0
         && quote.price < quote.cost;
+}
+
+bool isMarketResetBatch(const QVector<QuoteItem>& quotes) {
+    if (quotes.isEmpty()) {
+        return false;
+    }
+
+    return std::all_of(quotes.cbegin(), quotes.cend(), [](const QuoteItem& quote) {
+        // TDX uses -100% (and occasionally a more extreme sentinel) while
+        // resetting quotes before the market opens. A real batch should never
+        // have every instrument at that value.
+        return std::isfinite(quote.pct) && quote.pct <= -99.0;
+    });
+}
+
+bool isIndexQuote(const QuoteItem& quote) {
+    return watchlist_utils::isPredefinedIndexCode(quote.code);
 }
 
 } // namespace
@@ -239,18 +259,24 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
             return withHongKongNamePrefix(q.code, q.name);
         case ColPrice:
             return std::isnan(q.price) ? QString("--") : QString::number(q.price, 'f', 3);
+        case ColRiseSpeed:
+            if (q.resetData || isIndexQuote(q)) return {};
+            return std::isnan(q.riseSpeed) ? QString("--") : formatSigned(q.riseSpeed, 2, true);
         case ColPct:
+            if (q.resetData) return {};
             return std::isnan(q.pct) ? QString("--") : formatSigned(q.pct, 2, true);
         case ColChange:
+            if (q.resetData) return {};
             return std::isnan(q.change) ? QString("--") : formatSigned(q.change, 3, false);
         case ColIndicator:
+            if (q.resetData) return {};
             return indicatorSymbol(q.code, q.pct);
         case ColCost: {
             if (std::isnan(q.cost) || q.cost <= 0.0) return QString();
             return QString::number(q.cost, 'f', 3);
         }
         case ColCostPct: {
-            if (std::isnan(q.cost) || q.cost <= 0.0 || std::isnan(q.price)) return QString();
+            if (std::isnan(q.cost) || q.cost <= 0.0 || !std::isfinite(q.price) || q.price <= 0.0) return QString();
             const double costPct = (q.price - q.cost) / q.cost * 100.0;
             return formatSigned(costPct, 2, true);
         }
@@ -316,7 +342,15 @@ QVariant QuoteModel::data(const QModelIndex& index, int role) const {
         if (index.column() == ColBreakevenGain) {
             return hasBreakevenGain(q) ? m_cfg.upColor : defaultText;
         }
+        if (index.column() == ColRiseSpeed) {
+            if (isIndexQuote(q)) return defaultText;
+            if (!std::isfinite(q.riseSpeed)) return defaultText;
+            return q.riseSpeed > 0 ? m_cfg.upColor : q.riseSpeed < 0 ? m_cfg.downColor : m_cfg.flatColor;
+        }
         if (index.column() >= ColPrice) {
+            if (q.resetData && index.column() == ColPrice && std::isfinite(q.price)) {
+                return m_cfg.flatColor;
+            }
             if (std::isnan(q.pct)) {
                 return defaultText;
             }
@@ -341,18 +375,20 @@ void QuoteModel::setStocks(const QVector<StockItem>& stocks) {
 
     m_rows.reserve(stocks.size());
     for (int i = 0; i < stocks.size(); ++i) {
+        if (!watchlist_utils::isTdxCompatibleCode(stocks[i].code)) continue;
         QuoteItem q;
-        q.code = stocks[i].code;
+        q.code = watchlist_utils::normalizeApiWatchCode(stocks[i].code);
         q.name = stocks[i].name;
         q.cost = stocks[i].cost;
         m_rows.push_back(q);
-        m_rowByCode.insert(q.code, i);
+        m_rowByCode.insert(q.code, m_rows.size() - 1);
     }
 
     endResetModel();
 }
 
 void QuoteModel::updateQuotes(const QVector<QuoteItem>& quotes) {
+    const bool resetBatch = isMarketResetBatch(quotes);
     for (const QuoteItem& q : quotes) {
         if (!m_rowByCode.contains(q.code)) {
             continue;
@@ -361,16 +397,32 @@ void QuoteModel::updateQuotes(const QVector<QuoteItem>& quotes) {
         const int row = m_rowByCode.value(q.code);
         m_rows[row].name = q.name.isEmpty() ? m_rows[row].name : q.name;
 
+        const bool resetData = resetBatch || q.resetData
+            || (std::isfinite(q.pct) && q.pct <= -99.0);
+
         // Detect indicator change before updating pct
         const QString oldIndicator = indicatorSymbol(m_rows[row].code, m_rows[row].pct);
         const QString newIndicator = indicatorSymbol(q.code, q.pct);
         const bool indicatorChanged = (oldIndicator != newIndicator)
             && !std::isnan(m_rows[row].pct)  // skip initial load
-            && !std::isnan(q.pct);
+            && !std::isnan(q.pct)
+            && !resetData;
 
+        m_rows[row].resetData = resetData;
+        m_rows[row].preClose = q.preClose;
         m_rows[row].price = q.price;
-        m_rows[row].pct = q.pct;
-        m_rows[row].change = q.change;
+        if (resetData) {
+            // Prefer the explicit previous close; recover it from legacy raw
+            // reset quotes only when the zero price and change identify it.
+            m_rows[row].price = std::isfinite(q.preClose) && q.preClose > 0.0
+                ? q.preClose
+                : (q.price == 0.0 && std::isfinite(q.change) && q.change < 0.0
+                    ? -q.change : (q.price > 0.0 ? q.price : qQNaN()));
+            m_blinkCounters.remove(row);
+        }
+        m_rows[row].pct = resetData ? qQNaN() : q.pct;
+        m_rows[row].change = resetData ? qQNaN() : q.change;
+        m_rows[row].riseSpeed = resetData ? qQNaN() : q.riseSpeed;
 
         if (indicatorChanged && m_cfg.blinkReminderEnabled) {
             m_blinkCounters[row] = 4; // 4 half-periods = 2 full blinks
@@ -386,9 +438,10 @@ void QuoteModel::updateQuotes(const QVector<QuoteItem>& quotes) {
 
 void QuoteModel::setMarketBreadthSnapshot(const MarketBreadthSnapshot& snapshot) {
     m_marketBreadth = snapshot;
-    m_marketBreadth.upCount = qMax(0, m_marketBreadth.upCount);
-    m_marketBreadth.flatCount = qMax(0, m_marketBreadth.flatCount);
-    m_marketBreadth.downCount = qMax(0, m_marketBreadth.downCount);
+    const qint64 total = qint64(snapshot.upCount) + snapshot.flatCount + snapshot.downCount;
+    m_marketBreadth.breadthValid = snapshot.breadthValid
+        && snapshot.upCount >= 0 && snapshot.flatCount >= 0 && snapshot.downCount >= 0
+        && total > 0 && total <= std::numeric_limits<int>::max();
     emitSpecialRowsChanged();
 }
 
@@ -455,7 +508,7 @@ QString QuoteModel::trayTooltipText() const {
         const QString price = std::isnan(q.price)
             ? QStringLiteral("--")
             : QString::number(q.price, 'f', 3);
-        const QString pct = std::isnan(q.pct)
+        const QString pct = q.resetData || std::isnan(q.pct)
             ? QStringLiteral("--")
             : formatSigned(q.pct, 2, true);
         const QString indicator = indicatorSymbol(q.code, q.pct);
@@ -500,13 +553,6 @@ QString QuoteModel::specialRowLabel(int row) const {
 
 QString QuoteModel::specialRowText(int row) const {
     if (rowKind(row) == RowKindMarketBreadth) {
-        if (!m_marketBreadth.breadthValid) {
-            return i18n::t("quote.dataError", m_language);
-        }
-        const int total = m_marketBreadth.upCount + m_marketBreadth.flatCount + m_marketBreadth.downCount;
-        if (total <= 0) {
-            return i18n::t("quote.noData", m_language);
-        }
         return {};
     }
 

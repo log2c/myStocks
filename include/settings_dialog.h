@@ -55,6 +55,11 @@ private:
 
     QWidget* buildGeneralTab();
     QWidget* buildNetworkTab();
+    QWidget* buildTdxTab();
+    void loadTdxServers();
+    void populateTdxServers(bool extended, const QStringList& addresses);
+    QStringList tdxServerAddresses(bool extended) const;
+    void testTdxServers(bool extended, bool selectedOnly = false);
     QWidget* buildDisplayTab();
     QWidget* buildOtherTab();
     QWidget* buildStocksTab();
@@ -89,7 +94,22 @@ private:
     QLabel* m_marketBreadthHotkeyIndicator = nullptr;
     QPushButton* m_marketBreadthHotkeyClearBtn = nullptr;
     QCheckBox* m_startupShowFloatingWindowCheck = nullptr;
+    QComboBox* m_quoteSourceCombo = nullptr;
+    QLineEdit* m_tdxUserIdEdit = nullptr;
+    QLineEdit* m_tdxTokenEdit = nullptr;
+    QCheckBox* m_tdxRememberTokenCheck = nullptr;
+    QCheckBox* m_tdxAutoSelect[2] = {};
+    QTableWidget* m_tdxServerTables[2] = {};
+    QLabel* m_tdxServerStatus[2] = {};
+    QLabel* m_tdxSelectedServer[2] = {};
+    QPushButton* m_tdxTestButtons[2] = {};
+    QString m_tdxServerSelection[2];
+    QHash<QString, QString> m_tdxBuiltinServerNames[2];
+    QStringList m_tdxBuiltinServerPools[2];
+    bool m_tdxServersLoading = false;
+    bool m_tdxProbePending = false;
     QLineEdit* m_userAgentEdit = nullptr;
+    QComboBox* m_networkInterfaceCombo = nullptr;
     QComboBox* m_proxyTypeCombo = nullptr;
     QLineEdit* m_proxyHostEdit = nullptr;
     QSpinBox* m_proxyPortSpin = nullptr;
@@ -141,6 +161,9 @@ private:
     QCheckBox* m_hoverReadingTransparentBackgroundCheck = nullptr;
     QCheckBox* m_timelineChartEnabledCheck = nullptr;
     QSpinBox* m_timelineChartRefreshSecsSpin = nullptr;
+    QSpinBox* m_timelineChartHoverDelaySpin = nullptr;
+    QSpinBox* m_dailyKlineDaysSpin = nullptr;
+    QMap<int, QCheckBox*> m_dailyKlineMAChecks;
     QCheckBox* m_marketBreadthEnabledCheck = nullptr;
     QSpinBox* m_marketBreadthRefreshSecsSpin = nullptr;
     QCheckBox* m_timelineChartFixedRangeCheck = nullptr;
@@ -173,9 +196,12 @@ private:
     // Stocks tab
     QLineEdit* m_stockSearchEdit = nullptr;
     QPushButton* m_stockSearchBtn = nullptr;
+    QLabel* m_stockSearchStatus = nullptr;
     QTimer* m_stockSearchDebounce = nullptr;
     QNetworkAccessManager* m_stockSearchNam = nullptr;
     QNetworkReply* m_stockSearchReply = nullptr;
+    int m_stockSearchGeneration = 0;
+    bool m_tdxSearchPending = false;
     QListWidget* m_stockSuggestList = nullptr;
     QTableWidget* m_stockTable = nullptr;
 

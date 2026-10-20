@@ -92,6 +92,10 @@ private:
     );
 
 private:
+    AppConfig m_cfg;
+    int m_tdxGeneration = 0;
+    bool m_tdxPending = false;
+    bool m_tdxConceptPending = false;
     QString m_userAgent = defaultChrome100UserAgent();
     QNetworkProxy m_proxy = QNetworkProxy(QNetworkProxy::NoProxy);
     QNetworkAccessManager m_nam;
@@ -166,6 +170,10 @@ signals:
 private:
     void handleResponse(const QString& fs, const QByteArray& body, const QString& errorText);
 
+    AppConfig m_cfg;
+    int m_tdxGeneration = 0;
+    bool m_tdxPending = false;
+    QString m_tdxDesiredFs;
     QString m_userAgent = defaultChrome100UserAgent();
     QNetworkProxy m_proxy = QNetworkProxy(QNetworkProxy::NoProxy);
     QNetworkAccessManager m_nam;
@@ -192,7 +200,11 @@ signals:
 
 private:
     void finalizeFetch(int token);
+    void fetchLegacyTurnover(const MarketBreadthSnapshot& snapshot, int generation);
 
+    AppConfig m_cfg;
+    int m_tdxGeneration = 0;
+    bool m_tdxPending = false;
     QString m_userAgent = defaultChrome100UserAgent();
     QNetworkProxy m_proxy = QNetworkProxy(QNetworkProxy::NoProxy);
     QNetworkAccessManager m_nam;
@@ -226,6 +238,7 @@ signals:
 private:
     void handleResponse(const QByteArray& body, const QString& errorText);
 
+    IQuoteProvider* m_tdxProvider = nullptr;
     QString m_userAgent = defaultChrome100UserAgent();
     QNetworkProxy m_proxy = QNetworkProxy(QNetworkProxy::NoProxy);
     QNetworkAccessManager m_nam;

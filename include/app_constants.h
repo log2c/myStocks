@@ -16,5 +16,6 @@ inline constexpr qint64 kMarketBreadthPopupAutoRefreshDelayMs = 1000;
 inline constexpr qint64 kMarketBreadthPopupAutoRefreshIntervalMs =
     kNetworkCacheTtlMs + kMarketBreadthPopupAutoRefreshDelayMs;
 inline constexpr qint64 kTrayErrorBadgeDurationMs = 5000;
+inline constexpr qint64 kStartupSplashMinimumDisplayMs = 2500;
 
 } // namespace app_constants

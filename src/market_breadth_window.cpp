@@ -4,13 +4,21 @@
 #include "i18n.h"
 #include "quote_provider.h"
 #include "timeline_popup.h"
+#include "watchlist_utils.h"
 
 #include <QCoreApplication>
+#include <QApplication>
+#include <QElapsedTimer>
 #include <QDateTime>
 #include <QFontMetrics>
 #include <QGuiApplication>
 #include <QHash>
 #include <QMouseEvent>
+#include <QTableWidget>
+#include <QStyledItemDelegate>
+#include <QStyle>
+#include <QHeaderView>
+#include <QScrollBar>
 #include <QPainter>
 #include <QPainterPath>
 #include <QScreen>
@@ -35,6 +43,49 @@
 
 namespace {
 
+constexpr int kLimitPoolChangeTextRole = Qt::UserRole + 1;
+constexpr int kLimitPoolChangeColorRole = Qt::UserRole + 2;
+
+QString formatLimitPoolChangeRate(double value) {
+    if (!std::isfinite(value)) return QStringLiteral("--");
+    const QString text = QString::number(value, 'f', 2) + QLatin1Char('%');
+    return value > 0.0 ? QLatin1Char('+') + text : text;
+}
+
+class LimitPoolItemDelegate final : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        if (index.data(Qt::UserRole).toString().isEmpty()) {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+        QStyleOptionViewItem base(option);
+        initStyleOption(&base, index);
+        const QString name = base.text;
+        base.text.clear();
+        const QStyle* style = base.widget ? base.widget->style() : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &base, painter, base.widget);
+
+        painter->save();
+        painter->setClipRect(option.rect, Qt::IntersectClip);
+        painter->setFont(base.font);
+        const QRect content = option.rect.adjusted(6, 0, -6, 0);
+        const QFontMetrics metrics(base.font);
+        const QString change = index.data(kLimitPoolChangeTextRole).toString();
+        const int changeWidth = qMin(content.width(), metrics.horizontalAdvance(change));
+        const QRect changeRect(content.right() - changeWidth + 1, content.top(), changeWidth, content.height());
+        const QRect nameRect(content.left(), content.top(), qMax(0, content.width() - changeWidth - 8), content.height());
+        painter->setPen(Qt::white);
+        painter->drawText(nameRect, Qt::AlignLeft | Qt::AlignVCenter,
+            metrics.elidedText(name, Qt::ElideRight, nameRect.width()));
+        painter->setPen(index.data(kLimitPoolChangeColorRole).value<QColor>());
+        painter->drawText(changeRect, Qt::AlignRight | Qt::AlignVCenter, change);
+        painter->restore();
+    }
+};
+
 QString formatChineseMarketAmount(double value) {
     if (!std::isfinite(value)) {
         return QStringLiteral("--");
@@ -52,7 +103,7 @@ QString formatChineseMarketAmount(double value) {
     return QStringLiteral("%1亿").arg(QString::number(yiValue, 'f', precision));
 }
 
-double estimateAshareFullDayTurnover(const MarketBreadthSnapshot& snapshot) {
+double estimateAshareFullDayTurnoverFallback(const MarketBreadthSnapshot& snapshot) {
     if (!std::isfinite(snapshot.turnover) || snapshot.turnover <= 0.0) {
         return qQNaN();
     }
@@ -173,7 +224,7 @@ QFont effectiveFloatingWindowFont(const AppConfig& cfg, const QFont& baseFont) {
 
 #if defined(Q_OS_MACOS)
 static void* macWindowHandleForWidget(const QWidget* widget) {
-    if (!widget) {
+    if (!widget || QGuiApplication::platformName() != QStringLiteral("cocoa")) {
         return nullptr;
     }
     void* nsView = reinterpret_cast<void*>(widget->winId());
@@ -201,6 +252,7 @@ static void setMacWindowCollectionBehaviorManaged(const QWidget* widget) {
 // NSApplicationActivationPolicyRegular   = 0
 // NSApplicationActivationPolicyAccessory = 1
 static void setMacAppActivationPolicy(bool regular) {
+    if (QGuiApplication::platformName() != QStringLiteral("cocoa")) return;
     auto getShared = reinterpret_cast<void* (*)(void*, SEL)>(objc_msgSend);
     void* nsApp = getShared(
         reinterpret_cast<void*>(objc_getClass("NSApplication")),
@@ -357,10 +409,25 @@ QRect availableScreenRectForReference(const QRect& referenceRect) {
 
 } // namespace
 
+double market_breadth::estimateFullDayTurnover(const MarketBreadthSnapshot& snapshot) {
+    if (!std::isfinite(snapshot.turnover) || snapshot.turnover <= 0.0) {
+        return qQNaN();
+    }
+
+    // The turnover endpoint supplies a volume-profile-based full-day forecast.
+    // Prefer it over a uniform time-based extrapolation when it is available.
+    if (std::isfinite(snapshot.turnoverForecast) && snapshot.turnoverForecast > 0.0) {
+        return qMax(snapshot.turnover, snapshot.turnoverForecast);
+    }
+
+    return estimateAshareFullDayTurnoverFallback(snapshot);
+}
+
 class HotRankConstituentDetailWindow : public QWidget {
 public:
     explicit HotRankConstituentDetailWindow(QWidget* parentWindow)
         : QWidget(parentWindow) {
+        setObjectName(QStringLiteral("hotRankConstituentDetailWindow"));
         setWindowFlags(Qt::FramelessWindowHint | Qt::Window | Qt::WindowStaysOnTopHint);
         setAttribute(Qt::WA_ShowWithoutActivating, true);
         setAttribute(Qt::WA_TranslucentBackground, true);
@@ -416,6 +483,7 @@ public:
     }
 
     void showForItem(const HotRankItem& item, const QRect& referenceRect) {
+        resetRightChartPress();
         const QString fs = !item.detailFs.trimmed().isEmpty()
             ? item.detailFs.trimmed()
             : (item.code.trimmed().isEmpty()
@@ -443,6 +511,7 @@ public:
         m_pressedActionRow = -1;
         m_pressedDataRow = -1;
         m_dragging = false;
+        resetTitleClick();
         m_actionButtonRects.clear();
         m_dataRowHitAreas.clear();
         m_refreshFeedbackStartedMs = 0;
@@ -496,6 +565,7 @@ public:
     }
 
     void hidePopup() {
+        resetRightChartPress();
         flushPendingWatchlistReloadIfNeeded();
         hideTimelinePopup();
         m_closeButtonHovered = false;
@@ -507,6 +577,7 @@ public:
         m_hoveredActionRow = -1;
         m_pressedActionRow = -1;
         m_dragging = false;
+        resetTitleClick();
         m_actionButtonRects.clear();
         m_refreshFeedbackStartedMs = 0;
         m_refreshFeedbackUntilMs = 0;
@@ -519,6 +590,9 @@ public:
 
 protected:
     void hideEvent(QHideEvent* event) override {
+        resetRightChartPress();
+        resetTitleClick();
+        m_dragging = false;
         flushPendingWatchlistReloadIfNeeded();
         hideTimelinePopup();
         QWidget::hideEvent(event);
@@ -530,6 +604,17 @@ protected:
             return;
         }
 
+        if (m_rightPressTime.isValid()
+            && (event->globalPosition().toPoint() - m_rightPressGlobal).manhattanLength() >= QApplication::startDragDistance()) {
+            resetRightChartPress();
+        }
+        if (m_titlePressed && (event->buttons() & Qt::LeftButton)
+            && (event->globalPosition().toPoint() - m_titlePressGlobal).manhattanLength()
+                >= QApplication::startDragDistance()) {
+            m_titlePressed = false;
+            m_dragging = true;
+            setCursor(Qt::ClosedHandCursor);
+        }
         if (m_dragging && (event->buttons() & Qt::LeftButton)) {
             hideTimelinePopup();
             move(event->globalPosition().toPoint() - m_dragOffset);
@@ -576,6 +661,10 @@ protected:
     }
 
     void leaveEvent(QEvent* event) override {
+        resetRightChartPress();
+        if (!m_dragging) {
+            resetTitleClick();
+        }
         if (m_closeButtonHovered || m_closeButtonPressed
             || m_refreshButtonHovered || m_refreshButtonPressed
             || m_hoveredHeader != 0 || m_pressedHeader != 0
@@ -654,9 +743,10 @@ protected:
         }
 
         if (event->button() == Qt::LeftButton && m_dragHandleRect.contains(event->pos())) {
-            m_dragging = true;
+            m_titlePressed = true;
+            m_titlePressGlobal = event->globalPosition().toPoint();
+            m_titlePressTime.start();
             m_dragOffset = event->globalPosition().toPoint() - frameGeometry().topLeft();
-            setCursor(Qt::ClosedHandCursor);
             event->accept();
             return;
         }
@@ -667,6 +757,29 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override {
         if (!event) {
             QWidget::mouseReleaseEvent(event);
+            return;
+        }
+
+        if (event->button() == Qt::RightButton) {
+            event->accept();
+            return;
+        }
+
+        if (event->button() == Qt::LeftButton && m_titlePressed) {
+            const bool shouldShowSectorChart = m_dragHandleRect.contains(event->pos())
+                && m_titlePressTime.isValid()
+                && m_titlePressTime.elapsed() < QApplication::startDragTime()
+                && (event->globalPosition().toPoint() - m_titlePressGlobal).manhattanLength()
+                    < QApplication::startDragDistance();
+            m_titlePressed = false;
+            if (shouldShowSectorChart) {
+                showSectorKline();
+            } else if (m_dragHandleRect.contains(event->pos())) {
+                setCursor(Qt::OpenHandCursor);
+            } else {
+                unsetCursor();
+            }
+            event->accept();
             return;
         }
 
@@ -733,7 +846,7 @@ protected:
                 return;
             }
             if (shouldShowTimeline) {
-                showTimelinePopupForRow(releasedDataRow);
+                showKlineDetailForRow(releasedDataRow);
                 event->accept();
                 return;
             }
@@ -1531,6 +1644,7 @@ private:
     }
 
     void requestData(bool forceRefresh = false) {
+        resetRightChartPress();
         ensureProvider();
         if (!m_provider || m_currentFs.isEmpty()) {
             return;
@@ -1556,14 +1670,45 @@ private:
         m_timelinePopup->applyConfig(m_cfg);
     }
 
-    void showTimelinePopupForRow(int rowIndex) {
+    static QString chartCode(const HotRankDetailItem& item) {
+        return item.watchCode.trimmed().isEmpty() ? item.code.trimmed() : item.watchCode.trimmed();
+    }
+
+    static QString chartCode(const HotRankItem& item) {
+        return item.watchCode.trimmed().isEmpty() ? item.code.trimmed() : item.watchCode.trimmed();
+    }
+
+    void resetRightChartPress() {
+        m_rightPressedCode.clear();
+        m_rightPressTime.invalidate();
+    }
+
+    void resetTitleClick() {
+        m_titlePressed = false;
+        m_titlePressTime.invalidate();
+    }
+
+    void showSectorKline() {
+        const QString code = chartCode(m_selectedItem);
+        if (code.isEmpty() || !isTimelinePopupSupportedCode(code)) {
+            return;
+        }
+        ensureTimelinePopup();
+        if (!m_timelinePopup) {
+            return;
+        }
+        const QRect anchor(mapToGlobal(m_dragHandleRect.topLeft()), m_dragHandleRect.size());
+        m_timelinePopup->showDetailForStock(code, m_selectedItem.name.trimmed(), anchor);
+    }
+
+    void showKlineDetailForRow(int rowIndex) {
         if (m_loading || rowIndex < 0 || rowIndex >= m_dataRowHitAreas.size()) {
             hideTimelinePopup();
             return;
         }
 
         const DataRowHitArea& area = m_dataRowHitAreas.at(rowIndex);
-        const QString code = area.item.watchCode.trimmed();
+        const QString code = chartCode(area.item);
         const QString name = area.item.name.trimmed();
         if (code.isEmpty() || !isTimelinePopupSupportedCode(code)) {
             hideTimelinePopup();
@@ -1575,7 +1720,7 @@ private:
             return;
         }
         const QRect globalAnchor(mapToGlobal(area.rect.topLeft()), area.rect.size());
-        m_timelinePopup->showForStock(code, name, globalAnchor, width());
+        m_timelinePopup->showDetailForStock(code, name, globalAnchor);
     }
 
     void hideTimelinePopup() {
@@ -1787,6 +1932,9 @@ private:
     bool m_refreshButtonPressed = false;
     bool m_loading = false;
     bool m_dragging = false;
+    bool m_titlePressed = false;
+    QPoint m_titlePressGlobal;
+    QElapsedTimer m_titlePressTime;
     bool m_hasStoredGeometry = false;
     bool m_watchlistDirty = false;
     int m_hoveredHeader = 0;
@@ -1794,6 +1942,9 @@ private:
     int m_hoveredActionRow = -1;
     int m_pressedActionRow = -1;
     int m_pressedDataRow = -1;
+    QString m_rightPressedCode;
+    QPoint m_rightPressGlobal;
+    QElapsedTimer m_rightPressTime;
     int m_scrollIndex = 0;
     QPoint m_dragOffset;
     DetailSortField m_sortField = DetailSortField::Pct;
@@ -1823,6 +1974,28 @@ MarketBreadthDetailWindow* MarketBreadthDetailWindow::s_visiblePopup = nullptr;
     setMouseTracking(true);
     setMinimumSize(marketBreadthMinimumPopupSize());
     resize(minimumSize());
+
+    m_limitPoolTable = new QTableWidget(0, 2, this);
+    m_limitPoolTable->setObjectName("limitPoolTable");
+    m_limitPoolTable->setItemDelegate(new LimitPoolItemDelegate(m_limitPoolTable));
+    m_limitPoolTable->setSelectionMode(QAbstractItemView::NoSelection);
+    m_limitPoolTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_limitPoolTable->setFocusPolicy(Qt::NoFocus);
+    m_limitPoolTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_limitPoolTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_limitPoolTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_limitPoolTable->horizontalHeader()->setSectionsClickable(false);
+    m_limitPoolTable->horizontalHeader()->hide();
+    m_limitPoolTable->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_limitPoolTable->verticalHeader()->hide();
+    m_limitPoolTable->verticalHeader()->setDefaultSectionSize(26);
+    m_limitPoolTable->viewport()->setMouseTracking(true);
+    m_limitPoolTable->viewport()->installEventFilter(this);
+    connect(m_limitPoolTable->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() {
+        resetLimitPoolChartPress();
+        hideTimelinePopup();
+    });
+    m_limitPoolTable->hide();
 
     m_refreshFeedbackTimer = new QTimer(this);
     m_refreshFeedbackTimer->setInterval(33);
@@ -1881,7 +2054,28 @@ void  MarketBreadthDetailWindow::applyConfig(const AppConfig& cfg) {
     if (m_timelinePopup) {
         m_timelinePopup->applyConfig(m_cfg);
     }
+    ensureLimitPoolProvider();
+    m_limitPoolProvider->applyConfig(cfg);
+    for (int i = 0; i < 2; ++i) {
+        m_limitPoolSnapshots[i] = {};
+        m_limitPoolLoading[i] = false;
+        m_limitPoolErrors[i].clear();
+    }
+    const QColor poolHeaderBackground = (cfg.transparentBackgroundEnabled ? QColor(18, 18, 18) : cfg.bgColor).lighter(112);
+    m_limitPoolTable->setStyleSheet(QStringLiteral(
+        "QTableWidget { background: transparent; border: none; color: %1; gridline-color: rgba(%2,%3,%4,36); }"
+        "QTableWidget::item { padding: 4px 6px; }"
+        "QHeaderView::section { background: %5; border: none; border-bottom: 1px solid rgba(%2,%3,%4,36); padding: 4px 6px; }"
+        "QScrollBar:vertical { background: rgba(%2,%3,%4,28); width: 6px; margin: 0; border-radius: 3px; }"
+        "QScrollBar::handle:vertical { background: rgba(%2,%3,%4,86); min-height: 20px; border-radius: 3px; }"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }")
+        .arg(cfg.textColor.name(QColor::HexArgb))
+        .arg(cfg.textColor.red()).arg(cfg.textColor.green()).arg(cfg.textColor.blue())
+        .arg(poolHeaderBackground.name(QColor::HexRgb)));
+    updateLimitPoolTable();
     setFont(effectiveFloatingWindowFont(cfg, font()));
+    if (isVisible()) requestLimitPoolData();
     update();
 }
 
@@ -1891,6 +2085,7 @@ void  MarketBreadthDetailWindow::setLanguage(const QString& language) {
     if (m_hotRankDetailWindow) {
         m_hotRankDetailWindow->setLanguage(m_language);
     }
+    updateLimitPoolTable();
     update();
 }
 
@@ -1952,6 +2147,7 @@ void  MarketBreadthDetailWindow::showCenteredForSnapshot(
     m_pressedIndexCellIndex = -1;
     m_breadthDistributionTabHovered = false;
     m_breadthTrendTabHovered = false;
+    m_breadthLimitPoolTabHovered = false;
     m_pressedHotTab = 0;
     m_pressedHotHeader = 0;
     m_pressedBreadthTab = 0;
@@ -2003,6 +2199,7 @@ void  MarketBreadthDetailWindow::showCenteredForSnapshot(
     requestStockHeatData(HotRankTabMode::HourHeat);
     requestStockHeatData(HotRankTabMode::DayHeat);
     requestIndexQuoteData();
+    if (isVisible()) requestLimitPoolData();
     update();
 }
 
@@ -2012,6 +2209,7 @@ void  MarketBreadthDetailWindow::refreshSnapshot(
  const QVector<HotRankItem>& hotSectors,
  const QVector<HotRankItem>& hotConcepts
 ) {
+    const QDate previousDate = QDateTime::fromMSecsSinceEpoch(m_snapshot.lastUpdatedAtMs).toOffsetFromUtc(8 * 3600).date();
     m_snapshot = snapshot;
     if (!hotSectors.isEmpty()) {
         m_hotSectors = hotSectors;
@@ -2020,6 +2218,8 @@ void  MarketBreadthDetailWindow::refreshSnapshot(
         m_hotConcepts = hotConcepts;
     }
     requestIndexQuoteData();
+    const QDate currentDate = QDateTime::fromMSecsSinceEpoch(snapshot.lastUpdatedAtMs).toOffsetFromUtc(8 * 3600).date();
+    if (isVisible() && currentDate != previousDate) requestLimitPoolData();
     update();
 }
 
@@ -2076,6 +2276,7 @@ void  MarketBreadthDetailWindow::hidePopup() {
     m_pressedIndexCellIndex = -1;
     m_breadthDistributionTabHovered = false;
     m_breadthTrendTabHovered = false;
+    m_breadthLimitPoolTabHovered = false;
     m_pressedHotTab = 0;
     m_pressedHotHeader = 0;
     m_pressedBreadthTab = 0;
@@ -2100,6 +2301,7 @@ void  MarketBreadthDetailWindow::hidePopup() {
     m_hotStockActionButtonRects.clear();
     m_breadthDistributionTabRect = QRect();
     m_breadthTrendTabRect = QRect();
+    m_breadthLimitPoolTabRect = QRect();
     m_indexCellHitAreas.clear();
     hideTimelinePopup();
     if (m_hotRankDetailWindow) {
@@ -2116,6 +2318,50 @@ void  MarketBreadthDetailWindow::hidePopup() {
 
 
 bool  MarketBreadthDetailWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == m_limitPoolTable->viewport()) {
+        if (event->type() == QEvent::MouseButtonPress) {
+            const auto* mouse = static_cast<QMouseEvent*>(event);
+            resetLimitPoolChartPress();
+            if (!testAttribute(Qt::WA_TransparentForMouseEvents)
+                && mouse->button() == Qt::LeftButton) {
+                const QModelIndex index = m_limitPoolTable->indexAt(mouse->position().toPoint());
+                const QString code = index.data(Qt::UserRole).toString();
+                if (!code.isEmpty() && isTimelinePopupSupportedCode(code)) {
+                    m_limitPoolPressIndex = index;
+                    m_limitPoolPressCode = code;
+                    m_limitPoolPressButton = mouse->button();
+                    m_limitPoolPressGlobal = mouse->globalPosition().toPoint();
+                    m_limitPoolPressTime.start();
+                }
+                return true;
+            }
+        } else if (event->type() == QEvent::MouseMove) {
+            const auto* mouse = static_cast<QMouseEvent*>(event);
+            const QModelIndex hovered = m_limitPoolTable->indexAt(mouse->position().toPoint());
+            m_limitPoolTable->viewport()->setCursor(hovered.data(Qt::UserRole).toString().isEmpty()
+                ? Qt::ArrowCursor : Qt::PointingHandCursor);
+            if (m_limitPoolPressTime.isValid()
+                && (mouse->globalPosition().toPoint() - m_limitPoolPressGlobal).manhattanLength() >= QApplication::startDragDistance()) {
+                resetLimitPoolChartPress();
+            }
+        } else if (event->type() == QEvent::MouseButtonRelease) {
+            const auto* mouse = static_cast<QMouseEvent*>(event);
+            if (mouse->button() == Qt::LeftButton) {
+                const QModelIndex index = m_limitPoolTable->indexAt(mouse->position().toPoint());
+                const bool click = mouse->button() == m_limitPoolPressButton && index.isValid()
+                    && index == m_limitPoolPressIndex && index.data(Qt::UserRole).toString() == m_limitPoolPressCode
+                    && m_limitPoolPressTime.isValid() && m_limitPoolPressTime.elapsed() < QApplication::startDragTime()
+                    && (mouse->globalPosition().toPoint() - m_limitPoolPressGlobal).manhattanLength() < QApplication::startDragDistance();
+                resetLimitPoolChartPress();
+                if (click) showKlineDetailForLimitPoolCell(index);
+                return true;
+            }
+        } else if (event->type() == QEvent::Leave || event->type() == QEvent::Wheel || event->type() == QEvent::Hide) {
+            resetLimitPoolChartPress();
+        } else if (event->type() == QEvent::ContextMenu) {
+            return true;
+        }
+    }
     if (watched == m_hotRankDetailWindow && event->type() == QEvent::Hide) {
         if (!testAttribute(Qt::WA_TransparentForMouseEvents)) {
             // already interactive, nothing to do
@@ -2141,6 +2387,7 @@ bool  MarketBreadthDetailWindow::eventFilter(QObject* watched, QEvent* event) {
 
 
 void  MarketBreadthDetailWindow::hideEvent(QHideEvent* event) {
+    resetLimitPoolChartPress();
     QWidget::hideEvent(event);
     unsetCursor();
     stopAutoRefreshTimer();
@@ -2292,6 +2539,7 @@ void  MarketBreadthDetailWindow::mouseMoveEvent(QMouseEvent* event) {
     const bool yearPctHeaderHovered = m_hotYearPctHeaderRect.contains(event->pos());
     const bool breadthDistributionHovered = m_breadthDistributionTabRect.contains(event->pos());
     const bool breadthTrendHovered = m_breadthTrendTabRect.contains(event->pos());
+    const bool breadthLimitPoolHovered = m_breadthLimitPoolTabRect.contains(event->pos());
     const int hotRowHovered = hotRankRowAt(event->pos());
     const int hotStockActionHovered = hotStockActionAt(event->pos());
     if (closeHovered != m_closeButtonHovered
@@ -2305,6 +2553,7 @@ void  MarketBreadthDetailWindow::mouseMoveEvent(QMouseEvent* event) {
         || yearPctHeaderHovered != m_hotYearPctHeaderHovered
         || breadthDistributionHovered != m_breadthDistributionTabHovered
         || breadthTrendHovered != m_breadthTrendTabHovered
+        || breadthLimitPoolHovered != m_breadthLimitPoolTabHovered
         || hotRowHovered != m_hoveredHotRowIndex
         || hotStockActionHovered != m_hoveredHotStockActionIndex) {
         const int previousHotRow = m_hoveredHotRowIndex;
@@ -2320,6 +2569,7 @@ void  MarketBreadthDetailWindow::mouseMoveEvent(QMouseEvent* event) {
         m_hotYearPctHeaderHovered = yearPctHeaderHovered;
         m_breadthDistributionTabHovered = breadthDistributionHovered;
         m_breadthTrendTabHovered = breadthTrendHovered;
+        m_breadthLimitPoolTabHovered = breadthLimitPoolHovered;
         m_hoveredHotRowIndex = hotRowHovered;
         m_hoveredHotStockActionIndex = hotStockActionHovered;
         update(m_closeButtonRect.adjusted(-2, -2, 2, 2));
@@ -2353,6 +2603,7 @@ void  MarketBreadthDetailWindow::mouseMoveEvent(QMouseEvent* event) {
         if (m_breadthTrendTabRect.isValid()) {
             update(m_breadthTrendTabRect.adjusted(-2, -2, 2, 2));
         }
+        if (m_breadthLimitPoolTabRect.isValid()) update(m_breadthLimitPoolTabRect.adjusted(-2, -2, 2, 2));
         if (previousHotRow >= 0 && previousHotRow < m_hotRankRowHitAreas.size()) {
             update(m_hotRankRowHitAreas.at(previousHotRow).rect.adjusted(-2, -2, 2, 2));
         }
@@ -2381,7 +2632,8 @@ void  MarketBreadthDetailWindow::leaveEvent(QEvent* event) {
             || m_hotYearPctHeaderHovered || m_pressedHotHeader != 0
             || m_hoveredHotRowIndex >= 0 || m_pressedHotRowIndex >= 0
             || m_hoveredHotStockActionIndex >= 0 || m_pressedHotStockActionIndex >= 0
-            || m_breadthDistributionTabHovered || m_breadthTrendTabHovered || m_pressedBreadthTab != 0)) {
+            || m_breadthDistributionTabHovered || m_breadthTrendTabHovered
+            || m_breadthLimitPoolTabHovered || m_pressedBreadthTab != 0)) {
         const int previousHotRow = m_hoveredHotRowIndex;
         const int previousPressedHotRow = m_pressedHotRowIndex;
         const int previousHotStockAction = m_hoveredHotStockActionIndex;
@@ -2404,6 +2656,7 @@ void  MarketBreadthDetailWindow::leaveEvent(QEvent* event) {
         m_pressedIndexCellIndex = -1;
         m_breadthDistributionTabHovered = false;
         m_breadthTrendTabHovered = false;
+        m_breadthLimitPoolTabHovered = false;
         m_pressedHotTab = 0;
         m_pressedHotHeader = 0;
         m_pressedBreadthTab = 0;
@@ -2450,6 +2703,7 @@ void  MarketBreadthDetailWindow::leaveEvent(QEvent* event) {
         if (m_breadthTrendTabRect.isValid()) {
             update(m_breadthTrendTabRect.adjusted(-2, -2, 2, 2));
         }
+        if (m_breadthLimitPoolTabRect.isValid()) update(m_breadthLimitPoolTabRect.adjusted(-2, -2, 2, 2));
     }
     unsetCursor();
     QWidget::leaveEvent(event);
@@ -2557,6 +2811,11 @@ void  MarketBreadthDetailWindow::mousePressEvent(QMouseEvent* event) {
         return;
     }
 
+    if (event->button() == Qt::LeftButton && m_breadthLimitPoolTabRect.contains(event->pos())) {
+        m_pressedBreadthTab = 3;
+        event->accept();
+        return;
+    }
     const int pressedIndexCell = indexCellAt(event->pos());
     if (event->button() == Qt::LeftButton && pressedIndexCell >= 0) {
         m_pressedIndexCellIndex = pressedIndexCell;
@@ -2736,20 +2995,7 @@ void  MarketBreadthDetailWindow::mouseReleaseEvent(QMouseEvent* event) {
         if (activateHotRow && releasedHotRow >= 0 && releasedHotRow < m_hotRankRowHitAreas.size()) {
             hideTimelinePopup();
             if (isStockHeatTabMode(resolvedHotRankTabMode())) {
-                const HotRankItem& item = m_hotRankRowHitAreas.at(releasedHotRow).item;
-                const QString code = !item.watchCode.trimmed().isEmpty()
-                    ? item.watchCode.trimmed()
-                    : item.code.trimmed();
-                if (!code.isEmpty() && isTimelinePopupSupportedCode(code)) {
-                    ensureTimelinePopup();
-                    if (m_timelinePopup) {
-                        const QRect globalAnchor(
-                            mapToGlobal(m_hotRankRowHitAreas.at(releasedHotRow).rect.topLeft()),
-                            m_hotRankRowHitAreas.at(releasedHotRow).rect.size()
-                        );
-                        m_timelinePopup->showForStock(code, item.name.trimmed(), globalAnchor, width());
-                    }
-                }
+                showKlineDetailForHotRankRow(releasedHotRow);
             } else {
                 openHotRankDetail(m_hotRankRowHitAreas.at(releasedHotRow).item);
             }
@@ -2761,6 +3007,8 @@ void  MarketBreadthDetailWindow::mouseReleaseEvent(QMouseEvent* event) {
             m_pressedBreadthTab == 1 && m_breadthDistributionTabRect.contains(event->pos());
         const bool activateTrendTab =
             m_pressedBreadthTab == 2 && m_breadthTrendTabRect.contains(event->pos());
+        const bool activateLimitPoolTab =
+            m_pressedBreadthTab == 3 && m_breadthLimitPoolTabRect.contains(event->pos());
         m_pressedBreadthTab = 0;
         const int releasedIndexCell = indexCellAt(event->pos());
         const bool shouldShowIndexTimeline =
@@ -2781,8 +3029,16 @@ void  MarketBreadthDetailWindow::mouseReleaseEvent(QMouseEvent* event) {
             event->accept();
             return;
         }
+        if (activateLimitPoolTab) {
+            hideTimelinePopup();
+            m_breadthChartTabMode = BreadthChartTabMode::LimitPool;
+            requestLimitPoolData();
+            update();
+            event->accept();
+            return;
+        }
         if (shouldShowIndexTimeline) {
-            showTimelinePopupForIndexCell(releasedIndexCell);
+            showKlineDetailForIndexCell(releasedIndexCell);
             event->accept();
             return;
         }
@@ -2894,6 +3150,7 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
         m_hotStockActionButtonRects.clear();
         m_breadthDistributionTabRect = QRect();
         m_breadthTrendTabRect = QRect();
+        m_breadthLimitPoolTabRect = QRect();
         m_indexCellHitAreas.clear();
 
         QFont titleFont = popupPainter.font();
@@ -3325,7 +3582,7 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
         }
 
         const QRect turnoverInner = turnoverSectionRect.adjusted(0, 13, 0, 0);
-        const double estimatedFullDay = estimateAshareFullDayTurnover(m_snapshot);
+        const double estimatedFullDay = market_breadth::estimateFullDayTurnover(m_snapshot);
         const QColor compareColor = marketBreadthTurnoverChangeColor(m_snapshot.turnoverChange, m_cfg);
         const QStringList turnoverLabels {
             i18n::t("popup.marketBreadth.turnoverToday", m_language),
@@ -4027,41 +4284,38 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
             breadthInner.width(),
             breadthTabHeight
         );
-        const int breadthTabWidth = qMax(72, (breadthTabBarRect.width() - breadthTabGap) / 2);
-        const int breadthTabsTotalWidth = breadthTabWidth * 2 + breadthTabGap;
-        const int breadthTabsStartX =
-            breadthTabBarRect.left() + qMax(0, (breadthTabBarRect.width() - breadthTabsTotalWidth) / 2);
-        const QRect breadthTrendTabRect(
-            breadthTabsStartX,
-            breadthTabBarRect.top(),
-            breadthTabWidth,
-            breadthTabHeight
-        );
-        const QRect breadthDistributionTabRect(
-            breadthTrendTabRect.right() + 1 + breadthTabGap,
-            breadthTabBarRect.top(),
-            breadthTabWidth,
-            breadthTabHeight
-        );
-        m_breadthDistributionTabRect = breadthDistributionTabRect;
-        m_breadthTrendTabRect = breadthTrendTabRect;
-
-        drawToggleTab(
-            breadthTrendTabRect,
+        const QStringList breadthLabels {
             i18n::t("popup.marketBreadth.trend", m_language),
-            m_breadthChartTabMode == BreadthChartTabMode::Trend,
-            m_breadthTrendTabHovered,
-            hasTrendData,
-            breadthTabFont
-        );
-        drawToggleTab(
-            breadthDistributionTabRect,
             i18n::t("popup.marketBreadth.distribution", m_language),
-            m_breadthChartTabMode == BreadthChartTabMode::Distribution,
-            m_breadthDistributionTabHovered,
-            hasDistributionData,
-            breadthTabFont
-        );
+            i18n::t("popup.marketBreadth.limitPool", m_language),
+        };
+        const int availableTabWidth = breadthTabBarRect.width() - breadthTabGap * 2;
+        int desiredTabWidth = 0;
+        const QFontMetrics breadthMetrics(breadthTabFont);
+        for (const auto& label : breadthLabels) desiredTabWidth += breadthMetrics.horizontalAdvance(label) + 16;
+        QVector<QRect> breadthTabs;
+        int tabX = breadthTabBarRect.left();
+        for (int i = 0; i < 3; ++i) {
+            const int desired = breadthMetrics.horizontalAdvance(breadthLabels.at(i)) + 16;
+            const int tabWidth = i == 2 ? breadthTabBarRect.right() - tabX + 1
+                : qMax(1, desired * availableTabWidth / qMax(1, desiredTabWidth));
+            breadthTabs.push_back(QRect(tabX, breadthTabBarRect.top(), tabWidth, breadthTabHeight));
+            tabX += tabWidth + breadthTabGap;
+        }
+        m_breadthTrendTabRect = breadthTabs.at(0);
+        m_breadthDistributionTabRect = breadthTabs.at(1);
+        m_breadthLimitPoolTabRect = breadthTabs.at(2);
+        const BreadthChartTabMode breadthModes[] { BreadthChartTabMode::Trend,
+            BreadthChartTabMode::Distribution, BreadthChartTabMode::LimitPool };
+        const bool breadthHovered[] {m_breadthTrendTabHovered, m_breadthDistributionTabHovered,
+            m_breadthLimitPoolTabHovered};
+        const bool breadthHasData[] {hasTrendData, hasDistributionData,
+            !m_limitPoolSnapshots[0].stocks.isEmpty() || !m_limitPoolSnapshots[1].stocks.isEmpty()};
+        for (int i = 0; i < 3; ++i) {
+            drawToggleTab(breadthTabs.at(i),
+                breadthMetrics.elidedText(breadthLabels.at(i), Qt::ElideRight, breadthTabs.at(i).width() - 8),
+                m_breadthChartTabMode == breadthModes[i], breadthHovered[i], breadthHasData[i], breadthTabFont);
+        }
 
         const int breadthContentTopGap = 8;
         const QRect breadthContentRect(
@@ -4071,6 +4325,9 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
             qMax(40, breadthInner.bottom() - (breadthTabBarRect.bottom() + breadthContentTopGap))
         );
 
+        m_limitPoolTable->setGeometry(breadthContentRect);
+        m_limitPoolTable->setFont(bodyFont);
+        m_limitPoolTable->setVisible(m_breadthChartTabMode == BreadthChartTabMode::LimitPool);
         if (m_breadthChartTabMode == BreadthChartTabMode::Distribution) {
             const QRect distributionInner = breadthContentRect;
             const QRect distributionPlotRect = distributionInner.adjusted(34, 8, -8, -24);
@@ -4248,7 +4505,7 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
                 popupPainter.setFont(bodyFont);
                 popupPainter.drawText(distributionInner, Qt::AlignCenter, noDataText);
             }
-        } else {
+        } else if (m_breadthChartTabMode == BreadthChartTabMode::Trend) {
             const QRect timelineInner = breadthContentRect;
             const QRect timelineLegendRect(
                 timelineInner.left(),
@@ -4445,7 +4702,7 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
         constexpr int kIdxRowH = 58;
         constexpr int kIdxRowGap = 6;
         constexpr int kIdxColumns = 7;
-        constexpr int kIdxCount = 14;
+        constexpr int kIdxCount = 13;
         constexpr int kIdxCellGap = 6;
 
         const int rowsTop = indexInner.top();
@@ -4453,9 +4710,9 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
         const int cellWidth = qMax(60, (indexInner.width() - totalCellGap) / kIdxColumns);
 
         static const char* const kIdxNames[kIdxCount] = {
-            "上证指数", "深证成指", "创业板指", "科创50", "A股均价",
-            "恒生指数", "恒生科技",
-            "富时中国A50", "美元/人民币", "黄金T+D", "纳斯达克", "标普500", "日经225", "韩国KOSPI"
+            "上证指数", "深证成指", "创业板指", "科创综指",
+            "恒生指数", "恒生科技", "美元/人民币",
+            "纳斯达克综合", "道琼斯BuyWrite", "平均股价", "黄金主连", "富时A50期指连续", "布油金融主连"
         };
 
         QFont idxNameFont = subtitleFont;
@@ -4469,7 +4726,7 @@ void  MarketBreadthDetailWindow::paintEvent(QPaintEvent* event) {
             if (item.displayName == QStringLiteral("美元/人民币")) {
                 return 4;
             }
-            if (item.displayName == QStringLiteral("黄金T+D")) {
+            if (item.displayName == QStringLiteral("黄金主连")) {
                 return 2;
             }
             const double absP = std::fabs(item.price);
@@ -5134,6 +5391,7 @@ void  MarketBreadthDetailWindow::triggerPopupRefresh(bool withFeedback) {
     requestStockHeatData(HotRankTabMode::HourHeat, true);
     requestStockHeatData(HotRankTabMode::DayHeat, true);
     requestIndexQuoteData(true);
+    requestLimitPoolData(true);
     if (m_forceRefreshCallback) {
         m_forceRefreshCallback();
     }
@@ -5227,6 +5485,130 @@ void  MarketBreadthDetailWindow::ensureHotRankProviders() {
             qInfo() << "[MarketBreadthPopup] hot rank request error:" << trimmed;
         }
     );
+}
+
+void MarketBreadthDetailWindow::ensureLimitPoolProvider() {
+    if (m_limitPoolProvider) return;
+    m_limitPoolProvider = new TonghuashunLimitPoolProvider(this);
+    connect(m_limitPoolProvider, &TonghuashunLimitPoolProvider::dataReady, this,
+        [this](bool limitDown, const LimitPoolSnapshot& snapshot) {
+            const int pool = limitDown ? 1 : 0;
+            m_limitPoolSnapshots[pool] = snapshot;
+            m_limitPoolLoading[pool] = false;
+            m_limitPoolErrors[pool].clear();
+            updateLimitPoolTable();
+            update();
+        });
+    connect(m_limitPoolProvider, &TonghuashunLimitPoolProvider::error, this,
+        [this](bool limitDown, const QString& message) {
+            const int pool = limitDown ? 1 : 0;
+            m_limitPoolLoading[pool] = false;
+            m_limitPoolErrors[pool] = message;
+            m_limitPoolSnapshots[pool] = {};
+            updateLimitPoolTable();
+            qWarning() << "[MarketBreadthPopup] limit pool request error:" << message;
+            update();
+        });
+}
+
+void MarketBreadthDetailWindow::requestLimitPoolData(bool forceRefresh) {
+    if (m_breadthChartTabMode != BreadthChartTabMode::LimitPool) return;
+    ensureLimitPoolProvider();
+    const QDate date = m_snapshot.lastUpdatedAtMs > 0
+        ? QDateTime::fromMSecsSinceEpoch(m_snapshot.lastUpdatedAtMs).toOffsetFromUtc(8 * 3600).date() : QDate();
+    for (int pool = 0; pool < 2; ++pool) {
+        if (date.isValid() && date != m_limitPoolSnapshots[pool].tradeDate) m_limitPoolSnapshots[pool] = {};
+        m_limitPoolLoading[pool] = true;
+        m_limitPoolErrors[pool].clear();
+        m_limitPoolProvider->fetch(pool == 1, date, forceRefresh);
+    }
+    updateLimitPoolTable();
+}
+
+void MarketBreadthDetailWindow::updateLimitPoolTable() {
+    const int scroll = m_limitPoolTable->verticalScrollBar()->value();
+    const int rows = qMax(1, qMax(m_limitPoolSnapshots[0].stocks.size(), m_limitPoolSnapshots[1].stocks.size()));
+    m_limitPoolTable->setRowCount(rows);
+    for (int column = 0; column < 2; ++column) {
+        const QColor color = column == 0 ? m_cfg.upColor : m_cfg.downColor;
+        const QString header = i18n::t(column == 0 ? "popup.marketBreadth.limitUp" : "popup.marketBreadth.limitDown", m_language);
+        auto* headerItem = m_limitPoolTable->horizontalHeaderItem(column);
+        if (!headerItem) {
+            headerItem = new QTableWidgetItem;
+            m_limitPoolTable->setHorizontalHeaderItem(column, headerItem);
+        }
+        headerItem->setText(header);
+        headerItem->setForeground(color);
+        headerItem->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        const auto& snapshot = m_limitPoolSnapshots[column];
+        headerItem->setToolTip(QString());
+        for (int row = 0; row < rows; ++row) {
+            QString text, code;
+            double changeRate = qQNaN();
+            if (row < snapshot.stocks.size()) {
+                const auto& stock = snapshot.stocks.at(row);
+                text = stock.name;
+                changeRate = stock.changeRate;
+                const QString raw = stock.code.trimmed();
+                // A-share codes are kept as HTTP data by the provider and mapped
+                // to the app's watch-code format only at the chart boundary.
+                if (raw.size() == 6 && watchlist_utils::isDigitsOnly(raw)
+                    && (raw.startsWith("92") || raw.startsWith('8') || raw.startsWith('4'))) {
+                    code = QStringLiteral("tdx:main:2:") + raw;
+                } else {
+                    code = watchlist_utils::normalizeApiWatchCode(raw);
+                }
+            } else if (row == 0 && snapshot.stocks.isEmpty()) {
+                text = i18n::t(m_limitPoolLoading[column] ? "popup.marketBreadth.hotDetailLoading"
+                    : (!m_limitPoolErrors[column].isEmpty() ? "quote.dataError" : "quote.noData"), m_language);
+            }
+            auto* item = m_limitPoolTable->item(row, column);
+            if (text.isEmpty()) {
+                delete m_limitPoolTable->takeItem(row, column);
+                continue;
+            }
+            if (!item) {
+                item = new QTableWidgetItem;
+                m_limitPoolTable->setItem(row, column, item);
+            }
+            if (m_limitPoolPressIndex == m_limitPoolTable->model()->index(row, column)
+                && item->data(Qt::UserRole).toString() != code) resetLimitPoolChartPress();
+            item->setText(text);
+            item->setData(Qt::UserRole, code);
+            item->setFlags(code.isEmpty() ? Qt::NoItemFlags : Qt::ItemIsEnabled);
+            item->setForeground(code.isEmpty() ? m_cfg.textColor : QColor(Qt::white));
+            const QColor changeColor = !std::isfinite(changeRate) ? m_cfg.textColor
+                : (changeRate > 0.0 ? m_cfg.upColor : (changeRate < 0.0 ? m_cfg.downColor : m_cfg.flatColor));
+            const QString changeText = code.isEmpty() ? QString() : formatLimitPoolChangeRate(changeRate);
+            item->setData(kLimitPoolChangeTextRole, changeText);
+            item->setData(kLimitPoolChangeColorRole, changeColor);
+            item->setData(Qt::AccessibleTextRole, changeText.isEmpty() ? text : text + QLatin1Char(' ') + changeText);
+            item->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+            item->setToolTip(QString());
+        }
+    }
+    m_limitPoolTable->doItemsLayout();
+    m_limitPoolTable->verticalScrollBar()->setValue(scroll);
+}
+
+void MarketBreadthDetailWindow::resetLimitPoolChartPress() {
+    m_limitPoolPressIndex = QPersistentModelIndex();
+    m_limitPoolPressCode.clear();
+    m_limitPoolPressButton = Qt::NoButton;
+    m_limitPoolPressTime.invalidate();
+}
+
+void MarketBreadthDetailWindow::showKlineDetailForLimitPoolCell(const QModelIndex& index) {
+    if (!index.isValid() || !m_limitPoolTable->isVisible()
+        || testAttribute(Qt::WA_TransparentForMouseEvents)) return;
+    const QString code = index.data(Qt::UserRole).toString();
+    if (code.isEmpty() || !isTimelinePopupSupportedCode(code)) return;
+    ensureTimelinePopup();
+    QRect cell = m_limitPoolTable->visualRect(index);
+    cell.setLeft(0);
+    cell.setWidth(m_limitPoolTable->viewport()->width());
+    const QRect anchor(m_limitPoolTable->viewport()->mapToGlobal(cell.topLeft()), cell.size());
+    m_timelinePopup->showDetailForStock(code, index.data(Qt::DisplayRole).toString(), anchor);
 }
 
 void  MarketBreadthDetailWindow::ensureStockHeatProvider() {
@@ -5533,7 +5915,19 @@ void  MarketBreadthDetailWindow::ensureTimelinePopup() {
 }
 
 
-void  MarketBreadthDetailWindow::showTimelinePopupForIndexCell(int index) {
+void MarketBreadthDetailWindow::showKlineDetailForHotRankRow(int row) {
+    if (testAttribute(Qt::WA_TransparentForMouseEvents)
+        || row < 0 || row >= m_hotRankRowHitAreas.size()) return;
+    const HotRankRowHitArea& area = m_hotRankRowHitAreas.at(row);
+    const QString code = area.item.watchCode.trimmed().isEmpty()
+        ? area.item.code.trimmed() : area.item.watchCode.trimmed();
+    if (code.isEmpty() || !isTimelinePopupSupportedCode(code)) return;
+    ensureTimelinePopup();
+    const QRect anchor(mapToGlobal(area.rect.topLeft()), area.rect.size());
+    m_timelinePopup->showDetailForStock(code, area.item.name.trimmed(), anchor);
+}
+
+void  MarketBreadthDetailWindow::showKlineDetailForIndexCell(int index) {
     if (testAttribute(Qt::WA_TransparentForMouseEvents)
         || index < 0
         || index >= m_indexCellHitAreas.size()) {
@@ -5555,12 +5949,7 @@ void  MarketBreadthDetailWindow::showTimelinePopupForIndexCell(int index) {
 
     const QString name = area.name.trimmed().isEmpty() ? code : area.name.trimmed();
     const QRect globalAnchor(mapToGlobal(area.rect.topLeft()), area.rect.size());
-    m_timelinePopup->showForStock(code, name, globalAnchor, width());
-
-    if (!m_timelineAppFilterInstalled) {
-        m_timelineAppFilterInstalled = true;
-        QCoreApplication::instance()->installEventFilter(this);
-    }
+    m_timelinePopup->showDetailForStock(code, name, globalAnchor);
 }
 
 

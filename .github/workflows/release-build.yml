@@ -40,9 +40,43 @@ jobs:
           arch: ${{ matrix.qt_arch }}
           cache: true
 
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache: false
+
+      - name: Setup MinGW for Go cgo
+        if: runner.os == 'Windows'
+        id: msys2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc
+          path-type: inherit
+
       - name: Setup MSVC
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Select cgo compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+        run: |
+          $mingwBin = Join-Path $env:MSYS2_LOCATION "mingw64/bin"
+          $gcc = (Join-Path $mingwBin "gcc.exe").Replace('\', '/')
+          if (!(Test-Path -Path $gcc -PathType Leaf)) {
+            throw "MinGW GCC not found: $gcc"
+          }
+          & $gcc --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "MinGW GCC failed with exit code $LASTEXITCODE"
+          }
+          "CC=$gcc" >> $env:GITHUB_ENV
+          "MINGW_BIN=$mingwBin" >> $env:GITHUB_ENV
+          $mingwBin >> $env:GITHUB_PATH
 
       - name: Configure (Release)
         shell: bash
@@ -50,18 +84,21 @@ jobs:
           if [ "${{ runner.os }}" = "Windows" ]; then
             cmake -S . -B build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_TESTING=OFF \
               -DQt6_DIR="${Qt6_DIR}" \
+              -DCMAKE_CXX_COMPILER=cl \
               -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           else
             cmake -S . -B build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_TESTING=OFF \
               -DQt6_DIR="${Qt6_DIR}"
           fi
 
       - name: Build (Release)
         shell: bash
         run: |
-          cmake --build build --config Release --parallel
+          cmake --build build --config Release --parallel --verbose
 
       - name: Package macOS bundle
         if: runner.os == 'macOS'
@@ -78,6 +115,39 @@ jobs:
           fi
 
           macdeployqt "$APP_PATH"
+
+          # The app is built for the runner's architecture, while the official Qt
+          # frameworks are universal. Thin the bundled Qt binaries to match so the
+          # release does not carry an unused CPU slice. If the app is ever built as
+          # a universal binary, this block is skipped and both slices are kept.
+          APP_BIN="$APP_PATH/Contents/MacOS/MyStocks"
+          APP_ARCHS="$(lipo -archs "$APP_BIN")"
+          echo "MyStocks architectures: $APP_ARCHS"
+          if [[ "$APP_ARCHS" == "arm64" || "$APP_ARCHS" == "x86_64" ]]; then
+            echo "Thinning bundled Qt binaries to $APP_ARCHS"
+            find "$APP_PATH" -type f -print0 | while IFS= read -r -d '' file; do
+              if lipo -info "$file" 2>/dev/null | grep -q "Architectures in the fat file"; then
+                lipo -thin "$APP_ARCHS" "$file" -output "$file.thin" &&
+                  chmod "$(stat -f '%Lp' "$file")" "$file.thin" &&
+                  mv "$file.thin" "$file"
+              fi
+            done
+          fi
+
+          # Re-sign bundled code after thinning. Sign frameworks and plugins first,
+          # then the app; avoid `--deep` so resources are never treated as code.
+          while IFS= read -r -d '' framework; do
+            codesign --force --sign - "$framework" || exit 1
+          done < <(find "$APP_PATH/Contents/Frameworks" -maxdepth 1 -type d -name "*.framework" -print0)
+          while IFS= read -r -d '' dylib; do
+            codesign --force --sign - "$dylib" || exit 1
+          done < <(find "$APP_PATH/Contents/Frameworks" -maxdepth 1 -type f -name "*.dylib" -print0)
+          while IFS= read -r -d '' plugin; do
+            codesign --force --sign - "$plugin" || exit 1
+          done < <(find "$APP_PATH/Contents/PlugIns" -type f -name "*.dylib" -print0)
+          codesign --force --sign - "$APP_PATH"
+          codesign --verify --deep --strict "$APP_PATH"
+
           ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "${{ env.ARTIFACT_FILE }}"
 
       - name: Package Windows bundle
@@ -107,7 +177,20 @@ jobs:
             Copy-Item -Path "data.yaml" -Destination (Join-Path $bundleDir "data.yaml") -Force
           }
 
-          windeployqt --release --no-translations --no-compiler-runtime --dir $bundleDir $bundleExe
+          $tdxDll = Join-Path (Split-Path $exePath) "mystocks_gotdx.dll"
+          if (!(Test-Path $tdxDll)) { throw "gotdx bridge DLL not found" }
+          Copy-Item -Path $tdxDll -Destination $bundleDir -Force
+          Copy-Item -Path (Join-Path (Split-Path $exePath) "gotdx-futures-calendar.db") -Destination $bundleDir -Force
+          Copy-Item -Path (Join-Path (Split-Path $exePath) "gotdx-LICENSE.txt") -Destination $bundleDir -Force
+          # MinGW's runtime dependencies, when linked dynamically by cgo.
+          foreach ($dll in @("libgcc_s_seh-1.dll", "libwinpthread-1.dll")) {
+            $runtimeDll = Join-Path $env:MINGW_BIN $dll
+            if (Test-Path $runtimeDll) { Copy-Item -Path $runtimeDll -Destination $bundleDir -Force }
+          }
+
+          # Qt Widgets uses the raster paint engine; the software OpenGL and D3D/DXC
+          # compiler DLLs are not needed and account for ~39 MB uncompressed.
+          windeployqt --release --no-translations --no-compiler-runtime --no-opengl-sw --no-system-d3d-compiler --no-system-dxc-compiler --dir $bundleDir $bundleExe
           Compress-Archive -Path "$bundleDir/*" -DestinationPath "${{ env.ARTIFACT_FILE }}" -Force
 
       - name: Upload artifact

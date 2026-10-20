@@ -55,13 +55,7 @@ int main(int argc, char* argv[]) {
 
     qInfo() << "Single-instance lock acquired with key" << instanceKey;
 
-    const AppConfig cfg = ConfigManager::loadConfig();
-    app_logging::initFileLogger(cfg);
-    qInfo() << "Application startup"
-            << "pollMs=" << cfg.pollMs
-            << "language=" << cfg.language
-            << "logEnabled=" << cfg.logEnabled
-            << "logLevel=" << cfg.logLevel;
+    app_logging::initFileLogger(ConfigManager::loadConnectionConfig());
 
     AppController controller;
     const int exitCode = app.exec();
