@@ -31,8 +31,19 @@ private:
     };
     void setControlHeld(bool held);
     int activePeriod() const;
+    // Zoom-in floor: never fewer candles than the readable minimum, but never
+    // more than a deliberately small configured range (the setting allows 1).
+    int minViewCount() const;
     void resetSeries();
     void fetch();
+    // Pan/zoom state: which slice of m_bars is on screen. An untouched chart
+    // follows the configured range and the newest candle.
+    void applyView(int start, int count, bool touched);
+    void panTo(const QPoint& pos);
+    void zoomAt(const QPoint& pos, double factor);
+    void updateCursor(const QPoint& pos);
+    void refreshHover(const QPoint& pos);
+    void clearHover();
     QWidget* m_timeline;
     QTimer m_modifierTimer;
     AppConfig m_cfg;
@@ -44,9 +55,14 @@ private:
     bool m_pending = false;
     qint64 m_nextFetchMs = 0;
     QRect m_priceRect;
-    int m_visibleStart = 0;
-    int m_visibleCount = 0;
-    double m_slot = 0.0;
+    QRect m_plotRect;
+    int m_viewStart = 0;
+    int m_viewCount = 0;
+    bool m_viewTouched = false;
+    bool m_dragging = false;
+    QPoint m_dragOrigin;
+    int m_dragOriginStart = 0;
+    double m_wheelSteps = 0.0;
     QPoint m_hoverPos;
     int m_hoverIndex = -1;
 };

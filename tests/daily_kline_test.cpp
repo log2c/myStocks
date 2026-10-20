@@ -8,6 +8,7 @@
 #include <QJsonDocument>
 #include <QFile>
 #include <QPainter>
+#include <QWheelEvent>
 
 class TimelineTestWidget : public QWidget {
 public:
@@ -65,8 +66,8 @@ int main(int argc, char** argv) {
 #endif
     control(timeline, true);
     check(daily->isVisible() && pending.size() == 1, "Ctrl must show daily candles");
-    check(pending.first().payload.value("count").toInt() == 89
-        && pending.first().payload.value("period").toInt() == 4, "Daily period and default range must reach bridge");
+    check(pending.first().payload.value("count").toInt() == daily_kline::kMaxHistoryCount
+        && pending.first().payload.value("period").toInt() == 4, "Daily period and full history depth must reach bridge");
     control(timeline, true, true);
     check(pending.size() == 1, "Auto-repeat must not create duplicate requests");
     control(timeline, false);
@@ -103,8 +104,8 @@ int main(int argc, char** argv) {
     check(pending.isEmpty(), "Repeated hover updates must not invalidate daily cache");
     cfg.dailyKlineDays = 120;
     daily->setContext(cfg, "1.510300", "沪深300ETF");
-    check(pending.size() == 1 && pending.first().payload.value("count").toInt() == 149,
-        "Changed range must request new bar count");
+    check(pending.size() == 1 && pending.first().payload.value("count").toInt() == daily_kline::kMaxHistoryCount,
+        "Changed range must reload the full history depth");
     auto stale = pending.takeFirst();
     daily->setContext(cfg, "1.600519", "贵州茅台");
     check(pending.size() == 1, "Switching stocks while Ctrl is held must load the new stock");
@@ -167,8 +168,40 @@ int main(int argc, char** argv) {
         "A single candle must have both price markers");
     const auto ties = daily_kline::visibleExtrema(QVector<Sample>{{4.2, 4.3, 4.1}, {4.2, 4.3, 4.1}}, 0);
     check(ties.highIndex == 0 && ties.lowIndex == 0, "Repeated extrema must have deterministic markers");
-    check(daily_kline::historyCount(800, {250}) == 1049 && daily_kline::historyCount(60, {}) == 60,
-        "History request must include only the enabled MA warm-up");
+    check(daily_kline::defaultView(309, 60).start == 249
+        && daily_kline::defaultView(309, 60).count == 60,
+        "An untouched chart must show the configured range ending at the newest candle");
+    check(daily_kline::defaultView(10, 800).count == 10
+        && daily_kline::defaultView(10, 800).start == 0,
+        "A short history must fill the chart instead of leaving an empty left edge");
+    check(daily_kline::defaultView(309, 0).count == daily_kline::kMinViewCount,
+        "A configured range below the zoom-in floor must still show a readable chart");
+    const auto panned = daily_kline::panView({249, 60}, 309, -30.0);
+    check(panned.start == 219 && panned.count == 60, "Panning left must reveal earlier candles");
+    check(daily_kline::panView({249, 60}, 309, 500.0).start == 249,
+        "Panning right must stop at the newest candle instead of running past it");
+    const auto zoomed = daily_kline::zoomView({249, 60}, 309, 279.0, 0.5);
+    check(zoomed.count == 30 && zoomed.start == 264,
+        "Zooming in must keep the candle under the pointer in place");
+    check(daily_kline::zoomView({0, 60}, 309, 0.0, 0.5).start == 0,
+        "Zooming at the left edge must not pull hidden history into view");
+    check(daily_kline::zoomView({249, 60}, 309, 279.0, 0.01).count == daily_kline::kMinViewCount,
+        "Zooming in must stop at the minimum readable candle count");
+    check(daily_kline::zoomView({0, 3}, 10, 1.0, 0.1, 3).count == 3,
+        "A configured range below the readable minimum must cap the zoom-in floor instead of overriding it");
+    check(daily_kline::zoomView({0, 0}, 0, 0.0, 0.5).count == 0
+        && daily_kline::defaultView(0, 60).count == 0,
+        "An empty series must produce an empty view instead of a phantom candle");
+    check(daily_kline::zoomView({249, 60}, 309, 279.0, 100.0).count == 309,
+        "Zooming out must stop at the loaded history");
+    check(daily_kline::clampView({-20, 5000}, 309).start == 0
+        && daily_kline::clampView({-20, 5000}, 309).count == 309,
+        "A stale view must be clamped to the loaded bars after a reload");
+    const auto refreshed = daily_kline::refreshView({219, 30}, 309, 310, 60, true);
+    check(refreshed.start == 220 && refreshed.count == 30,
+        "A refresh after panning must shift the view with the new candle instead of resetting it");
+    check(daily_kline::refreshView({219, 30}, 309, 310, 60, false).start == 250,
+        "An untouched view must stay on the configured range after a refresh");
     check(std::abs(daily_kline::candleWidth(8.0) - 5.6) < 1e-8
         && daily_kline::candleWidth(80.0) == 24.0,
         "Sparse daily histories must use readable but bounded candle widths");
@@ -180,8 +213,8 @@ int main(int argc, char** argv) {
     cfg.dailyKlineMAPeriods = {250};
     daily->setContext(cfg, "1.510300", "沪深300ETF");
     control(timeline, true);
-    check(pending.size() == 1 && pending.first().payload.value("count").toInt() == 309,
-        "MA250 on a 60-day view must request 309 historical bars");
+    check(pending.size() == 1 && pending.first().payload.value("count").toInt() == daily_kline::kMaxHistoryCount,
+        "MA250 on a 60-day view must still request the full history depth");
     QJsonArray longHistory;
     for (int i = 0; i < 309; ++i) {
         longHistory.append(QJsonObject{{"time", QDate(2025, 1, 1).addDays(i).toString(Qt::ISODate) + " 00:00:00"},
@@ -192,8 +225,8 @@ int main(int argc, char** argv) {
         "Warm-up data must not expand the visible 60-day range");
     cfg.dailyKlineMAPeriods.clear();
     daily->setContext(cfg, "1.510300", "沪深300ETF");
-    check(pending.size() == 1 && pending.first().payload.value("count").toInt() == 60,
-        "Disabling all MAs must preserve the candle chart without extra history");
+    check(pending.size() == 1 && pending.first().payload.value("count").toInt() == daily_kline::kMaxHistoryCount,
+        "Disabling all MAs must preserve the candle chart and its history depth");
     pending.takeFirst().callback(response(), {});
     control(timeline, false);
     // Shared background must preserve both the configured RGB and alpha, with
@@ -235,6 +268,93 @@ int main(int argc, char** argv) {
     check(!timeline.property("dailyKlineVisible").toBool()
         && timeline.grab().toImage().pixelColor(300, 160) == QColor(Qt::magenta),
         "Releasing Ctrl must restore timeline drawing");
+
+    // Pan and zoom: drag the plot to reach older candles, wheel-zoom around the
+    // pointer, and confirm the untouched range survives a refresh.
+    cfg.dailyKlineDays = 60;
+    cfg.dailyKlineMAPeriods = {};
+    daily->setContext(cfg, "1.600000", "Drag fixture");
+    daily->setPinnedDaily(true);
+    QJsonArray deepHistory;
+    for (int i = 0; i < 300; ++i) {
+        const double close = 10.0 + (i % 7) * 0.1;
+        deepHistory.append(QJsonObject{
+            {"time", QDate(2024, 1, 1).addDays(i).toString(Qt::ISODate) + " 00:00:00"},
+            {"open", close - 0.05}, {"high", close + 0.12}, {"low", close - 0.15},
+            {"close", close}, {"volume", 1000 + i}});
+    }
+    pending.takeFirst().callback({{"bars", deepHistory}}, {});
+    daily->grab();
+    check(daily->property("viewStart").toInt() == 240 && daily->property("viewCount").toInt() == 60,
+        "A loaded chart must start on the configured range at the newest candle");
+    const QPoint plotCenter(280, 200);
+    const auto sendMouse = [&](QEvent::Type type, const QPoint& pos, Qt::MouseButton button,
+                               Qt::MouseButtons buttons) {
+        QMouseEvent mouseEvent(type, QPointF(pos), QPointF(timeline.mapToGlobal(pos)),
+            button, buttons, Qt::NoModifier);
+        QApplication::sendEvent(&timeline, &mouseEvent);
+    };
+    sendMouse(QEvent::MouseButtonPress, plotCenter, Qt::LeftButton, Qt::LeftButton);
+    sendMouse(QEvent::MouseMove, plotCenter + QPoint(100, 0), Qt::NoButton, Qt::LeftButton);
+    sendMouse(QEvent::MouseButtonRelease, plotCenter + QPoint(100, 0), Qt::LeftButton, Qt::NoButton);
+    const int draggedStart = daily->property("viewStart").toInt();
+    check(draggedStart < 240 && daily->property("viewCount").toInt() == 60,
+        "Dragging right must scroll back through earlier candles without changing the zoom");
+    sendMouse(QEvent::MouseButtonPress, plotCenter, Qt::LeftButton, Qt::LeftButton);
+    sendMouse(QEvent::MouseMove, plotCenter - QPoint(5000, 0), Qt::NoButton, Qt::LeftButton);
+    sendMouse(QEvent::MouseButtonRelease, plotCenter - QPoint(5000, 0), Qt::LeftButton, Qt::NoButton);
+    check(daily->property("viewStart").toInt() == 240,
+        "Dragging left past the newest candle must stop at the right edge");
+    // A release outside the chart never reaches this filter, so a move without
+    // the left button must end the drag instead of panning on every hover.
+    sendMouse(QEvent::MouseButtonPress, plotCenter, Qt::LeftButton, Qt::LeftButton);
+    sendMouse(QEvent::MouseMove, plotCenter + QPoint(60, 0), Qt::NoButton, Qt::LeftButton);
+    const int releasedStart = daily->property("viewStart").toInt();
+    sendMouse(QEvent::MouseMove, plotCenter + QPoint(200, 0), Qt::NoButton, Qt::NoButton);
+    sendMouse(QEvent::MouseMove, plotCenter + QPoint(400, 0), Qt::NoButton, Qt::NoButton);
+    check(daily->property("viewStart").toInt() == releasedStart,
+        "Hovering after a release outside the chart must not keep panning");
+    sendMouse(QEvent::MouseMove, plotCenter, Qt::NoButton, Qt::NoButton);
+    check(timeline.cursor().shape() == Qt::OpenHandCursor,
+        "The hand cursor must return once the drag ends");
+
+    // The third argument is the pixel delta, the fourth the angle delta; a
+    // trackpad reports pixels only.
+    const auto wheel = [&](const QPoint& pos, int delta, int pixel = 0) {
+        QWheelEvent wheelEvent(QPointF(pos), QPointF(timeline.mapToGlobal(pos)),
+            pixel != 0 ? QPoint(0, pixel) : QPoint(),
+            pixel != 0 ? QPoint() : QPoint(0, delta),
+            Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(&timeline, &wheelEvent);
+    };
+    wheel(plotCenter, 120);
+    const int zoomedCount = daily->property("viewCount").toInt();
+    check(zoomedCount < 60 && zoomedCount >= daily_kline::kMinViewCount,
+        "Wheel up must zoom in to fewer candles");
+    check(daily->property("viewStart").toInt() + zoomedCount <= 300,
+        "Zooming in must stay inside the loaded history");
+    wheel(plotCenter, -120);
+    check(daily->property("viewCount").toInt() > zoomedCount,
+        "Wheel down must zoom back out");
+    // Trackpads deliver a stream of small pixel deltas; they must accumulate
+    // into one zoom step instead of a single pixel nudging the scale.
+    const int beforeTrackpad = daily->property("viewCount").toInt();
+    wheel(plotCenter, 0, 5);
+    wheel(plotCenter, 0, 5);
+    check(daily->property("viewCount").toInt() == beforeTrackpad,
+        "Small trackpad deltas must accumulate rather than nudge the scale");
+    wheel(plotCenter, 0, 5);
+    check(daily->property("viewCount").toInt() < beforeTrackpad,
+        "Accumulated trackpad deltas must eventually zoom");
+    for (int i = 0; i < 40; ++i) wheel(plotCenter, 120);
+    check(daily->property("viewCount").toInt() == daily_kline::kMinViewCount,
+        "Zooming in must stop at the readable minimum");
+    for (int i = 0; i < 80; ++i) wheel(plotCenter, -120);
+    check(daily->property("viewCount").toInt() == 300,
+        "Zooming out must stop at the loaded history instead of the configured range");
+    daily->setPinnedDaily(false);
+    check(daily->isHidden() && timeline.cursor().shape() == Qt::ArrowCursor,
+        "Leaving daily mode must restore the normal cursor");
 
     struct Range { double high, low; };
     const auto up = daily_kline::unfilledGaps(QVector<Range>{{10, 9}, {13, 12}}, 0);
@@ -295,7 +415,25 @@ int main(int argc, char** argv) {
             argc > 4 ? QString::fromLocal8Bit(argv[4]) : QStringLiteral("沪深300ETF"));
         control(timeline, true);
         pending.takeFirst().callback(QJsonDocument::fromJson(input.readAll()).object(), {});
-        timeline.grab().save(QString::fromLocal8Bit(argv[2]));
+        const QString base = QString::fromLocal8Bit(argv[2]);
+        timeline.grab().save(base);
+        // Same fixture after the pan/zoom interactions, for visual checks.
+        const QPoint center(timeline.width() / 2, timeline.height() / 2);
+        QWheelEvent zoomOut(QPointF(center), QPointF(timeline.mapToGlobal(center)), QPoint(),
+            QPoint(0, -360), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(&timeline, &zoomOut);
+        timeline.grab().save(base + QStringLiteral("-zoomout.png"));
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(center),
+            QPointF(timeline.mapToGlobal(center)), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&timeline, &press);
+        const QPoint dragged = center + QPoint(timeline.width() / 2, 0);
+        QMouseEvent move(QEvent::MouseMove, QPointF(dragged),
+            QPointF(timeline.mapToGlobal(dragged)), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(&timeline, &move);
+        QMouseEvent release(QEvent::MouseButtonRelease, QPointF(dragged),
+            QPointF(timeline.mapToGlobal(dragged)), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(&timeline, &release);
+        timeline.grab().save(base + QStringLiteral("-panned.png"));
     }
     return 0;
 }

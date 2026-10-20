@@ -3,6 +3,7 @@
 #include "i18n.h"
 #include "daily_kline_indicators.h"
 #include <QApplication>
+#include <QCursor>
 #include <QDateTime>
 #include <QJsonArray>
 #include <QKeyEvent>
@@ -10,6 +11,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPolygonF>
+#include <QWheelEvent>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -87,27 +89,62 @@ bool DailyKlineChart::eventFilter(QObject* watched, QEvent* event) {
             setControlHeld(false);
         } else if (event->type() == QEvent::Resize) {
             setGeometry(m_timeline->rect());
+        } else if (event->type() == QEvent::MouseButtonPress && isVisible()) {
+            const auto* mouse = static_cast<QMouseEvent*>(event);
+            if (mouse->button() == Qt::LeftButton && m_plotRect.contains(mouse->position().toPoint())) {
+                m_dragging = true;
+                m_dragOrigin = mouse->position().toPoint();
+                m_dragOriginStart = m_viewStart;
+                m_timeline->setCursor(Qt::ClosedHandCursor);
+                return true;
+            }
+        } else if (event->type() == QEvent::MouseButtonRelease && m_dragging) {
+            const auto* mouse = static_cast<QMouseEvent*>(event);
+            if (mouse->button() == Qt::LeftButton) {
+                m_dragging = false;
+                m_timeline->setCursor(Qt::OpenHandCursor);
+                return true;
+            }
         } else if (event->type() == QEvent::MouseMove && isVisible()) {
             const auto* mouse = static_cast<QMouseEvent*>(event);
             const QPoint pos = mouse->position().toPoint();
-            int index = -1;
-            if (m_priceRect.contains(pos) && m_slot > 0.0 && m_visibleCount > 0) {
-                const int offset = static_cast<int>((pos.x() - m_priceRect.left()) / m_slot);
-                index = m_visibleStart + qBound(0, offset, m_visibleCount - 1);
+            if (m_dragging) {
+                // The popup does not grab the mouse, so a release outside the
+                // chart never reaches it. Any move without the left button held
+                // must therefore end the drag.
+                if (!(mouse->buttons() & Qt::LeftButton)) {
+                    m_dragging = false;
+                    updateCursor(pos);
+                } else {
+                    panTo(pos);
+                    return true;
+                }
             }
-            if (index != m_hoverIndex || pos != m_hoverPos) {
-                m_hoverIndex = index;
-                m_hoverPos = pos;
-                setProperty("hoverIndex", index);
-                update();
+            if (!m_dragging) {
+                updateCursor(pos);
+                refreshHover(pos);
+            }
+        } else if (event->type() == QEvent::Wheel && isVisible()) {
+            const auto* wheel = static_cast<QWheelEvent*>(event);
+            // Mouse wheels report whole notches, trackpads report a long stream
+            // of small deltas. Accumulate until a quarter notch is reached so
+            // both zoom at a comparable, controllable rate.
+            double steps = 0.0;
+            if (wheel->angleDelta().y() != 0) steps = wheel->angleDelta().y() / 120.0;
+            else if (wheel->pixelDelta().y() != 0) steps = wheel->pixelDelta().y() / 50.0;
+            if (steps != 0.0) {
+                m_wheelSteps += steps;
+                if (std::abs(m_wheelSteps) >= 0.25) {
+                    // Wheel up (away from the user) shows fewer candles, like
+                    // the desktop trading clients.
+                    zoomAt(wheel->position().toPoint(), std::pow(0.9, qBound(-1.0, m_wheelSteps, 1.0)));
+                    m_wheelSteps = 0.0;
+                }
+                return true;
             }
         } else if (event->type() == QEvent::Leave && m_hoverIndex >= 0) {
-            m_hoverIndex = -1;
-            setProperty("hoverIndex", -1);
-            setProperty("hoverOpen", QVariant());
-            setProperty("hoverHigh", QVariant());
-            setProperty("hoverLow", QVariant());
-            setProperty("hoverClose", QVariant());
+            if (!m_dragging) m_timeline->unsetCursor();
+            clearHover();
             update();
         }
     }
@@ -142,17 +179,31 @@ int DailyKlineChart::activePeriod() const {
         : static_cast<int>(m_pinnedPeriod);
 }
 
+int DailyKlineChart::minViewCount() const {
+    return qMin(daily_kline::kMinViewCount, qBound(1, m_cfg.dailyKlineDays, 800));
+}
+
 void DailyKlineChart::resetSeries() {
     ++m_generation;
     setProperty("barCount", 0);
+    setProperty("viewStart", 0);
+    setProperty("viewCount", 0);
     m_bars.clear();
     m_status.clear();
     m_pending = false;
     m_nextFetchMs = 0;
     m_priceRect = QRect();
-    m_visibleStart = 0;
-    m_visibleCount = 0;
-    m_slot = 0.0;
+    m_plotRect = QRect();
+    m_viewStart = 0;
+    m_viewCount = 0;
+    m_viewTouched = false;
+    m_dragging = false;
+    m_wheelSteps = 0.0;
+    clearHover();
+    update();
+}
+
+void DailyKlineChart::clearHover() {
     m_hoverIndex = -1;
     setProperty("hoverIndex", -1);
     setProperty("hoverOpen", QVariant());
@@ -161,9 +212,83 @@ void DailyKlineChart::resetSeries() {
     setProperty("hoverClose", QVariant());
 }
 
+void DailyKlineChart::updateCursor(const QPoint& pos) {
+    if (m_dragging) return;
+    // The overlay is transparent to mouse events, so the shared timeline widget
+    // carries the cursor for the whole chart window.
+    if (m_plotRect.contains(pos)) m_timeline->setCursor(Qt::OpenHandCursor);
+    else m_timeline->unsetCursor();
+}
+
+void DailyKlineChart::refreshHover(const QPoint& pos) {
+    int index = -1;
+    // Derive the slot from the view rather than the last painted geometry:
+    // panning updates the view before its repaint lands, and a stale slot
+    // would report the neighbouring candle.
+    if (m_priceRect.contains(pos) && m_viewCount > 0) {
+        const double slot = double(m_priceRect.width()) / m_viewCount;
+        const int offset = qBound(0, int((pos.x() - m_priceRect.left()) / slot), m_viewCount - 1);
+        index = m_viewStart + offset;
+    }
+    if (index != m_hoverIndex || pos != m_hoverPos) {
+        m_hoverIndex = index;
+        m_hoverPos = pos;
+        setProperty("hoverIndex", index);
+        update();
+    }
+}
+
+void DailyKlineChart::applyView(int start, int count, bool touched) {
+    const int total = int(m_bars.size());
+    const int minimum = minViewCount();
+    const auto view = daily_kline::clampView({start, count}, total, minimum);
+    const bool changed = view.start != m_viewStart || view.count != m_viewCount;
+    m_viewStart = view.start;
+    m_viewCount = view.count;
+    // "Touched" means the view no longer matches the configured default, so
+    // zooming back out to exactly that range restores both the plain title and
+    // the follow-the-newest-candle behaviour.
+    if (touched) {
+        const auto defaults = daily_kline::defaultView(total, m_cfg.dailyKlineDays, minimum);
+        m_viewTouched = view.start != defaults.start || view.count != defaults.count;
+    } else {
+        m_viewTouched = false;
+    }
+    if (changed) {
+        setProperty("viewStart", m_viewStart);
+        setProperty("viewCount", m_viewCount);
+        setProperty("barCount", m_viewCount);
+        refreshHover(m_hoverPos);
+        update();
+    }
+}
+
+void DailyKlineChart::panTo(const QPoint& pos) {
+    if (m_viewCount <= 0 || m_bars.isEmpty() || m_priceRect.width() <= 0) return;
+    // Dragging right moves the chart right, revealing older candles on the left.
+    const double slot = double(m_priceRect.width()) / m_viewCount;
+    const double delta = (m_dragOrigin.x() - pos.x()) / slot;
+    m_hoverPos = pos;
+    const auto view = daily_kline::panView(
+        {m_dragOriginStart, m_viewCount}, int(m_bars.size()), delta, minViewCount());
+    applyView(view.start, view.count, true);
+}
+
+void DailyKlineChart::zoomAt(const QPoint& pos, double factor) {
+    if (m_bars.isEmpty() || m_viewCount <= 0 || m_priceRect.width() <= 0) return;
+    const double slot = double(m_priceRect.width()) / m_viewCount;
+    const double anchor = m_viewStart
+        + qBound(0.0, (pos.x() - m_priceRect.left()) / slot, double(m_viewCount));
+    const auto view = daily_kline::zoomView(
+        {m_viewStart, m_viewCount}, int(m_bars.size()), anchor, factor, minViewCount());
+    m_hoverPos = pos;
+    applyView(view.start, view.count, true);
+}
+
 void DailyKlineChart::setControlHeld(bool held) {
     held = (held || m_pinnedPeriod != KlinePeriod::None) && m_timeline->isVisible() && !m_code.isEmpty();
-    if (m_controlHeld != held) {
+    const bool wasHeld = m_controlHeld;
+    if (wasHeld != held) {
         m_timeline->setProperty("dailyKlineVisible", held);
         m_timeline->update();
     }
@@ -171,14 +296,15 @@ void DailyKlineChart::setControlHeld(bool held) {
     setVisible(held);
     if (held) {
         raise();
+        // The Ctrl hover timer re-enters here every 50 ms; re-applying the
+        // cursor during a drag would undo its closed-hand state.
+        updateCursor(m_timeline->mapFromGlobal(QCursor::pos()));
         fetch();
-    } else {
-        m_hoverIndex = -1;
-        setProperty("hoverIndex", -1);
-        setProperty("hoverOpen", QVariant());
-        setProperty("hoverHigh", QVariant());
-        setProperty("hoverLow", QVariant());
-        setProperty("hoverClose", QVariant());
+    } else if (wasHeld) {
+        m_dragging = false;
+        m_wheelSteps = 0.0;
+        m_timeline->unsetCursor();
+        clearHover();
     }
 }
 
@@ -195,7 +321,7 @@ void DailyKlineChart::fetch() {
     update();
     const int generation = m_generation;
     tdx_bridge::request(this, m_cfg, {{"operation", "klines"}, {"code", m_code},
-        {"name", m_name}, {"period", period}, {"count", daily_kline::historyCount(m_cfg.dailyKlineDays, m_cfg.dailyKlineMAPeriods)}},
+        {"name", m_name}, {"period", period}, {"count", daily_kline::kMaxHistoryCount}},
         [this, generation, period, language, periodLabel](const QJsonObject& result, const QString& error) {
             if (generation != m_generation || period != activePeriod()) return;
             m_pending = false;
@@ -223,11 +349,19 @@ void DailyKlineChart::fetch() {
             bars.erase(std::unique(bars.begin(), bars.end(), [](const Bar& a, const Bar& b) {
                 return a.date == b.date;
             }), bars.end());
-            const int required = daily_kline::historyCount(m_cfg.dailyKlineDays, m_cfg.dailyKlineMAPeriods);
-            if (bars.size() > required) bars = bars.mid(bars.size() - required);
+            if (bars.size() > daily_kline::kMaxHistoryCount) {
+                bars = bars.mid(bars.size() - daily_kline::kMaxHistoryCount);
+            }
+            // A user who panned or zoomed keeps that window anchored to the
+            // right edge, so a refresh appends candles instead of moving them.
+            const auto previous = daily_kline::ViewWindow{m_viewStart, m_viewCount};
+            const int oldTotal = int(m_bars.size());
+            const bool touched = m_viewTouched;
             m_bars = bars;
+            const auto view = daily_kline::refreshView(
+                previous, oldTotal, int(m_bars.size()), m_cfg.dailyKlineDays, touched, minViewCount());
+            applyView(view.start, view.count, touched);
             m_status = bars.isEmpty() ? i18n::t("popup.kline.empty", language).arg(periodLabel) : QString();
-            setProperty("barCount", qMin(m_cfg.dailyKlineDays, int(m_bars.size())));
             update();
         });
 }
@@ -238,15 +372,26 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
     // overlay paints chart content only, preserving the same configured alpha.
     const QRect bounds = rect().adjusted(12, 12, -12, -12);
     m_priceRect = QRect();
+    m_plotRect = QRect();
     p.setPen(m_cfg.timelineChartTextColor);
     const QString language = i18n::resolveLanguage(m_cfg.language);
-    const int visibleCount = qMin(m_cfg.dailyKlineDays, int(m_bars.size()));
-    const int visibleStart = m_bars.size() - visibleCount;
+    const int total = int(m_bars.size());
+    if (!m_bars.isEmpty() && m_viewCount <= 0) {
+        const auto view = daily_kline::defaultView(total, m_cfg.dailyKlineDays, minViewCount());
+        m_viewStart = view.start;
+        m_viewCount = view.count;
+    }
+    const int visibleStart = m_viewStart;
+    const int visibleCount = m_viewCount;
     const int titleCount = visibleCount > 0 ? visibleCount : m_cfg.dailyKlineDays;
     const QString periodLabel = periodName(static_cast<KlinePeriod>(activePeriod()), language);
-    const QString title = (m_name.isEmpty() ? m_code : m_name + " " + m_code)
-        + " · " + i18n::t("popup.kline.title", language)
+    // Once the user pans or zooms, the visible count no longer matches the
+    // configured range, so quoting both would read like a mismatch.
+    const QString titleBody = m_viewTouched
+        ? i18n::t("popup.kline.titleZoomed", language).arg(periodLabel).arg(titleCount)
+        : i18n::t("popup.kline.title", language)
             .arg(periodLabel).arg(titleCount).arg(m_cfg.dailyKlineDays);
+    const QString title = (m_name.isEmpty() ? m_code : m_name + " " + m_code) + " · " + titleBody;
     p.drawText(QRect(bounds.left(), bounds.top(), bounds.width(), 24), Qt::AlignLeft | Qt::AlignVCenter,
         p.fontMetrics().elidedText(title, Qt::ElideRight, bounds.width()));
     if (!m_status.isEmpty() || m_bars.isEmpty()) {
@@ -262,9 +407,10 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
     QFont legendFont = originalFont;
     legendFont.setPointSizeF(9);
     p.setFont(legendFont);
+    const int legendIndex = qBound(0, visibleStart + visibleCount - 1, total - 1);
     int legendX = bounds.left(), legendY = bounds.top() + 26;
     for (auto it = averages.cbegin(); it != averages.cend(); ++it) {
-        const double value = it.value().last();
+        const double value = it.value().at(legendIndex);
         const QString text = QStringLiteral("MA%1: %2").arg(it.key())
             .arg(std::isfinite(value) ? QString::number(value, 'f', value < 10 ? 3 : 2) : QStringLiteral("--"));
         const int width = p.fontMetrics().horizontalAdvance(text);
@@ -286,9 +432,10 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
 
     // Price markers and volume scale use only the visible candles. The earlier
     // history is retained solely to warm up MA calculations at the left edge.
-    const auto extrema = daily_kline::visibleExtrema(m_bars, visibleStart);
+    const int visibleEnd = qMin(visibleStart + visibleCount, total);
+    const auto extrema = daily_kline::visibleExtrema(m_bars, visibleStart, visibleEnd);
     double lowest = extrema.low, highest = extrema.high, maxVolume = 0;
-    for (int i = visibleStart; i < m_bars.size(); ++i) {
+    for (int i = visibleStart; i < visibleEnd; ++i) {
         if (std::isfinite(m_bars[i].volume)) maxVolume = std::max(maxVolume, m_bars[i].volume);
         for (auto it = averages.cbegin(); it != averages.cend(); ++it) {
             if (std::isfinite(it.value()[i])) {
@@ -297,17 +444,16 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
             }
         }
     }
+    if (!std::isfinite(lowest) || !std::isfinite(highest) || highest <= lowest) return;
     const double padding = std::max((highest - lowest) * 0.10, highest * 0.002);
     lowest -= padding;
     highest += padding;
     const auto y = [&](double value) { return price.bottom() - (value - lowest) / (highest - lowest) * (price.height() - 1); };
-    const double slot = static_cast<double>(price.width()) / visibleCount;
+    const double slot = static_cast<double>(price.width()) / qMax(1, visibleCount);
     const auto x = [&](int i) { return price.left() + (i - visibleStart + 0.5) * slot; };
     const double candleWidth = daily_kline::candleWidth(slot);
     m_priceRect = price;
-    m_visibleStart = visibleStart;
-    m_visibleCount = visibleCount;
-    m_slot = slot;
+    m_plotRect = area;
     for (int i = 0; i <= 4; ++i) {
         const int yy = price.top() + (price.height() - 1) * i / 4;
         p.setPen(m_cfg.timelineChartTextColor);
@@ -317,7 +463,7 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
     }
     p.save();
     p.setClipRect(price);
-    for (const auto& gap : daily_kline::unfilledGaps(m_bars, visibleStart)) {
+    for (const auto& gap : daily_kline::unfilledGaps(m_bars, visibleStart, visibleEnd)) {
         const double left = x(gap.startIndex) - slot * 0.5;
         const QRectF zone(left, y(gap.upper), price.right() - left, y(gap.lower) - y(gap.upper));
         const QColor fill(160, 160, 160, 60);
@@ -331,7 +477,7 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
         }
     }
     p.setClipRect(area);
-    for (int i = visibleStart; i < m_bars.size(); ++i) {
+    for (int i = visibleStart; i < visibleEnd; ++i) {
         const auto& bar = m_bars[i];
         const QColor color = bar.close >= bar.open ? m_cfg.timelineChartUpColor : m_cfg.timelineChartDownColor;
         p.setPen(QPen(color, 1));
@@ -353,7 +499,7 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
         bool connected = false;
         // Include the previous close when available so the path enters the
         // visible area naturally rather than starting at the first candle's center.
-        for (int i = qMax(0, visibleStart - 1); i < m_bars.size(); ++i) {
+        for (int i = qMax(0, visibleStart - 1); i < qMin(visibleEnd + 1, total); ++i) {
             const double value = it.value()[i];
             if (!std::isfinite(value)) { connected = false; continue; }
             if (connected) path.lineTo(x(i), y(value));
@@ -391,9 +537,9 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
     p.setPen(m_cfg.timelineChartTextColor);
     const int labelY = area.bottom() + 5;
     p.drawText(QRect(area.left(), labelY, 90, 18), Qt::AlignLeft, m_bars[visibleStart].date);
-    p.drawText(QRect(area.right() - 89, labelY, 90, 18), Qt::AlignRight, m_bars.last().date);
+    p.drawText(QRect(area.right() - 89, labelY, 90, 18), Qt::AlignRight, m_bars[visibleEnd - 1].date);
 
-    if (m_hoverIndex >= visibleStart && m_hoverIndex < m_bars.size()) {
+    if (m_hoverIndex >= visibleStart && m_hoverIndex < visibleEnd) {
         const auto& bar = m_bars[m_hoverIndex];
         const double hx = x(m_hoverIndex);
         const double hy = y(bar.close);

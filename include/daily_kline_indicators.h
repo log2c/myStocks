@@ -7,6 +7,21 @@
 
 namespace daily_kline {
 
+// Never zoom further in than this: below a handful of candles the chart stops
+// reading as a K-line series.
+inline constexpr int kMinViewCount = 5;
+
+// The bridge caps a K-line reply at this many bars. The chart loads that full
+// depth up front so panning left reaches real history rather than the edge of
+// the initially visible range.
+inline constexpr int kMaxHistoryCount = 1049;
+
+// The candles currently on screen: [start, start + count) of the loaded bars.
+struct ViewWindow {
+    int start = 0;
+    int count = 0;
+};
+
 inline QColor movingAverageColor(int period) {
     switch (period) {
     case 5: return QColor("#f0f0f0");
@@ -20,9 +35,51 @@ inline QColor movingAverageColor(int period) {
     }
 }
 
-inline int historyCount(int visibleDays, const QVector<int>& periods) {
-    const auto normalized = normalizeDailyKlineMAPeriods(periods);
-    return qBound(1, visibleDays, 800) + (normalized.isEmpty() ? 0 : normalized.last() - 1);
+// The untouched chart shows the configured range, right-aligned to the newest
+// candle. Everything the bridge returned can be panned into, and zooming out
+// may reveal more than the configured range.
+inline ViewWindow defaultView(int total, int preferred, int minCount = kMinViewCount) {
+    if (total <= 0) return {};
+    const int minimum = qMin(qMax(1, minCount), total);
+    const int count = qBound(minimum, qBound(1, preferred, total), total);
+    return {total - count, count};
+}
+
+inline ViewWindow clampView(const ViewWindow& view, int total, int minCount = kMinViewCount) {
+    if (total <= 0) return {};
+    const int minimum = qMin(qMax(1, minCount), total);
+    const int count = qBound(minimum, view.count, total);
+    return {qBound(0, view.start, total - count), count};
+}
+
+// Visible candles after a zoom, rounded so that the candle under the anchor
+// stays put. A factor below 1 shows fewer candles.
+inline ViewWindow zoomView(const ViewWindow& view, int total, double anchorBar,
+                           double factor, int minCount = kMinViewCount) {
+    if (total <= 0 || view.count <= 0 || !std::isfinite(factor) || factor <= 0.0) {
+        return clampView(view, total, minCount);
+    }
+    const int minimum = qMin(qMax(1, minCount), total);
+    const int count = qBound(minimum, qRound(view.count * factor), total);
+    const double fraction = (anchorBar - view.start) / view.count;
+    return clampView({qRound(anchorBar - fraction * count), count}, total, minCount);
+}
+
+inline ViewWindow panView(const ViewWindow& view, int total, double deltaBars,
+                          int minCount = kMinViewCount) {
+    return clampView({qRound(view.start + deltaBars), view.count}, total, minCount);
+}
+
+// Pick the window for a freshly loaded series. A user who panned or zoomed
+// keeps that window anchored to the right edge, so a refresh appends candles
+// instead of snapping the chart back to the newest one.
+inline ViewWindow refreshView(const ViewWindow& previous, int oldTotal, int newTotal,
+                              int preferred, bool touched, int minCount = kMinViewCount) {
+    if (!touched || oldTotal <= 0 || previous.count <= 0) {
+        return defaultView(newTotal, preferred, minCount);
+    }
+    const int rightGap = oldTotal - (previous.start + previous.count);
+    return clampView({newTotal - previous.count - rightGap, previous.count}, newTotal, minCount);
 }
 
 // Keep sparse histories readable. A short post-listing history has a wide
@@ -88,9 +145,11 @@ struct Extrema {
 };
 
 template<typename Bars>
-Extrema visibleExtrema(const Bars& bars, int visibleStart) {
+Extrema visibleExtrema(const Bars& bars, int visibleStart, int visibleEnd = -1) {
     Extrema result;
-    for (int i = qMax(0, visibleStart); i < bars.size(); ++i) {
+    const int end = visibleEnd < 0 ? static_cast<int>(bars.size())
+                                   : qMin(visibleEnd, static_cast<int>(bars.size()));
+    for (int i = qMax(0, visibleStart); i < end; ++i) {
         if (std::isfinite(bars[i].high) && (result.highIndex < 0 || bars[i].high > result.high)) {
             result.highIndex = i;
             result.high = bars[i].high;
@@ -112,11 +171,14 @@ struct Gap {
 
 // Track full-range gaps formed inside the visible window. Later daily wicks
 // reduce the still-open price interval; touching its far edge fills it fully.
-// Hidden MA warm-up history must not create extra gap annotations.
+// Hidden MA warm-up history must not create extra gap annotations, and bars
+// panned past the right edge must not create them either.
 template<typename Bars>
-QVector<Gap> unfilledGaps(const Bars& bars, int visibleStart) {
+QVector<Gap> unfilledGaps(const Bars& bars, int visibleStart, int visibleEnd = -1) {
     QVector<Gap> gaps;
-    for (int i = qMax(1, visibleStart + 1); i < bars.size(); ++i) {
+    const int end = visibleEnd < 0 ? static_cast<int>(bars.size())
+                                   : qMin(visibleEnd, static_cast<int>(bars.size()));
+    for (int i = qMax(1, visibleStart + 1); i < end; ++i) {
         const auto& bar = bars[i];
         const auto& previous = bars[i - 1];
         if (!std::isfinite(bar.high) || !std::isfinite(bar.low) || bar.low > bar.high) continue;

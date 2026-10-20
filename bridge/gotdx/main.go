@@ -334,7 +334,9 @@ func klines(req request) (any, error) {
 	if req.Count == 0 {
 		req.Count = 240
 	}
-	// Up to 800 visible days plus 249 prior closes for the MA250 warm-up.
+	// The chart loads this full depth so panning and zooming out reach real
+	// history: 800 periods (the largest configurable view) plus 249 prior
+	// closes for the MA250 warm-up.
 	if req.Count > 1049 {
 		return nil, fmt.Errorf("K-line count exceeds 1049")
 	}
