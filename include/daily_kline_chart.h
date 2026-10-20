@@ -19,6 +19,9 @@ public:
     void setPinnedDaily(bool pinned);
     void setPinnedPeriod(KlinePeriod period);
     void setContext(const AppConfig& cfg, const QString& code, const QString& name);
+    // The detail window shows the stock name and code in its period bar, so
+    // the chart header can give that space to the hovered bar's statistics.
+    void setStockTitleVisible(bool visible);
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -28,6 +31,9 @@ private:
     struct Bar {
         QString date;
         double open, high, low, close, volume;
+        double amount = qQNaN();
+        double turnover = qQNaN();
+        double preClose = qQNaN();
     };
     void setControlHeld(bool held);
     int activePeriod() const;
@@ -49,6 +55,9 @@ private:
     AppConfig m_cfg;
     QString m_code, m_name, m_status;
     QVector<Bar> m_bars;
+    double m_totalShares = qQNaN();
+    double m_floatShares = qQNaN();
+    bool m_stockTitleVisible = true;
     int m_generation = 0;
     bool m_controlHeld = false;
     KlinePeriod m_pinnedPeriod = KlinePeriod::None;

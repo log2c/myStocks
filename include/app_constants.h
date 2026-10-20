@@ -17,5 +17,8 @@ inline constexpr qint64 kMarketBreadthPopupAutoRefreshIntervalMs =
     kNetworkCacheTtlMs + kMarketBreadthPopupAutoRefreshDelayMs;
 inline constexpr qint64 kTrayErrorBadgeDurationMs = 5000;
 inline constexpr qint64 kStartupSplashMinimumDisplayMs = 2500;
+// A timeline series is ~241 points per day; keeping a bounded number of cached
+// symbols stops a long session of hovering from growing the heap without limit.
+inline constexpr int kTimelineCacheMaxEntries = 16;
 
 } // namespace app_constants

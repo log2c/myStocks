@@ -89,6 +89,36 @@ inline double candleWidth(double slot) {
     return qBound(1.0, slot * 0.7, 24.0);
 }
 
+// Amounts are yuan, and Chinese market figures are read in 万/亿/万亿 rather
+// than raw digits. Two decimals keep a hovered bar's turnover comparable.
+inline QString formatAmount(double value) {
+    if (!std::isfinite(value) || value <= 0.0) return QStringLiteral("--");
+    constexpr double kYi = 100000000.0;
+    constexpr double kWanYi = 1000000000000.0;
+    if (value >= kWanYi) return QStringLiteral("%1万亿").arg(QString::number(value / kWanYi, 'f', 2));
+    if (value >= kYi) {
+        const double yi = value / kYi;
+        return QStringLiteral("%1亿").arg(QString::number(yi, 'f', yi >= 100.0 ? 0 : 2));
+    }
+    if (value >= 10000.0) return QStringLiteral("%1万").arg(QString::number(value / 10000.0, 'f', 2));
+    return QString::number(value, 'f', 0);
+}
+
+// A bar's amplitude is its whole high-low span against the previous close,
+// which is how the desktop clients report it.
+inline double amplitudePct(double high, double low, double preClose) {
+    if (!std::isfinite(high) || !std::isfinite(low) || !std::isfinite(preClose) || preClose <= 0.0) {
+        return qQNaN();
+    }
+    return (high - low) / preClose * 100.0;
+}
+
+// Share counts arrive in 10k shares (万股).
+inline double marketValue(double close, double sharesInWan) {
+    if (!std::isfinite(close) || !std::isfinite(sharesInWan) || sharesInWan <= 0.0) return qQNaN();
+    return close * sharesInWan * 10000.0;
+}
+
 // Full-period simple moving averages of closing prices. Missing history is
 // unavailable, never a shorter partial average that looks like a valid MA250.
 template<typename Bars>

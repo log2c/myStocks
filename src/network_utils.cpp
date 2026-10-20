@@ -4,6 +4,7 @@
 #include <QDebug>
 #include <QNetworkInterface>
 #include <QHostAddress>
+#include <QRandomGenerator>
 
 namespace {
 
@@ -22,7 +23,22 @@ QString normalizedProxyType(const QString& raw) {
 
 namespace network_utils {
 
+QString sessionRandomUserAgent() {
+    static const QString chosen = []() {
+        const QStringList presets = builtinUserAgentPresets();
+        if (presets.isEmpty()) {
+            return defaultChrome100UserAgent();
+        }
+        const int index = QRandomGenerator::global()->bounded(presets.size());
+        return presets.at(index);
+    }();
+    return chosen;
+}
+
 QString effectiveUserAgent(const AppConfig& cfg) {
+    if (normalizeUserAgentMode(cfg.userAgentMode) == QLatin1String("random")) {
+        return sessionRandomUserAgent();
+    }
     const QString ua = cfg.userAgent.trimmed();
     if (ua.isEmpty()) {
         return defaultChrome100UserAgent();

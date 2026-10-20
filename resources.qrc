@@ -1,6 +1,6 @@
 <RCC>
     <qresource prefix="/">
-        <file alias="icon.png">assets/icons/icon.png</file>
+        <file alias="icon.png">assets/icons/icon-runtime.png</file>
     </qresource>
     <qresource prefix="/tray_icons">
         <file alias="apple-002-app2.png">assets/tray/apple-002-app2.png</file>

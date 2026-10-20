@@ -2,6 +2,8 @@
 
 #include "app_constants.h"
 #include "i18n.h"
+#include "network_utils.h"
+#include "right_click_close.h"
 #include "watchlist_utils.h"
 #include "tdx_bridge.h"
 #include "timeline_volume.h"
@@ -17,6 +19,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
 #include <QMouseEvent>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -674,6 +677,13 @@ public:
         update();
     }
 
+    // The detail window renders the stock name and code in its period bar.
+    void setTitleVisible(bool visible) {
+        if (m_showTitle == visible) return;
+        m_showTitle = visible;
+        update();
+    }
+
 protected:
     void mouseMoveEvent(QMouseEvent* event) override {
         if (!event) {
@@ -739,7 +749,10 @@ protected:
         const int leftMargin = 56;
         const int rightMargin = 56;
         const int bottomMargin = 28;
-        QRect headerRect(r.left(), r.top(), r.width(), headerLineHeight);
+        // The stock name and code live in the period bar, so the price readout
+        // owns the first header line and the breakeven hint is the only row
+        // that can push the plot down.
+        QRect priceRect(r.left(), r.top(), r.width(), headerLineHeight);
         QRect breakevenGainRect(r.left(), r.top() + headerLineHeight, r.width(), headerLineHeight);
         QRect plot(
             r.left() + leftMargin,
@@ -770,8 +783,8 @@ protected:
         }
 
         painter.setPen(QPen(m_cfg.timelineChartTextColor));
-        if (!m_title.isEmpty()) {
-            painter.drawText(headerRect, Qt::AlignLeft | Qt::AlignVCenter, m_title);
+        if (m_showTitle && !m_title.isEmpty()) {
+            painter.drawText(priceRect, Qt::AlignLeft | Qt::AlignVCenter, m_title);
         }
         if (!m_status.isEmpty()) {
             painter.drawText(plot, Qt::AlignCenter, m_status);
@@ -1273,8 +1286,10 @@ protected:
                 + (w4 > 0 ? gap + w4 : 0)
                 + (w5 > 0 ? gap + w5 : 0);
             const bool hasBreakevenGainText = breakevenGainTotalWidth > 0;
-            const QRect& marketInfoRect = hasBreakevenGainText ? breakevenGainRect : headerRect;
-            const int titleAdvance = fm.horizontalAdvance(m_title + QStringLiteral("  "));
+            const QRect& marketInfoRect = hasBreakevenGainText ? breakevenGainRect : priceRect;
+            const int titleAdvance = m_showTitle
+                ? fm.horizontalAdvance(m_title + QStringLiteral("  "))
+                : 0;
             const int rightReserve = hasBreakevenGainText
                 ? (breakevenGainTotalWidth + gap)
                 : (hasCostProfitText ? (costProfitTotalWidth + gap) : 0);
@@ -1317,8 +1332,8 @@ protected:
         }
 
         if (hasCostProfitText) {
-            const int y = headerRect.top();
-            const int startX = headerRect.right() - costProfitTotalWidth + 1;
+            const int y = priceRect.top();
+            const int startX = priceRect.right() - costProfitTotalWidth + 1;
 
             QFont normalFont = painter.font();
             QFont boldFont = normalFont;
@@ -1329,14 +1344,14 @@ protected:
 
             painter.setPen(QPen(costProfitColor));
             painter.setFont(normalFont);
-            painter.drawText(startX, y, prefixWidth, headerRect.height(), Qt::AlignLeft | Qt::AlignVCenter, costProfitPrefix);
+            painter.drawText(startX, y, prefixWidth, priceRect.height(), Qt::AlignLeft | Qt::AlignVCenter, costProfitPrefix);
 
             painter.setFont(boldFont);
             painter.drawText(
                 startX + prefixWidth,
                 y,
                 profitPctWidth,
-                headerRect.height(),
+                priceRect.height(),
                 Qt::AlignLeft | Qt::AlignVCenter,
                 costProfitPct
             );
@@ -1477,6 +1492,7 @@ private:
     QVector<TradePeriod> m_tradePeriods;
     double m_preClose = qQNaN();
     double m_cost = qQNaN();
+    bool m_showTitle = true;
 };
 
 } // namespace
@@ -1485,6 +1501,15 @@ bool isTimelinePopupSupportedCode(const QString& rawCode) {
     return timelineMarketOfCode(rawCode) != TimelineMarket::Unknown;
 }
 
+namespace {
+// Every live detail chart window, whichever window opened it, so a click on
+// the floating window can dismiss all of them at once.
+QVector<SharedTimelineChartPopupPrivate*>& chartWindows() {
+    static QVector<SharedTimelineChartPopupPrivate*> windows;
+    return windows;
+}
+} // namespace
+
 class SharedTimelineChartPopupPrivate : public QWidget {
 public:
     explicit SharedTimelineChartPopupPrivate(QWidget* parentWindow)
@@ -1492,6 +1517,12 @@ public:
         , m_parentWindow(parentWindow) {
         setWindowFlags(Qt::FramelessWindowHint | Qt::Tool | Qt::WindowStaysOnTopHint);
         setAttribute(Qt::WA_ShowWithoutActivating, true);
+        chartWindows().append(this);
+        right_click_close::registerWindow(
+            this,
+            [this]() { return m_cfg.globalRightClickClose; },
+            [this]() { hidePopup(); }
+        );
 
         QVBoxLayout* layout = new QVBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
@@ -1533,6 +1564,15 @@ public:
             periodLayout->addWidget(button);
         }
         periodLayout->addStretch(1);
+        // The stock identity belongs to the period bar now, freeing the chart's
+        // first row for the price readout and the hovered bar's statistics.
+        m_stockLabel = new QLabel(m_periodBar);
+        m_stockLabel->setObjectName(QStringLiteral("klineStockLabel"));
+        m_stockLabel->setMouseTracking(true);
+        m_stockLabel->installEventFilter(this);
+        m_stockLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_stockLabel->setTextInteractionFlags(Qt::NoTextInteraction);
+        periodLayout->addWidget(m_stockLabel);
 #if !defined(Q_OS_MACOS) && !defined(Q_OS_MAC)
         periodLayout->addWidget(closeButton);
 #endif
@@ -1572,6 +1612,7 @@ public:
         m_chart->setConfig(cfg);
         applyDetailBarStyle();
         updateDetailButtonTexts();
+        updateStockLabel();
         m_dailyChart->setContext(cfg, m_code, m_name);
         if (!isVisible()) {
             return;
@@ -1609,10 +1650,15 @@ public:
         hide();
     }
 
+    // The hover popup shares this class but is dismissed by pointer movement,
+    // not by clicking the floating window.
+    bool isDetailWindow() const { return m_detailMode; }
+
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override {
         const bool isPeriodControl = watched == m_periodBar
             || (m_periodGroup && m_periodGroup->buttons().contains(qobject_cast<QAbstractButton*>(watched)))
+            || watched == m_stockLabel
             || (m_periodBar && watched == m_periodBar->findChild<QToolButton*>(QStringLiteral("klineCloseButton")));
         if (!m_periodBar || !m_periodBar->isVisible() || !isPeriodControl) {
             return QWidget::eventFilter(watched, event);
@@ -1666,11 +1712,16 @@ private:
         const bool changed = (m_code.compare(code, Qt::CaseInsensitive) != 0);
         m_code = code.trimmed();
         m_name = name.trimmed();
+        m_detailMode = detail;
         setProperty("chartCode", m_code);
         m_cost = cost;
         m_periodBar->setVisible(detail);
         updateDetailButtonTexts();
+        updateStockLabel();
         applyDetailBarStyle();
+        // Only the detailed window moves the identity into the period bar.
+        m_chart->setTitleVisible(!detail);
+        m_dailyChart->setStockTitleVisible(!detail);
         m_dailyChart->setContext(m_cfg, m_code, m_name);
         if (changed) {
             m_hongKongHalfDayDate = QDate();
@@ -1742,6 +1793,30 @@ private:
         }
     }
 
+    // The period bar's trailing label: "name  code", right-aligned. It is
+    // capped so a long stock name cannot squeeze the period buttons, and only
+    // the name is elided so the code stays readable.
+    void updateStockLabel() {
+        if (!m_stockLabel) return;
+        const int maxWidth = kTimelinePopupFixedWidth * 2 / 5;
+        const QFontMetrics metrics(m_stockLabel->font());
+        const QString codePart = m_code;
+        const int codeWidth = metrics.horizontalAdvance(codePart);
+        const int nameRoom = maxWidth - codeWidth - metrics.horizontalAdvance(QStringLiteral("  "));
+        QString namePart = m_name;
+        if (!namePart.isEmpty() && nameRoom > 0) {
+            namePart = metrics.elidedText(namePart, Qt::ElideRight, nameRoom);
+        } else if (nameRoom <= 0) {
+            namePart.clear();
+        }
+        const QString identity = namePart.isEmpty()
+            ? codePart
+            : QStringLiteral("%1  %2").arg(namePart, codePart);
+        m_stockLabel->setMaximumWidth(maxWidth);
+        m_stockLabel->setText(identity);
+        m_stockLabel->setToolTip(m_name.isEmpty() ? m_code : QStringLiteral("%1  %2").arg(m_name, m_code));
+    }
+
     void applyDetailBarStyle() {
         if (!m_periodBar) return;
         const QString background = m_cfg.timelineChartBgColor.name(QColor::HexArgb);
@@ -1753,6 +1828,7 @@ private:
             " padding: 3px 8px; border-radius: 3px; }"
             "#klinePeriodBar QPushButton:checked { border-color: %2; background: rgba(255,255,255,30); }"
             "#klinePeriodBar QPushButton:hover { background: rgba(255,255,255,18); }"
+            "#klineStockLabel { color: %3; background: transparent; }"
         ).arg(background, grid, text);
 #if defined(Q_OS_MACOS) || defined(Q_OS_MAC)
         // Match the traffic-light close control used by the market overview.
@@ -1900,6 +1976,22 @@ private:
         double preClose,
         const QVector<TradePeriod>& tradePeriods
     ) {
+        // A long session of switching symbols would otherwise keep every series
+        // alive; drop expired entries first, then the oldest one.
+        if (!m_timelineCache.contains(cacheKey)
+            && m_timelineCache.size() >= app_constants::kTimelineCacheMaxEntries) {
+            const QDateTime nowUtc = QDateTime::currentDateTimeUtc();
+            for (auto it = m_timelineCache.begin(); it != m_timelineCache.end();) {
+                if (!it->expiresAtUtc.isValid() || it->expiresAtUtc <= nowUtc) {
+                    it = m_timelineCache.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            if (m_timelineCache.size() >= app_constants::kTimelineCacheMaxEntries) {
+                m_timelineCache.erase(m_timelineCache.begin());
+            }
+        }
         TimelineCacheEntry entry;
         entry.points = points;
         entry.preClose = preClose;
@@ -1985,10 +2077,7 @@ private:
         url.setQuery(query);
 
         QNetworkRequest req(url);
-        const QString userAgent = m_cfg.userAgent.trimmed().isEmpty()
-            ? defaultChrome100UserAgent()
-            : m_cfg.userAgent.trimmed();
-        req.setRawHeader("User-Agent", userAgent.toUtf8());
+        req.setRawHeader("User-Agent", network_utils::effectiveUserAgent(m_cfg).toUtf8());
         req.setRawHeader("Referer", "https://quote.eastmoney.com/");
         req.setTransferTimeout(10000);
 
@@ -2041,6 +2130,7 @@ private:
     AppConfig m_cfg;
     QWidget* m_periodBar = nullptr;
     QButtonGroup* m_periodGroup = nullptr;
+    QLabel* m_stockLabel = nullptr;
     TimelineChartWidget* m_chart = nullptr;
     DailyKlineChart* m_dailyChart = nullptr;
     QTimer* m_refreshTimer = nullptr;
@@ -2057,6 +2147,7 @@ private:
     QPoint m_periodBarPressGlobal;
     QPoint m_periodBarDragOffset;
     bool m_periodBarDragging = false;
+    bool m_detailMode = false;
 };
 
 SharedTimelineChartPopup::SharedTimelineChartPopup(QWidget* parent)
@@ -2064,8 +2155,25 @@ SharedTimelineChartPopup::SharedTimelineChartPopup(QWidget* parent)
     , d(new SharedTimelineChartPopupPrivate(parent)) {}
 
 SharedTimelineChartPopup::~SharedTimelineChartPopup() {
+    chartWindows().removeAll(d);
     delete d;
     d = nullptr;
+}
+
+void hideAllKlineDetailWindows() {
+    // hidePopup() also stops the refresh timer and clears the symbol, so a
+    // dismissed chart does not keep polling in the background.
+    for (SharedTimelineChartPopupPrivate* chart : chartWindows()) {
+        if (chart->isDetailWindow()) chart->hidePopup();
+    }
+}
+
+bool isPointInsideKlineDetailWindow(const QPoint& globalPos) {
+    for (SharedTimelineChartPopupPrivate* chart : chartWindows()) {
+        if (chart->isDetailWindow() && chart->isVisible()
+            && chart->frameGeometry().contains(globalPos)) return true;
+    }
+    return false;
 }
 
 void SharedTimelineChartPopup::applyConfig(const AppConfig& cfg) {

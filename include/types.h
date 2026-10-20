@@ -123,6 +123,42 @@ inline QString defaultChrome100UserAgent() {
     );
 }
 
+// Built-in presets for the "random" User-Agent mode: current mainstream Chrome
+// and Safari desktop agents. One is picked per app start and kept for the
+// session so a single run does not look like it keeps changing browsers.
+inline QStringList builtinUserAgentPresets() {
+    return {
+        QStringLiteral(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/141.0.0.0 Safari/537.36"),
+        QStringLiteral(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/141.0.0.0 Safari/537.36"),
+        QStringLiteral(
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/141.0.0.0 Safari/537.36"),
+        QStringLiteral(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+            "Version/18.6 Safari/605.1.15"),
+        QStringLiteral(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+            "Version/17.6 Safari/605.1.15"),
+    };
+}
+
+inline QString normalizeUserAgentMode(const QString& rawMode) {
+    const QString mode = rawMode.trimmed().toLower();
+    if (mode == QLatin1String("custom")) {
+        return mode;
+    }
+    return QStringLiteral("random");
+}
+
 inline QString defaultFloatingWindowFontFamily() {
 #if defined(Q_OS_MACOS)
     return QStringLiteral("PingFang SC");
@@ -203,6 +239,9 @@ struct AppConfig {
     QString tdxExServer;
     QStringList tdxMainServerPool; // empty uses the SDK's built-in MAC servers
     QStringList tdxExServerPool;
+    // "random" picks one of builtinUserAgentPresets() at startup and keeps it
+    // for the session; "custom" sends userAgent verbatim.
+    QString userAgentMode = "random";
     QString userAgent = defaultChrome100UserAgent();
     QString networkInterface; // empty lets the operating system select a route
     QString proxyType = "none";
@@ -312,7 +351,8 @@ struct AppConfig {
     QString hotConceptSortOrder = "desc";
     bool mousePassthroughEnabled = false;
     QString mousePassthroughActivationKey = "ctrl";
-    bool floatingWindowDoubleClickToHide = true;
+    // Applies to every top-level window, not just the floating window.
+    bool globalRightClickClose = true;
     bool floatingWindowDoubleClickStockDetail = true;
     double floatingWindowPaddingPx = static_cast<double>(kFloatingWindowPaddingPx);
 

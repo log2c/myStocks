@@ -670,6 +670,22 @@ AppConfig ConfigManager::loadConfig() {
     cfg.tdxExServer = readConfigValue(s, QStringLiteral("tdxExServer"), QString()).toString().trimmed();
     cfg.tdxMainServerPool = readConfigValue(s, QStringLiteral("tdxMainServerPool"), QStringList()).toStringList();
     cfg.tdxExServerPool = readConfigValue(s, QStringLiteral("tdxExServerPool"), QStringList()).toStringList();
+    // Versions before the mode existed always sent the stored agent, so a
+    // settings file that already has a User-Agent but no mode must keep
+    // behaving that way. A brand-new install has neither key and gets random.
+    const bool hasUserAgentMode = s.contains(stableConfigKey(QStringLiteral("userAgentMode")))
+        || s.contains(legacyConfigKey(QStringLiteral("userAgentMode")));
+    const bool hasLegacyUserAgent = s.contains(stableConfigKey(QStringLiteral("userAgent")))
+        || s.contains(legacyConfigKey(QStringLiteral("userAgent")));
+    if (hasUserAgentMode) {
+        cfg.userAgentMode = normalizeUserAgentMode(readConfigValue(
+            s,
+            QStringLiteral("userAgentMode"),
+            cfg.userAgentMode
+        ).toString());
+    } else {
+        cfg.userAgentMode = hasLegacyUserAgent ? QStringLiteral("custom") : cfg.userAgentMode;
+    }
     cfg.userAgent = readConfigValue(s, QStringLiteral("userAgent"), cfg.userAgent).toString();
     cfg.networkInterface = readConfigValue(s, QStringLiteral("networkInterface"), QString()).toString().trimmed();
     cfg.proxyType = readConfigValue(s, QStringLiteral("proxyType"), cfg.proxyType).toString();
@@ -820,9 +836,15 @@ AppConfig ConfigManager::loadConfig() {
             cfg.mousePassthroughActivationKey
         ).toString()
     );
-    cfg.floatingWindowDoubleClickToHide = s.value(
-        "ui/floatingWindowDoubleClickToHide",
-        cfg.floatingWindowDoubleClickToHide
+    // The close-on-right-click option is now app-wide. Older builds stored it
+    // under floating-window keys (and originally under a double-click key), so
+    // read those as fallbacks instead of resetting an existing choice.
+    cfg.globalRightClickClose = s.value(
+        "ui/globalRightClickClose",
+        s.value(
+            "ui/floatingWindowRightClickToHide",
+            s.value("ui/floatingWindowDoubleClickToHide", cfg.globalRightClickClose)
+        )
     ).toBool();
     cfg.floatingWindowDoubleClickStockDetail = s.value(
         "ui/floatingWindowDoubleClickStockDetail",
@@ -894,6 +916,7 @@ AppConfig ConfigManager::loadConfig() {
 
     cfg.pollMs = qMax(500, cfg.pollMs);
     cfg.opacity = qBound(0.2, cfg.opacity, 1.0);
+    cfg.userAgentMode = normalizeUserAgentMode(cfg.userAgentMode);
     cfg.userAgent = cfg.userAgent.trimmed();
     if (cfg.userAgent.isEmpty()) {
         cfg.userAgent = defaultChrome100UserAgent();
@@ -927,9 +950,6 @@ AppConfig ConfigManager::loadConfig() {
     cfg.mousePassthroughActivationKey = normalizeMousePassthroughActivationKey(
         cfg.mousePassthroughActivationKey
     );
-    if (cfg.mousePassthroughEnabled) {
-        cfg.floatingWindowDoubleClickToHide = false;
-    }
     cfg.floatingWindowPaddingPx = qMax(0.0, cfg.floatingWindowPaddingPx);
 
         qInfo() << "ConfigManager::loadConfig"
@@ -977,6 +997,11 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     writeConfigValue(s, QStringLiteral("tdxExServer"), cfg.tdxExServer.trimmed());
     writeConfigValue(s, QStringLiteral("tdxMainServerPool"), cfg.tdxMainServerPool);
     writeConfigValue(s, QStringLiteral("tdxExServerPool"), cfg.tdxExServerPool);
+    writeConfigValue(
+        s,
+        QStringLiteral("userAgentMode"),
+        normalizeUserAgentMode(cfg.userAgentMode)
+    );
     writeConfigValue(
         s,
         QStringLiteral("userAgent"),
@@ -1095,10 +1120,8 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         "ui/mousePassthroughActivationKey",
         normalizeMousePassthroughActivationKey(cfg.mousePassthroughActivationKey)
     );
-    s.setValue(
-        "ui/floatingWindowDoubleClickToHide",
-        cfg.floatingWindowDoubleClickToHide && !cfg.mousePassthroughEnabled
-    );
+    s.setValue("ui/globalRightClickClose", cfg.globalRightClickClose);
+    s.remove("ui/floatingWindowRightClickToHide");
     s.setValue("ui/floatingWindowDoubleClickStockDetail", cfg.floatingWindowDoubleClickStockDetail);
     s.setValue("ui/floatingWindowPaddingPx", qMax(0.0, cfg.floatingWindowPaddingPx));
     s.setValue("ui/trayIconPath", cfg.trayIconPath);

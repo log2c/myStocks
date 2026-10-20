@@ -3,6 +3,7 @@
 #include "app_constants.h"
 #include "i18n.h"
 #include "quote_provider.h"
+#include "right_click_close.h"
 #include "timeline_popup.h"
 #include "watchlist_utils.h"
 
@@ -434,6 +435,12 @@ public:
         setMouseTracking(true);
         setMinimumSize(QSize(650, 500));
         resize(minimumSize());
+
+        right_click_close::registerWindow(
+            this,
+            [this]() { return m_cfg.globalRightClickClose; },
+            [this]() { hidePopup(); }
+        );
 
         m_refreshFeedbackTimer = new QTimer(this);
         m_refreshFeedbackTimer->setInterval(33);
@@ -1974,6 +1981,12 @@ MarketBreadthDetailWindow* MarketBreadthDetailWindow::s_visiblePopup = nullptr;
     setMouseTracking(true);
     setMinimumSize(marketBreadthMinimumPopupSize());
     resize(minimumSize());
+
+    right_click_close::registerWindow(
+        this,
+        [this]() { return m_cfg.globalRightClickClose; },
+        [this]() { hidePopup(); }
+    );
 
     m_limitPoolTable = new QTableWidget(0, 2, this);
     m_limitPoolTable->setObjectName("limitPoolTable");

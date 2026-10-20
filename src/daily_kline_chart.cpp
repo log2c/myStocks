@@ -78,6 +78,12 @@ void DailyKlineChart::setContext(const AppConfig& cfg, const QString& code, cons
     update();
 }
 
+void DailyKlineChart::setStockTitleVisible(bool visible) {
+    if (m_stockTitleVisible == visible) return;
+    m_stockTitleVisible = visible;
+    update();
+}
+
 bool DailyKlineChart::eventFilter(QObject* watched, QEvent* event) {
     if (watched == m_timeline) {
         if (event->type() == QEvent::Show) {
@@ -189,6 +195,8 @@ void DailyKlineChart::resetSeries() {
     setProperty("viewStart", 0);
     setProperty("viewCount", 0);
     m_bars.clear();
+    m_totalShares = qQNaN();
+    m_floatShares = qQNaN();
     m_status.clear();
     m_pending = false;
     m_nextFetchMs = 0;
@@ -338,6 +346,9 @@ void DailyKlineChart::fetch() {
                     row.value("open").toDouble(qQNaN()), row.value("high").toDouble(qQNaN()),
                     row.value("low").toDouble(qQNaN()), row.value("close").toDouble(qQNaN()),
                     row.value("volume").toDouble(qQNaN())};
+                bar.amount = row.value("amount").toDouble(qQNaN());
+                bar.turnover = row.value("turnover").toDouble(qQNaN());
+                bar.preClose = row.value("preClose").toDouble(qQNaN());
                 if (!QDate::fromString(bar.date, Qt::ISODate).isValid()
                     || !std::isfinite(bar.open) || !std::isfinite(bar.high)
                     || !std::isfinite(bar.low) || !std::isfinite(bar.close)
@@ -358,6 +369,8 @@ void DailyKlineChart::fetch() {
             const int oldTotal = int(m_bars.size());
             const bool touched = m_viewTouched;
             m_bars = bars;
+            m_totalShares = result.value("totalShares").toDouble(qQNaN());
+            m_floatShares = result.value("floatShares").toDouble(qQNaN());
             const auto view = daily_kline::refreshView(
                 previous, oldTotal, int(m_bars.size()), m_cfg.dailyKlineDays, touched, minViewCount());
             applyView(view.start, view.count, touched);
@@ -391,12 +404,64 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
         ? i18n::t("popup.kline.titleZoomed", language).arg(periodLabel).arg(titleCount)
         : i18n::t("popup.kline.title", language)
             .arg(periodLabel).arg(titleCount).arg(m_cfg.dailyKlineDays);
-    const QString title = (m_name.isEmpty() ? m_code : m_name + " " + m_code) + " · " + titleBody;
-    p.drawText(QRect(bounds.left(), bounds.top(), bounds.width(), 24), Qt::AlignLeft | Qt::AlignVCenter,
-        p.fontMetrics().elidedText(title, Qt::ElideRight, bounds.width()));
+    // In the detail window the stock identity lives in the period bar, so the
+    // header's leading slot belongs to the hovered bar's statistics and only
+    // the period range stays here. The Ctrl-hover popup has no period bar and
+    // keeps the old header untouched.
+    const bool showStockTitle = m_stockTitleVisible;
+    const QFontMetrics headerMetrics(p.fontMetrics());
+    const QRect headerRect(bounds.left(), bounds.top(), bounds.width(), 24);
+    if (showStockTitle) {
+        const QString title = (m_name.isEmpty() ? m_code : m_name + " " + m_code) + " · " + titleBody;
+        p.drawText(headerRect, Qt::AlignLeft | Qt::AlignVCenter,
+            headerMetrics.elidedText(title, Qt::ElideRight, headerRect.width()));
+    }
     if (!m_status.isEmpty() || m_bars.isEmpty()) {
+        if (!showStockTitle) {
+            p.drawText(headerRect, Qt::AlignRight | Qt::AlignVCenter,
+                headerMetrics.elidedText(titleBody, Qt::ElideRight, headerRect.width()));
+        }
         p.drawText(bounds.adjusted(0, 28, 0, 0), Qt::AlignCenter | Qt::TextWordWrap, m_status);
         return;
+    }
+
+    if (!showStockTitle) {
+        // Statistics follow the crosshair: the hovered candle, or the newest
+        // one on screen when the pointer is elsewhere. A panned view reports
+        // its own right edge rather than a candle the user cannot see.
+        const int lastVisible = qBound(0, visibleStart + visibleCount - 1, total - 1);
+        const int statIndex = (m_hoverIndex >= visibleStart && m_hoverIndex < visibleStart + visibleCount)
+            ? m_hoverIndex
+            : lastVisible;
+        const auto& statBar = m_bars[statIndex];
+        const double amount = statBar.amount;
+        const double turnover = statBar.turnover;
+        const double amplitude = daily_kline::amplitudePct(statBar.high, statBar.low, statBar.preClose);
+        double shares = m_totalShares;
+        if (!std::isfinite(shares) || shares <= 0.0) shares = m_floatShares;
+        const double marketValue = daily_kline::marketValue(statBar.close, shares);
+        setProperty("statAmount", amount);
+        setProperty("statTurnover", turnover);
+        setProperty("statAmplitude", amplitude);
+        setProperty("statMarketValue", marketValue);
+        const QString stats = QStringLiteral("%1 %2   %3 %4   %5 %6   %7 %8")
+            .arg(i18n::t("popup.kline.hoverAmount", language), daily_kline::formatAmount(amount))
+            .arg(i18n::t("popup.kline.hoverTurnover", language),
+                std::isfinite(turnover) ? QStringLiteral("%1%").arg(QString::number(turnover, 'f', 2))
+                                        : QStringLiteral("--"))
+            .arg(i18n::t("popup.kline.hoverAmplitude", language),
+                std::isfinite(amplitude) ? QStringLiteral("%1%").arg(QString::number(amplitude, 'f', 2))
+                                         : QStringLiteral("--"))
+            .arg(i18n::t("popup.kline.hoverMarketCap", language), daily_kline::formatAmount(marketValue));
+        const int periodWidth = qMin(headerRect.width(), headerMetrics.horizontalAdvance(titleBody));
+        const int gap = headerMetrics.horizontalAdvance(QStringLiteral("  "));
+        const int statsRoom = qMax(0, headerRect.width() - periodWidth - gap);
+        p.drawText(QRect(headerRect.left(), headerRect.top(), statsRoom, headerRect.height()),
+            Qt::AlignLeft | Qt::AlignVCenter,
+            headerMetrics.elidedText(stats, Qt::ElideRight, statsRoom));
+        p.drawText(QRect(headerRect.right() - periodWidth + 1, headerRect.top(), periodWidth,
+                headerRect.height()),
+            Qt::AlignRight | Qt::AlignVCenter, titleBody);
     }
 
     QMap<int, QVector<double>> averages;

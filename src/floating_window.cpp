@@ -4,7 +4,9 @@
 
 #include "app_constants.h"
 #include "i18n.h"
+#include "network_utils.h"
 #include "quote_provider.h"
+#include "right_click_close.h"
 #include "watchlist_utils.h"
 #include "tdx_bridge.h"
 #include "timeline_volume.h"
@@ -1871,6 +1873,11 @@ public:
         Qt::WindowFlags flags = Qt::FramelessWindowHint | Qt::Tool | Qt::WindowStaysOnTopHint;
         setWindowFlags(flags);
         setAttribute(Qt::WA_ShowWithoutActivating, true);
+        right_click_close::registerWindow(
+            this,
+            [this]() { return m_cfg.globalRightClickClose; },
+            [this]() { hidePopup(); }
+        );
 
         QVBoxLayout* layout = new QVBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
@@ -2128,6 +2135,22 @@ private:
         double preClose,
         const QVector<TradePeriod>& tradePeriods
     ) {
+        // Hovering across a long watchlist would otherwise keep every symbol's
+        // series forever; drop the oldest expired entry before growing further.
+        if (!m_timelineCache.contains(cacheKey)
+            && m_timelineCache.size() >= app_constants::kTimelineCacheMaxEntries) {
+            const QDateTime nowUtc = QDateTime::currentDateTimeUtc();
+            for (auto it = m_timelineCache.begin(); it != m_timelineCache.end();) {
+                if (!it->expiresAtUtc.isValid() || it->expiresAtUtc <= nowUtc) {
+                    it = m_timelineCache.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            if (m_timelineCache.size() >= app_constants::kTimelineCacheMaxEntries) {
+                m_timelineCache.erase(m_timelineCache.begin());
+            }
+        }
         TimelineCacheEntry entry;
         entry.points = points;
         entry.preClose = preClose;
@@ -2214,10 +2237,7 @@ private:
         url.setQuery(query);
 
         QNetworkRequest req(url);
-        const QString userAgent = m_cfg.userAgent.trimmed().isEmpty()
-            ? defaultChrome100UserAgent()
-            : m_cfg.userAgent.trimmed();
-        req.setRawHeader("User-Agent", userAgent.toUtf8());
+        req.setRawHeader("User-Agent", network_utils::effectiveUserAgent(m_cfg).toUtf8());
         req.setRawHeader("Referer", "https://quote.eastmoney.com/");
         req.setTransferTimeout(10000);
 
@@ -2297,7 +2317,22 @@ class BottomGridTableView : public QTableView {
 public:
     explicit BottomGridTableView(QWidget* parent = nullptr)
         : QTableView(parent) {
-        m_animationTimerId = startTimer(40);
+    }
+
+    // The flip animation only exists for the hot-rank rows. Idling the timer
+    // while there is nothing to animate keeps a hidden or plain watchlist from
+    // repainting 25 times a second.
+    void setFlipAnimationNeeded(bool needed) {
+        if (needed == (m_animationTimerId != 0)) {
+            return;
+        }
+        if (needed) {
+            m_animationTimerId = startTimer(40);
+        } else {
+            killTimer(m_animationTimerId);
+            m_animationTimerId = 0;
+            viewport()->update();
+        }
     }
 
     void setBottomGridVisible(bool visible) {
@@ -2985,27 +3020,33 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
     m_table->installEventFilter(this);
     m_table->viewport()->installEventFilter(this);
     m_table->horizontalHeader()->installEventFilter(this);
+    // A QHeaderView receives its mouse events on the viewport, so the header's
+    // right-click-to-hide binding needs the filter there too.
+    m_table->horizontalHeader()->viewport()->installEventFilter(this);
     m_stockTable->installEventFilter(this);
     m_stockTable->viewport()->installEventFilter(this);
 
+    // A quote batch emits one dataChanged per row; coalesce them so the
+    // O(rows × columns) width measurement runs once per batch instead of once
+    // per row.
     connect(m_model, &QAbstractItemModel::dataChanged, this, [this]() {
-        adjustWindowSize();
+        scheduleAdjustWindowSize();
         refreshMarketBreadthDetailPopup();
     });
     connect(m_model, &QAbstractItemModel::modelReset, this, [this]() {
-        adjustWindowSize();
+        scheduleAdjustWindowSize();
         refreshMarketBreadthDetailPopup();
     });
     connect(m_model, &QAbstractItemModel::layoutChanged, this, [this]() {
-        adjustWindowSize();
+        scheduleAdjustWindowSize();
         refreshMarketBreadthDetailPopup();
     });
     connect(m_model, &QAbstractItemModel::rowsInserted, this, [this]() {
-        adjustWindowSize();
+        scheduleAdjustWindowSize();
         refreshMarketBreadthDetailPopup();
     });
     connect(m_model, &QAbstractItemModel::rowsRemoved, this, [this]() {
-        adjustWindowSize();
+        scheduleAdjustWindowSize();
         refreshMarketBreadthDetailPopup();
     });
 
@@ -3060,11 +3101,17 @@ FloatingWindow::FloatingWindow(QuoteModel* model, QWidget* parent)
             && current.column() == firstVisibleTableColumn(view)) showStockChart(current, view);
     });
     qApp->installEventFilter(new ChartOutsidePressFilter(this, [this](const QPoint& globalPos) {
-        if (isVisible() && !frameGeometry().contains(globalPos)
-            && !(m_timelinePopup && m_timelinePopup->isVisible() && m_timelinePopup->geometry().contains(globalPos))) {
-            cancelStockChartClick();
-            hideTimelinePopup();
-        }
+        const bool insideFloating = isVisible() && frameGeometry().contains(globalPos);
+        const bool insideChart = m_timelinePopup && m_timelinePopup->isVisible()
+            && m_timelinePopup->geometry().contains(globalPos);
+        const bool insideKlineDetail = isPointInsideKlineDetailWindow(globalPos);
+        // The K-line window is a separate top-level window, so going back to
+        // the floating window is a deliberate dismissal. Presses inside the
+        // K-line window itself must never close it.
+        if (insideFloating && !insideKlineDetail) hideAllKlineDetailWindows();
+        if (insideFloating || insideChart) return;
+        cancelStockChartClick();
+        hideTimelinePopup();
     }));
 
     m_marketBreadthDetailPopup = new MarketBreadthDetailWindow(this);
@@ -3740,6 +3787,9 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
             finishStockChartClick(mouseEvent);
             return true;
         }
+        // Hide on release, not press: hiding while the button is still down
+        // would deliver the release to whatever window is underneath.
+        if (handleRightClickHide(mouseEvent)) return true;
         break;
     }
     case QEvent::MouseButtonDblClick: {
@@ -3781,17 +3831,8 @@ bool FloatingWindow::eventFilter(QObject* watched, QEvent* event) {
                     }
                 }
             }
-            // Fall through to close-window behavior
-            if (m_cfg.floatingWindowDoubleClickToHide
-                && !m_cfg.mousePassthroughEnabled) {
-                if (m_dragging) {
-                    m_dragging = false;
-                    m_dragButton = Qt::NoButton;
-                    releaseMouse();
-                }
-                hide();
-                return true;
-            }
+            // Double-clicking a stock row is the only double-click action.
+            // Hiding the window is bound to the right button instead.
         }
         break;
     }
@@ -3807,6 +3848,7 @@ void FloatingWindow::applyConfig(const AppConfig& cfg) {
     m_cfg = cfg;
     if (auto* table = static_cast<BottomGridTableView*>(m_table)) {
         table->setHotRankFlipSecs(m_cfg.hotRankFlipSecs);
+        table->setFlipAnimationNeeded(m_model && m_model->hasHotRankRows());
     }
 
     if (QLayout* panelLayout = m_panel ? m_panel->layout() : nullptr) {
@@ -3921,24 +3963,26 @@ void FloatingWindow::mousePressEvent(QMouseEvent* event) {
     QWidget::mousePressEvent(event);
 }
 
+bool FloatingWindow::handleRightClickHide(QMouseEvent* event) {
+    if (!event || event->button() != Qt::RightButton) return false;
+    if (!m_cfg.globalRightClickClose || m_cfg.mousePassthroughEnabled) return false;
+    if (!isEnabled() || !isVisible() || !shouldAllowMouseInteraction()) return false;
+    if (m_dragging) {
+        m_dragging = false;
+        m_dragButton = Qt::NoButton;
+        releaseMouse();
+    }
+    cancelStockChartClick();
+    hideTimelinePopup();
+    hideMarketBreadthDetailPopup();
+    hide();
+    return true;
+}
+
 void FloatingWindow::mouseDoubleClickEvent(QMouseEvent* event) {
     cancelStockChartClick();
-    if (event->button() == Qt::LeftButton
-        && m_cfg.floatingWindowDoubleClickToHide
-        && !m_cfg.mousePassthroughEnabled
-        && shouldAllowMouseInteraction()) {
-        if (m_dragging) {
-            m_dragging = false;
-            m_dragButton = Qt::NoButton;
-            releaseMouse();
-        }
-        hideTimelinePopup();
-        hideMarketBreadthDetailPopup();
-        hide();
-        event->accept();
-        return;
-    }
-
+    // Double-clicking a stock row is the only double-click action here; hiding
+    // the window is bound to the right button instead.
     QWidget::mouseDoubleClickEvent(event);
 }
 
@@ -3963,6 +4007,13 @@ void FloatingWindow::mouseReleaseEvent(QMouseEvent* event) {
         refreshMousePassthroughState();
     }
     finishStockChartClick(event);
+    // Child widgets that ignore the right button (labels, group bar, table
+    // corners) let its release propagate here, so the close binding works
+    // window-wide rather than only over the tables.
+    if (handleRightClickHide(event)) {
+        event->accept();
+        return;
+    }
     QWidget::mouseReleaseEvent(event);
 }
 
@@ -4449,7 +4500,23 @@ void FloatingWindow::applyColumns() {
     adjustWindowSize();
 }
 
+void FloatingWindow::scheduleAdjustWindowSize() {
+    if (m_sizeAdjustPending) {
+        return;
+    }
+    m_sizeAdjustPending = true;
+    QTimer::singleShot(0, this, [this]() {
+        m_sizeAdjustPending = false;
+        adjustWindowSize();
+    });
+}
+
 void FloatingWindow::adjustWindowSize() {
+    m_sizeAdjustPending = false;
+    // Keep the flip animation in step with the rows that actually need it.
+    if (auto* table = static_cast<BottomGridTableView*>(m_table)) {
+        table->setFlipAnimationNeeded(m_model && m_model->hasHotRankRows());
+    }
     if (auto* table = static_cast<BottomGridTableView*>(m_table)) {
         table->syncSpecialRowSpans(m_model);
     }

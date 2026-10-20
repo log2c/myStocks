@@ -174,6 +174,7 @@ set(MYSTOCKS_SOURCES
     src/network_logger.cpp
     src/network_utils.cpp
     src/quote_model.cpp
+    src/right_click_close.cpp
     src/quote_provider.cpp
     src/limit_pool_provider.cpp
     src/settings_dialog.cpp
@@ -199,6 +200,7 @@ set(MYSTOCKS_HEADERS
     include/network_logger.h
     include/network_utils.h
     include/quote_model.h
+    include/right_click_close.h
     include/quote_provider.h
     include/limit_pool_provider.h
     include/settings_dialog.h
@@ -289,6 +291,12 @@ if(APPLE)
     # flag from Qt or its dependencies resolves against the stub.
     mystocks_enable_agl_stub(MyStocks)
 
+    # Dead-strip unused code and drop local symbols from Release builds; crash
+    # reports still resolve exported names through the system backtrace.
+    target_link_options(MyStocks PRIVATE
+        "$<$<CONFIG:Release>:-Wl,-dead_strip>"
+    )
+
     set(MYSTOCKS_MAC_ICON_NAME "MyStocks.icns")
     set(MYSTOCKS_MAC_ICON_SOURCE "${CMAKE_SOURCE_DIR}/assets/icons/icon.png")
     set(MYSTOCKS_MAC_ICONSET_DIR "${CMAKE_CURRENT_BINARY_DIR}/MyStocks.iconset")
@@ -314,7 +322,9 @@ if(APPLE)
         COMMAND "${MYSTOCKS_SIPS_EXECUTABLE}" -z 256 256 "${MYSTOCKS_MAC_ICON_SOURCE}" --out "${MYSTOCKS_MAC_ICONSET_DIR}/icon_256x256.png"
         COMMAND "${MYSTOCKS_SIPS_EXECUTABLE}" -z 512 512 "${MYSTOCKS_MAC_ICON_SOURCE}" --out "${MYSTOCKS_MAC_ICONSET_DIR}/icon_256x256@2x.png"
         COMMAND "${MYSTOCKS_SIPS_EXECUTABLE}" -z 512 512 "${MYSTOCKS_MAC_ICON_SOURCE}" --out "${MYSTOCKS_MAC_ICONSET_DIR}/icon_512x512.png"
-        COMMAND "${MYSTOCKS_SIPS_EXECUTABLE}" -z 1024 1024 "${MYSTOCKS_MAC_ICON_SOURCE}" --out "${MYSTOCKS_MAC_ICONSET_DIR}/icon_512x512@2x.png"
+        # 512pt (@2x 1024px) is above any real Dock/Finder presentation and
+        # costs more than a third of the bundle icon; macOS scales the 512px
+        # entry up for the rare oversized preview instead.
         COMMAND "${MYSTOCKS_ICONUTIL_EXECUTABLE}" -c icns "${MYSTOCKS_MAC_ICONSET_DIR}" -o "${MYSTOCKS_MAC_ICON_ICNS}"
         DEPENDS "${MYSTOCKS_MAC_ICON_SOURCE}"
         VERBATIM

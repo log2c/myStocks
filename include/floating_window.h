@@ -68,6 +68,9 @@ private:
     bool shouldAllowMouseInteraction() const;
     bool isDragTriggerButton(Qt::MouseButton button) const;
     bool isCurrentDragButtonHeld(Qt::MouseButtons buttons) const;
+    // Right-click on the window hides it when the option is on. Returns true
+    // when the press/release was consumed.
+    bool handleRightClickHide(QMouseEvent* event);
     void scheduleHoverReadingTimer();
     void updateHoverReadingState(bool animated);
     void refreshMousePassthroughState(bool force = false);
@@ -91,6 +94,9 @@ private:
     void applyInterpolatedStyle(qreal hoverProgress);
     void applyColumns();
     void adjustWindowSize();
+    // Coalesces the repeated model notifications of one quote batch into a
+    // single layout pass.
+    void scheduleAdjustWindowSize();
     int autoColumnWidthFromContent(int column) const;
     void rebuildGroupBar();
     void applyGroupBarStyle();
@@ -130,6 +136,7 @@ private:
     bool m_hoverReadingActive = false;
     qreal m_hoverReadingProgress = 0.0;
     bool m_mousePassthroughActive = false;
+    bool m_sizeAdjustPending = false;
 
     // Group bar
     QWidget* m_groupBar = nullptr;

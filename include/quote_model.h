@@ -42,6 +42,9 @@ public:
     QColor specialRowEntryColor(int row, int entryIndex) const;
     bool specialRowHasData(int row) const;
     bool marketBreadthValid() const;
+    // True when a hot sector/concept row exists, i.e. when its flip animation
+    // has something to rotate through.
+    bool hasHotRankRows() const;
     int marketBreadthUpCount() const;
     int marketBreadthFlatCount() const;
     int marketBreadthDownCount() const;
@@ -49,8 +52,10 @@ public:
     QColor marketBreadthFlatColor() const;
     QColor marketBreadthDownColor() const;
     MarketBreadthSnapshot marketBreadthSnapshot() const;
-    QVector<HotRankItem> hotSectors() const;
-    QVector<HotRankItem> hotConcepts() const;
+    // Const references: the breadth popup refreshes on every quote batch and
+    // only reads these, so copying the vectors is pure overhead.
+    const QVector<HotRankItem>& hotSectors() const;
+    const QVector<HotRankItem>& hotConcepts() const;
     int firstVisibleLogicalColumn() const;
     int firstContentLogicalColumn() const;
     double costForCode(const QString& code) const;
@@ -77,6 +82,9 @@ private:
     MarketBreadthSnapshot m_marketBreadth;
     QHash<QString, int> m_rowByCode;
     AppConfig m_cfg;
+    // Derived from m_cfg.columnOrder/visibleColumns in setConfig(); the paint
+    // path reads it per cell, so it is cached rather than rebuilt.
+    QVector<int> m_visibleColumns;
     QString m_language = "en_US";
 
     // blink state: row -> remaining half-periods (4 = 2 full blinks)

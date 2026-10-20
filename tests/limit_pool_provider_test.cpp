@@ -105,6 +105,7 @@ void checkProvider() {
     cfg.proxyPort = 4321;
     cfg.proxyUser = "user";
     cfg.proxyPassword = "password";
+    cfg.userAgentMode = "custom";
     cfg.userAgent = "myStocks-limit-pool-test";
     provider.applyConfig(cfg);
     QVector<QPair<bool, LimitPoolSnapshot>> results;

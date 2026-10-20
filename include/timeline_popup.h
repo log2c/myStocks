@@ -6,6 +6,12 @@
 
 bool isTimelinePopupSupportedCode(const QString& rawCode);
 
+// Closes every K-line detail window that is currently on screen, whichever
+// window opened it. The hover popup is left alone.
+void hideAllKlineDetailWindows();
+// True when the point lies inside any visible K-line detail window.
+bool isPointInsideKlineDetailWindow(const QPoint& globalPos);
+
 class SharedTimelineChartPopupPrivate;
 
 class SharedTimelineChartPopup : public QWidget {

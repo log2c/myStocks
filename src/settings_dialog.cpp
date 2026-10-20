@@ -41,6 +41,7 @@
 #include <QScrollArea>
 #include <QSet>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QTableWidget>
 #include <QTabWidget>
 #include <QTimer>
@@ -48,6 +49,7 @@
 #include <QUrlQuery>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <utility>
@@ -204,6 +206,73 @@ public:
         horizontalHeader()->setSectionResizeMode(4, QHeaderView::Fixed);
         horizontalHeader()->setStretchLastSection(false);
         setColumnWidth(4, 64);
+
+        // The cost cell holds an editor widget, so Qt cannot sort it for us:
+        // clicking its header rebuilds the rows from the committed text.
+        horizontalHeader()->setSectionsClickable(true);
+        horizontalHeader()->setSortIndicatorShown(false);
+        connect(horizontalHeader(), &QHeaderView::sectionClicked, this, [this](int column) {
+            if (column != kCostColumn) {
+                return;
+            }
+            const Qt::SortOrder order = m_costSortOrder == Qt::AscendingOrder
+                ? Qt::DescendingOrder
+                : Qt::AscendingOrder;
+            sortByCost(order);
+        });
+    }
+
+    // Orders rows by cost. Rows without a cost (indexes, ETFs without a basis)
+    // always stay at the bottom in both directions.
+    void sortByCost(Qt::SortOrder order) {
+        struct RowData {
+            QString code;
+            QString name;
+            double cost = qQNaN();
+        };
+
+        QVector<RowData> rows;
+        rows.reserve(rowCount());
+        for (int r = 0; r < rowCount(); ++r) {
+            RowData data;
+            data.code = item(r, 1) ? item(r, 1)->text() : QString();
+            data.name = item(r, 2) ? item(r, 2)->text() : QString();
+            data.cost = costAt(r);
+            rows.push_back(data);
+        }
+
+        std::stable_sort(rows.begin(), rows.end(), [order](const RowData& lhs, const RowData& rhs) {
+            const bool lhsHasCost = std::isfinite(lhs.cost) && lhs.cost > 0.0;
+            const bool rhsHasCost = std::isfinite(rhs.cost) && rhs.cost > 0.0;
+            if (lhsHasCost != rhsHasCost) {
+                return lhsHasCost;
+            }
+            if (!lhsHasCost) {
+                return false;
+            }
+            return order == Qt::AscendingOrder ? lhs.cost < rhs.cost : rhs.cost < lhs.cost;
+        });
+
+        const QString selectedCode = currentRow() >= 0 && item(currentRow(), 1)
+            ? item(currentRow(), 1)->text()
+            : QString();
+
+        m_costSortOrder = order;
+        {
+            QSignalBlocker blocker(this);
+            setRowCount(0);
+            for (const RowData& row : rows) {
+                addStockRow(row.code, row.name, row.cost);
+            }
+        }
+        for (int r = 0; selectedCode.size() && r < rowCount(); ++r) {
+            if (item(r, 1) && item(r, 1)->text() == selectedCode) {
+                selectRow(r);
+                break;
+            }
+        }
+        horizontalHeader()->setSortIndicator(kCostColumn, order);
+        horizontalHeader()->setSortIndicatorShown(true);
     }
 
 protected:
@@ -322,6 +391,18 @@ public:
     }
 
 private:
+    static constexpr int kCostColumn = 3;
+
+    double costAt(int row) const {
+        if (QLineEdit* le = qobject_cast<QLineEdit*>(cellWidget(row, kCostColumn))) {
+            bool ok = false;
+            const double v = le->text().trimmed().toDouble(&ok);
+            if (ok && std::isfinite(v) && v > 0.0) {
+                return v;
+            }
+        }
+        return qQNaN();
+    }
     int swapRows(int a, int b) {
         // b is always a+1 or a-1; do a single remove+insert to keep cell widgets intact
         const int lo = qMin(a, b);
@@ -420,6 +501,8 @@ private:
     }
 
     std::function<bool(const QString&)> m_confirmDelete;
+    // The first click sorts descending, matching the usual "largest first".
+    Qt::SortOrder m_costSortOrder = Qt::AscendingOrder;
 };
 
 QKeySequence normalizedHotkeySequence(const QKeySequence& sequence) {
@@ -609,6 +692,9 @@ AppConfig SettingsDialog::config() const {
         if (out.tdxMainServerPool == m_tdxBuiltinServerPools[0]) out.tdxMainServerPool.clear();
         if (out.tdxExServerPool == m_tdxBuiltinServerPools[1]) out.tdxExServerPool.clear();
     }
+    out.userAgentMode = m_userAgentModeCombo
+        ? normalizeUserAgentMode(m_userAgentModeCombo->currentData().toString())
+        : out.userAgentMode;
     out.userAgent = m_userAgentEdit->text().trimmed();
     out.networkInterface = m_networkInterfaceCombo->currentData().toString();
     out.proxyType = m_proxyTypeCombo->currentData().toString();
@@ -723,9 +809,8 @@ AppConfig SettingsDialog::config() const {
             ? m_mousePassthroughKeyCombo->currentData().toString()
             : out.mousePassthroughActivationKey
     );
-    out.floatingWindowDoubleClickToHide = m_doubleClickCloseWindowCheck
-        && m_doubleClickCloseWindowCheck->isChecked()
-        && !out.mousePassthroughEnabled;
+    out.globalRightClickClose = m_rightClickCloseWindowCheck
+        && m_rightClickCloseWindowCheck->isChecked();
     out.floatingWindowDoubleClickStockDetail = m_doubleClickStockDetailCheck
         && m_doubleClickStockDetailCheck->isChecked();
 
@@ -1274,10 +1359,28 @@ QWidget* SettingsDialog::buildNetworkTab() {
         if (m_stockSuggestList) { m_stockSuggestList->clear(); m_stockSuggestList->hide(); }
     });
 
+    m_userAgentModeCombo = new QComboBox(w);
+    m_userAgentModeCombo->setObjectName(QStringLiteral("userAgentModeCombo"));
+    m_userAgentModeCombo->addItem(trText("settings.network.userAgentRandom"), QStringLiteral("random"));
+    m_userAgentModeCombo->addItem(trText("settings.network.userAgentCustom"), QStringLiteral("custom"));
+    const int userAgentModeIndex = m_userAgentModeCombo->findData(
+        normalizeUserAgentMode(m_cfg.userAgentMode));
+    m_userAgentModeCombo->setCurrentIndex(qMax(0, userAgentModeIndex));
+    m_userAgentModeCombo->setToolTip(trText("settings.network.userAgentRandomHint"));
+
     m_userAgentEdit = new QLineEdit(m_cfg.userAgent, w);
+    m_userAgentEdit->setObjectName(QStringLiteral("userAgentEdit"));
     if (m_userAgentEdit->text().trimmed().isEmpty()) {
         m_userAgentEdit->setText(defaultChrome100UserAgent());
     }
+    m_userAgentEdit->setEnabled(
+        m_userAgentModeCombo->currentData().toString() == QLatin1String("custom"));
+    connect(m_userAgentModeCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        if (m_userAgentEdit) {
+            m_userAgentEdit->setEnabled(
+                m_userAgentModeCombo->currentData().toString() == QLatin1String("custom"));
+        }
+    });
 
     m_networkInterfaceCombo = new QComboBox(w);
     m_networkInterfaceCombo->setObjectName(QStringLiteral("networkInterfaceCombo"));
@@ -1319,6 +1422,7 @@ QWidget* SettingsDialog::buildNetworkTab() {
 
     form->addRow(trText("settings.general.quoteSource"), m_quoteSourceCombo);
     form->addRow(trText("settings.network.interface"), m_networkInterfaceCombo);
+    form->addRow(trText("settings.network.userAgentMode"), m_userAgentModeCombo);
     form->addRow(trText("settings.general.userAgent"), m_userAgentEdit);
     form->addRow(trText("settings.general.proxyType"), m_proxyTypeCombo);
     form->addRow(trText("settings.general.proxyHost"), m_proxyHostEdit);
@@ -1363,15 +1467,14 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_floatingTopMostCheck->setChecked(m_cfg.floatingWindowAlwaysOnTop);
     addCompactFormRow(windowForm, m_floatingTopMostCheck);
 
-    m_doubleClickCloseWindowCheck = new QCheckBox(
-        trText("settings.display.doubleClickCloseWindow"),
+    m_rightClickCloseWindowCheck = new QCheckBox(
+        trText("settings.display.rightClickCloseWindow"),
         w
     );
-    m_doubleClickCloseWindowCheck->setChecked(
-        m_cfg.floatingWindowDoubleClickToHide && !m_cfg.mousePassthroughEnabled
-    );
-    m_doubleClickCloseWindowCheck->setEnabled(!m_cfg.mousePassthroughEnabled);
-    addCompactFormRow(windowForm, m_doubleClickCloseWindowCheck);
+    m_rightClickCloseWindowCheck->setObjectName(QStringLiteral("rightClickCloseWindowCheck"));
+    m_rightClickCloseWindowCheck->setToolTip(trText("settings.display.rightClickCloseWindowHint"));
+    m_rightClickCloseWindowCheck->setChecked(m_cfg.globalRightClickClose);
+    addCompactFormRow(windowForm, m_rightClickCloseWindowCheck);
 
     m_doubleClickStockDetailCheck = new QCheckBox(
         trText("settings.display.doubleClickStockDetail"),
@@ -1581,7 +1684,6 @@ QWidget* SettingsDialog::buildDisplayTab() {
     QWidget* hoverReadingDelayLabel = interactionForm->labelForField(m_hoverReadingDelaySpin);
     QWidget* hoverReadingModeLabel = interactionForm->labelForField(m_hoverReadingModeCombo);
     QWidget* mousePassthroughKeyLabel = interactionForm->labelForField(m_mousePassthroughKeyCombo);
-    QWidget* doubleClickCloseWindowLabel = windowForm->labelForField(m_doubleClickCloseWindowCheck);
     if (hoverReadingDelayLabel) {
         hoverReadingDelayLabel->setEnabled(
             m_cfg.hoverReadingEnabled && !m_cfg.mousePassthroughEnabled
@@ -1592,9 +1694,6 @@ QWidget* SettingsDialog::buildDisplayTab() {
     }
     if (mousePassthroughKeyLabel) {
         mousePassthroughKeyLabel->setEnabled(m_cfg.mousePassthroughEnabled);
-    }
-    if (doubleClickCloseWindowLabel) {
-        doubleClickCloseWindowLabel->setEnabled(!m_cfg.mousePassthroughEnabled);
     }
 
     connect(m_hoverReadingCheck, &QCheckBox::toggled, this, [this](bool checked) {
@@ -1620,40 +1719,23 @@ QWidget* SettingsDialog::buildDisplayTab() {
             hoverReadingModeLabel->setEnabled(checked);
         }
     });
-    connect(m_mousePassthroughCheck, &QCheckBox::toggled, this, [this](bool checked) {
+    connect(m_mousePassthroughCheck, &QCheckBox::toggled, this,
+        [this, hoverReadingDelayLabel, mousePassthroughKeyLabel](bool checked) {
         m_cfg.mousePassthroughEnabled = checked;
+        const bool hoverReadingEnabled = m_hoverReadingCheck && m_hoverReadingCheck->isChecked();
         if (m_hoverReadingDelaySpin) {
-            const bool hoverReadingEnabled = m_hoverReadingCheck && m_hoverReadingCheck->isChecked();
             m_hoverReadingDelaySpin->setEnabled(hoverReadingEnabled && !checked);
+        }
+        if (hoverReadingDelayLabel) {
+            hoverReadingDelayLabel->setEnabled(hoverReadingEnabled && !checked);
         }
         if (m_mousePassthroughKeyCombo) {
             m_mousePassthroughKeyCombo->setEnabled(checked);
         }
-        if (m_doubleClickCloseWindowCheck) {
-            if (checked) {
-                m_doubleClickCloseWindowCheck->setChecked(false);
-            }
-            m_doubleClickCloseWindowCheck->setEnabled(!checked);
+        if (mousePassthroughKeyLabel) {
+            mousePassthroughKeyLabel->setEnabled(checked);
         }
     });
-    connect(
-        m_mousePassthroughCheck,
-        &QCheckBox::toggled,
-        this,
-        [this, hoverReadingDelayLabel, mousePassthroughKeyLabel, doubleClickCloseWindowLabel](bool checked) {
-            if (hoverReadingDelayLabel) {
-                const bool hoverReadingEnabled = m_hoverReadingCheck
-                    && m_hoverReadingCheck->isChecked();
-                hoverReadingDelayLabel->setEnabled(hoverReadingEnabled && !checked);
-            }
-            if (mousePassthroughKeyLabel) {
-                mousePassthroughKeyLabel->setEnabled(checked);
-            }
-            if (doubleClickCloseWindowLabel) {
-                doubleClickCloseWindowLabel->setEnabled(!checked);
-            }
-        }
-    );
 
     m_timelineChartEnabledCheck = new QCheckBox(trText("settings.display.timelineEnabled"), w);
     m_timelineChartEnabledCheck->setChecked(m_cfg.timelineChartEnabled);
@@ -2464,6 +2546,7 @@ QWidget* SettingsDialog::buildStocksTab() {
 
     // --- Stock table + order buttons ---
     StockTableWidget* table = new StockTableWidget(w);
+    table->setObjectName(QStringLiteral("stockTable"));
     table->setHorizontalHeaderLabels({
         trText("settings.stocks.colSeq"),
         trText("settings.stocks.colCode"),
@@ -2471,6 +2554,9 @@ QWidget* SettingsDialog::buildStocksTab() {
         trText("settings.stocks.colCost"),
         trText("settings.stocks.colDel")
     });
+    if (QTableWidgetItem* costHeader = table->horizontalHeaderItem(3)) {
+        costHeader->setToolTip(trText("settings.stocks.colCostSortHint"));
+    }
     table->setMinimumHeight(220);
 
     for (const StockItem& s : m_stocks) {

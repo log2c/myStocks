@@ -143,6 +143,7 @@ bool isIndexQuote(const QuoteItem& quote) {
 
 QuoteModel::QuoteModel(QObject* parent)
     : QAbstractTableModel(parent) {
+    m_visibleColumns = visibleLogicalColumns(m_cfg);
     m_blinkTimer = new QTimer(this);
     m_blinkTimer->setInterval(200);
     connect(m_blinkTimer, &QTimer::timeout, this, [this]() {
@@ -460,6 +461,9 @@ void QuoteModel::setConfig(const AppConfig& cfg) {
     const bool hadHotSectorRow = hasHotSectorRow();
     const bool hadHotConceptRow = hasHotConceptRow();
     m_cfg = cfg;
+    // The visible column list is read on every cell paint, so derive it once
+    // here instead of rebuilding a QVector per delegate call.
+    m_visibleColumns = visibleLogicalColumns(m_cfg);
     const bool rowCountChanged = hadMarketBreadthRow != hasMarketBreadthRow()
         || hadHotSectorRow != hasHotSectorRow()
         || hadHotConceptRow != hasHotConceptRow();
@@ -656,25 +660,23 @@ MarketBreadthSnapshot QuoteModel::marketBreadthSnapshot() const {
     return m_marketBreadth;
 }
 
-QVector<HotRankItem> QuoteModel::hotSectors() const {
+const QVector<HotRankItem>& QuoteModel::hotSectors() const {
     return m_hotSectors;
 }
 
-QVector<HotRankItem> QuoteModel::hotConcepts() const {
+const QVector<HotRankItem>& QuoteModel::hotConcepts() const {
     return m_hotConcepts;
 }
 
 int QuoteModel::firstVisibleLogicalColumn() const {
-    const QVector<int> columns = visibleLogicalColumns(m_cfg);
-    return columns.isEmpty() ? 0 : columns.first();
+    return m_visibleColumns.isEmpty() ? 0 : m_visibleColumns.first();
 }
 
 int QuoteModel::firstContentLogicalColumn() const {
-    const QVector<int> columns = visibleLogicalColumns(m_cfg);
-    if (columns.size() >= 2) {
-        return columns.at(1);
+    if (m_visibleColumns.size() >= 2) {
+        return m_visibleColumns.at(1);
     }
-    return columns.isEmpty() ? 0 : columns.first();
+    return m_visibleColumns.isEmpty() ? 0 : m_visibleColumns.first();
 }
 
 QString QuoteModel::formatSigned(double value, int precision, bool percent) {
@@ -715,6 +717,10 @@ bool QuoteModel::hasHotSectorRow() const {
 
 bool QuoteModel::hasHotConceptRow() const {
     return false;
+}
+
+bool QuoteModel::hasHotRankRows() const {
+    return hasHotSectorRow() || hasHotConceptRow();
 }
 
 int QuoteModel::hotSectorRowIndex() const {

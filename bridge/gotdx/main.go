@@ -68,13 +68,15 @@ type point struct {
 	Volume float64  `json:"volume"`
 }
 type bar struct {
-	Time   string  `json:"time"`
-	Open   float64 `json:"open"`
-	High   float64 `json:"high"`
-	Low    float64 `json:"low"`
-	Close  float64 `json:"close"`
-	Volume float64 `json:"volume"`
-	Amount float64 `json:"amount"`
+	Time     string   `json:"time"`
+	Open     float64  `json:"open"`
+	High     float64  `json:"high"`
+	Low      float64  `json:"low"`
+	Close    float64  `json:"close"`
+	Volume   float64  `json:"volume"`
+	Amount   *float64 `json:"amount"`
+	Turnover *float64 `json:"turnover"`
+	PreClose *float64 `json:"preClose"`
 }
 
 var mu sync.Mutex
@@ -350,10 +352,54 @@ func klines(req request) (any, error) {
 	}
 	bars := make([]bar, 0, len(reply))
 	for _, b := range reply {
-		bars = append(bars, bar{b.DateTime.Format("2006-01-02 15:04:05"), b.Open, b.High, b.Low, b.Close, b.Vol, b.Amount})
+		bars = append(bars, bar{
+			Time:     b.DateTime.Format("2006-01-02 15:04:05"),
+			Open:     b.Open,
+			High:     b.High,
+			Low:      b.Low,
+			Close:    b.Close,
+			Volume:   b.Vol,
+			Amount:   number(b.Amount),
+			Turnover: number(b.Turnover),
+			PreClose: number(b.PreClose),
+		})
 	}
 	sort.SliceStable(bars, func(i, j int) bool { return bars[i].Time < bars[j].Time })
-	return map[string]any{"bars": bars}, nil
+	// Share counts turn a bar's close into a market value. They are a
+	// best-effort lookup: indexes, boards and futures simply have none.
+	counts := readShareCounts(s)
+	return map[string]any{"bars": bars, "totalShares": counts.Total, "floatShares": counts.Float}, nil
+}
+
+// shareCounts holds outstanding share counts in 10k shares, used to derive
+// market value. A missing count stays null rather than zero.
+type shareCounts struct {
+	Total *float64 `json:"total"`
+	Float *float64 `json:"float"`
+}
+
+// Share counts change only on corporate actions, and the K-line chart
+// refreshes every 30 seconds. Cache per symbol so a refresh costs no extra
+// round trip on the serialized bridge.
+var shareCountCache = map[string]shareCounts{}
+
+func readShareCounts(s symbol) shareCounts {
+	key := fmt.Sprintf("%d.%s", s.market, s.code)
+	if cached, ok := shareCountCache[key]; ok {
+		return cached
+	}
+	var counts shareCounts
+	reply, err := client(s.extended).MACSymbolQuotes([]uint8{s.market}, []string{s.code},
+		gotdx.MACFieldBitmap(gotdx.MACFieldTotalShares, gotdx.MACFieldFloatShares))
+	if err != nil || len(reply.Stocks) == 0 {
+		// Do not cache a failure: the next refresh should retry.
+		return counts
+	}
+	values := reply.Stocks[0].Values
+	counts.Total = field(values, "total_shares")
+	counts.Float = field(values, "float_shares")
+	shareCountCache[key] = counts
+	return counts
 }
 func dispatch(req request) (any, error) {
 	switch req.Operation {

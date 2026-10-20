@@ -205,6 +205,24 @@ int main(int argc, char** argv) {
     check(std::abs(daily_kline::candleWidth(8.0) - 5.6) < 1e-8
         && daily_kline::candleWidth(80.0) == 24.0,
         "Sparse daily histories must use readable but bounded candle widths");
+    // Header statistics: amount formatting, amplitude against the previous
+    // close, and market value from the 10k-share count.
+    check(daily_kline::formatAmount(2.4e8) == QStringLiteral("2.40亿")
+        && daily_kline::formatAmount(3.2e11) == QStringLiteral("3200亿")
+        && daily_kline::formatAmount(2.5e12) == QStringLiteral("2.50万亿")
+        && daily_kline::formatAmount(12345.0) == QStringLiteral("1.23万")
+        && daily_kline::formatAmount(qQNaN()) == QStringLiteral("--"),
+        "Amounts must read in 万/亿/万亿 and never invent a value for missing data");
+    check(std::abs(daily_kline::amplitudePct(10.8, 10.1, 10.2) - (0.7 / 10.2 * 100.0)) < 1e-9,
+        "Amplitude must be the bar's high-low span against the previous close");
+    check(!std::isfinite(daily_kline::amplitudePct(10.8, 10.1, 0.0))
+        && !std::isfinite(daily_kline::amplitudePct(10.8, 10.1, qQNaN())),
+        "Amplitude must stay unknown without a usable previous close");
+    check(std::abs(daily_kline::marketValue(10.6, 100000.0) - 10.6e9) < 1.0,
+        "Market value must scale the 10k-share count into shares");
+    check(!std::isfinite(daily_kline::marketValue(10.6, 0.0))
+        && !std::isfinite(daily_kline::marketValue(qQNaN(), 100000.0)),
+        "Market value must stay unknown without both a price and a share count");
     samples[1].close = qQNaN();
     const auto missing = daily_kline::movingAverage(samples, 5);
     check(!std::isfinite(missing[4]) && std::isfinite(missing[6]),

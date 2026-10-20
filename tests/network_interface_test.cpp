@@ -98,5 +98,22 @@ int main(int argc, char** argv) {
     const Reply automatic = get(manager, url);
     check(automatic.error == QNetworkReply::NoError && automatic.body == "bound" && requests == 2,
         "Switching back to automatic routing must recover HTTP requests");
+
+    // Random mode picks a built-in preset once and keeps it for the session.
+    cfg = AppConfig();
+    check(cfg.userAgentMode == "random", "New configurations must default to a random User-Agent");
+    const QStringList presets = builtinUserAgentPresets();
+    check(presets.size() == 5, "The random pool must hold five mainstream presets");
+    const QString randomAgent = network_utils::effectiveUserAgent(cfg);
+    check(presets.contains(randomAgent), "A random User-Agent must come from the built-in presets");
+    check(network_utils::effectiveUserAgent(cfg) == randomAgent,
+        "The random User-Agent must stay stable for the whole session");
+    cfg.userAgentMode = "custom";
+    cfg.userAgent = "myStocks-custom-agent";
+    check(network_utils::effectiveUserAgent(cfg) == cfg.userAgent,
+        "Custom mode must send the configured User-Agent verbatim");
+    cfg.userAgentMode = "nonsense";
+    check(network_utils::effectiveUserAgent(cfg) == randomAgent,
+        "Unknown modes must fall back to random");
     return 0;
 }

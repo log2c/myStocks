@@ -114,6 +114,15 @@ void request(QObject* context, const AppConfig& config, QJsonObject payload, Cal
         response = {{"points", points}, {"preClose", 10.0}};
     }
     if (operation == "breadth" && !breadthFixture.isEmpty()) response = breadthFixture;
+    if (operation == "klines") {
+        // Two daily candles carrying the statistics the chart header reports.
+        response = {{"bars", QJsonArray{
+            QJsonObject{{"time", "2026-10-16 00:00:00"}, {"open", 10.0}, {"high", 10.5}, {"low", 9.8},
+                {"close", 10.2}, {"volume", 1000.0}, {"amount", 1.2e8}, {"turnover", 1.5}, {"preClose", 10.0}},
+            QJsonObject{{"time", "2026-10-19 00:00:00"}, {"open", 10.2}, {"high", 10.8}, {"low", 10.1},
+                {"close", 10.6}, {"volume", 2000.0}, {"amount", 2.4e8}, {"turnover", 3.0}, {"preClose", 10.2}}}},
+            {"totalShares", 100000.0}, {"floatShares", 80000.0}};
+    }
     if (constituentFixture && operation == "members") {
         ++memberRequests;
         response = {{"items", QJsonArray{
@@ -142,7 +151,7 @@ void checkStockChartClicks() {
     cfg.hotRankEnabled = false;
     cfg.hoverReadingEnabled = false;
     cfg.mousePassthroughEnabled = false;
-    cfg.floatingWindowDoubleClickToHide = true;
+    cfg.globalRightClickClose = true;
     cfg.floatingWindowDoubleClickStockDetail = false;
     QuoteModel model;
     model.setConfig(cfg);
@@ -264,8 +273,10 @@ void checkStockChartClicks() {
     const int beforeRightClickKlines = klineRequests;
     click(1, Qt::RightButton);
     events(160);
-    check(popup->isVisible() && !daily->isVisible() && klineRequests == beforeRightClickKlines,
-        "Right-clicking a floating stock must not open daily candles");
+    check(!window.isVisible() && !popup->isVisible() && klineRequests == beforeRightClickKlines,
+        "Right-clicking a floating stock must hide the window without opening daily candles");
+    window.show();
+    events();
     const int beforePinnedHover = timelineRequests;
     hover(1);
     events(160);
@@ -308,13 +319,32 @@ void checkStockChartClicks() {
     hover(0);
     events(60);
     click(0, Qt::LeftButton);
-    global = rowGlobal(0);
-    mouse(view->viewport(), QEvent::MouseButtonDblClick, global, Qt::LeftButton, Qt::LeftButton);
-    mouse(&window, QEvent::MouseButtonRelease, global, Qt::LeftButton, Qt::NoButton);
+    // Right-click while a hover chart is visible must close everything.
+    const QPoint rightPoint = rowGlobal(0);
+    mouse(view->viewport(), QEvent::MouseButtonPress, rightPoint, Qt::RightButton, Qt::RightButton);
+    events(60);
+    check(window.isVisible(), "The window must stay visible until the right button is released");
+    mouse(view->viewport(), QEvent::MouseButtonRelease, rightPoint, Qt::RightButton, Qt::NoButton);
     events(160);
     check(!window.isVisible() && !popup->isVisible(),
-        "Double click must hide the window and cancel pending hover");
+        "Right-click must hide the window and cancel pending hover");
+    // A right-click outside the option must leave the window alone.
+    cfg.globalRightClickClose = false;
+    window.applyConfig(cfg);
     window.show();
+    events();
+    hover(0);
+    events(160);
+    check(popup->isVisible(), "Hover must still work before the disabled right-click check");
+    const int beforeDisabledRightClick = klineRequests;
+    mouse(view->viewport(), QEvent::MouseButtonPress, rightPoint, Qt::RightButton, Qt::RightButton);
+    mouse(&window, QEvent::MouseButtonRelease, rightPoint, Qt::RightButton, Qt::NoButton);
+    events(160);
+    check(window.isVisible(), "Right-click must not hide the window when the option is off");
+    check(klineRequests == beforeDisabledRightClick,
+        "A disabled right-click close must not fall through to opening a daily chart");
+    cfg.globalRightClickClose = true;
+    window.applyConfig(cfg);
     events();
     hover(0);
     window.hide();
@@ -337,7 +367,6 @@ void checkStockChartClicks() {
     window.applyConfig(cfg);
     hover(0);
     events(330);
-    click(0, Qt::RightButton);
     check(!popup->isVisible(), "Disabling charts must suppress hover charts");
     cfg.timelineChartEnabled = true;
     cfg.timelineChartHoverDelayMs = 0;
@@ -384,8 +413,10 @@ void checkStockChartClicks() {
     mouse(view->viewport(), QEvent::MouseButtonPress, namePoint, Qt::RightButton, Qt::RightButton);
     mouse(view->viewport(), QEvent::MouseButtonRelease, namePoint, Qt::RightButton, Qt::NoButton);
     events();
-    check(!popup->isVisible() && klineRequests == beforeNameRightClickKlines,
-        "Right-clicking any floating stock column must not open a daily chart");
+    check(!window.isVisible() && !popup->isVisible() && klineRequests == beforeNameRightClickKlines,
+        "Right-clicking any floating stock column must hide the window without opening a daily chart");
+    window.show();
+    events();
 
     cfg.floatingWindowDoubleClickStockDetail = true;
     window.applyConfig(cfg);
@@ -401,6 +432,18 @@ void checkStockChartClicks() {
     }
     check(detailWindow && detailWindow->findChild<QWidget*>("dailyKlineChart"),
         "Double-clicking a stock must open the in-app K-line window");
+    {
+        // The identity moved out of the chart header into the period bar's
+        // right edge, leaving the chart's first row for hovered-bar statistics.
+        auto* stockLabel = detailWindow->findChild<QLabel*>("klineStockLabel");
+        check(stockLabel && stockLabel->text().contains("ETF")
+                && stockLabel->text().contains("1.510300"),
+            "K-line window must show the stock name and code in its period bar");
+        auto* periodBar = detailWindow->findChild<QWidget*>("klinePeriodBar");
+        check(periodBar && stockLabel->mapTo(periodBar, QPoint(0, 0)).x()
+                > periodBar->width() / 2,
+            "The stock identity must sit at the right edge of the period bar");
+    }
     QPushButton* weeklyButton = nullptr;
     QPushButton* monthlyButton = nullptr;
     for (auto* button : detailWindow->findChildren<QPushButton*>()) {
@@ -424,6 +467,36 @@ void checkStockChartClicks() {
     events();
     check(detailWindow->pos() == oldDetailPosition + QPoint(36, 20),
         "Dragging a K-line period selector must move the K-line window");
+    {
+        // Daily/weekly/monthly mode reports the hovered bar's statistics where
+        // the stock identity used to sit.
+        auto* dailyChart = detailWindow->findChild<QWidget*>("dailyKlineChart");
+        check(dailyChart && dailyChart->isVisible(),
+            "A K-line period selection must show the candle chart");
+        // Right-hand side of the plot: with two candles that is the newest bar.
+        const QPoint hover = dailyChart->mapToGlobal(
+            QPoint(dailyChart->width() * 4 / 5, dailyChart->height() / 2));
+        mouse(dailyChart->parentWidget(), QEvent::MouseMove, hover, Qt::NoButton, Qt::NoButton);
+        events();
+        dailyChart->grab();
+        const double amount = dailyChart->property("statAmount").toDouble();
+        const double turnover = dailyChart->property("statTurnover").toDouble();
+        const double amplitude = dailyChart->property("statAmplitude").toDouble();
+        const double marketValue = dailyChart->property("statMarketValue").toDouble();
+        check(amount == 2.4e8 && turnover == 3.0,
+            "The K-line header must report the hovered bar's amount and turnover");
+        check(std::abs(amplitude - (10.8 - 10.1) / 10.2 * 100.0) < 1e-9,
+            "The K-line header must report the hovered bar's amplitude against the previous close");
+        // 100000 万股 = 1e9 shares at the bar's close.
+        check(std::abs(marketValue - 10.6 * 1e9) < 1.0,
+            "The K-line header must report market value from the outstanding share count");
+    }
+    // Returning to the floating window dismisses the K-line window.
+    const QPoint backToWindow = view->viewport()->mapToGlobal(view->visualRect(model.index(0, ColPrice)).center());
+    mouse(view->viewport(), QEvent::MouseButtonPress, backToWindow, Qt::LeftButton, Qt::LeftButton);
+    events();
+    check(!detailWindow->isVisible(),
+        "Clicking the floating window must close the K-line window");
     window.hide();
     events();
     check(!detailWindow->isVisible(), "Hiding the floating window must also close its K-line window");
@@ -509,6 +582,10 @@ void checkBreadthHeaderClick() {
     market->hidePopup();
     click(1, true, Qt::RightButton);
     check(!market->isVisible(), "Right-clicking breadth counts must not open overview");
+    check(!window.isVisible(),
+        "Right-clicking breadth counts must hide the floating window like anywhere else");
+    window.show();
+    events();
     const QPoint first = breadthPoint(1);
     mouse(topTable->viewport(), QEvent::MouseButtonPress, first, Qt::LeftButton, Qt::LeftButton);
     events(150);
@@ -598,6 +675,9 @@ public:
         cfg.proxyPort = proxy.serverPort();
         cfg.upColor = QColor("#e14343");
         cfg.downColor = QColor("#25ba71");
+        // Right-click close is covered by its own assertion below; keep it off
+        // here so the chart-click checks can use the right button freely.
+        cfg.globalRightClickClose = false;
         MarketBreadthDetailWindow market;
         market.applyConfig(cfg);
         market.setLanguage("zh_CN");
@@ -766,6 +846,19 @@ public:
         check(!table->isVisible()
             && market.m_breadthChartTabMode == MarketBreadthDetailWindow::BreadthChartTabMode::Distribution,
             "Existing distribution chart must remain available");
+
+        // The app-wide right-click close must dismiss this window too.
+        cfg.globalRightClickClose = true;
+        market.applyConfig(cfg);
+        market.show();
+        market.grab();
+        mouse(&market, QEvent::MouseButtonPress, QPoint(market.width() / 2, market.height() / 2),
+            Qt::RightButton, Qt::RightButton);
+        mouse(&market, QEvent::MouseButtonRelease, QPoint(market.width() / 2, market.height() / 2),
+            Qt::RightButton, Qt::NoButton);
+        check(!market.isVisible(), "Global right-click close must dismiss the market overview");
+        cfg.globalRightClickClose = false;
+        market.applyConfig(cfg);
         market.hide();
         QApplication::setStartDragTime(oldDragTime);
     }
@@ -781,6 +874,9 @@ public:
         MarketBreadthDetailWindow market(&owner);
         AppConfig cfg;
         cfg.language = "zh_CN";
+        // Chart-click coverage needs the right button; the global close binding
+        // is asserted on its own below.
+        cfg.globalRightClickClose = false;
         market.applyConfig(cfg);
         market.setLanguage("zh_CN");
         int watchlistMutations = 0;
@@ -943,6 +1039,28 @@ public:
             click(&market, market.m_hotStockActionButtonRects.at(actionIndex).center(), Qt::LeftButton);
             check(watchlistMutations == beforeWatchlist + 1, "Heat watchlist actions must remain available");
         }
+
+        // The app-wide right-click close must reach a constituent list window.
+        cfg.globalRightClickClose = true;
+        market.applyConfig(cfg);
+        market.m_hotSectors = {HotRankItem{}};
+        market.m_hotSectors[0].code = "tdx:main:1:881319";
+        market.m_hotSectors[0].detailFs = market.m_hotSectors[0].code;
+        market.m_hotSectors[0].name = QStringLiteral("热门板块");
+        market.m_hotRankTabMode = MarketBreadthDetailWindow::HotRankTabMode::Sector;
+        market.show();
+        events();
+        market.grab();
+        click(&market, market.m_hotRankRowHitAreas.at(0).rect.center(), Qt::LeftButton);
+        auto* detail = owner.findChild<QWidget*>("hotRankConstituentDetailWindow");
+        check(detail && detail->isVisible(), "Expected a constituent list before the right-click check");
+        mouse(detail, QEvent::MouseButtonPress, QPoint(detail->width() / 2, detail->height() / 2),
+            Qt::RightButton, Qt::RightButton);
+        mouse(detail, QEvent::MouseButtonRelease, QPoint(detail->width() / 2, detail->height() / 2),
+            Qt::RightButton, Qt::NoButton);
+        check(!detail->isVisible(), "Global right-click close must dismiss the constituent list");
+        cfg.globalRightClickClose = false;
+        market.applyConfig(cfg);
         market.hide();
         QApplication::setStartDragTime(oldDragTime);
         constituentFixture = false;
@@ -983,6 +1101,29 @@ public:
             check(dailyDays && dailyDays->value() == 60, "Daily range setting must default to 60");
             dailyDays->setValue(120);
             check(dialog.config().dailyKlineDays == 120, "Daily range editor must update configuration");
+            auto* rightClickClose = dialog.findChild<QCheckBox*>("rightClickCloseWindowCheck");
+            check(rightClickClose && rightClickClose->isChecked(),
+                "Global right-click close must default to enabled");
+            check(!rightClickClose->text().contains("settings.display"),
+                "The right-click close label must resolve to a translation");
+            rightClickClose->setChecked(false);
+            check(!dialog.config().globalRightClickClose,
+                "The right-click close editor must update configuration");
+            auto* userAgentMode = dialog.findChild<QComboBox*>("userAgentModeCombo");
+            auto* userAgentEdit = dialog.findChild<QLineEdit*>("userAgentEdit");
+            check(userAgentMode && userAgentEdit, "The User-Agent mode editor must exist");
+            check(userAgentMode->currentData().toString() == "random" && !userAgentEdit->isEnabled(),
+                "The default random mode must show the preset choice with a disabled editor");
+            userAgentMode->setCurrentIndex(userAgentMode->findData("random"));
+            check(!userAgentEdit->isEnabled(),
+                "Random mode must not offer a per-request User-Agent editor");
+            check(dialog.config().userAgentMode == "random",
+                "Selecting random must update the configuration");
+            userAgentMode->setCurrentIndex(userAgentMode->findData("custom"));
+            userAgentEdit->setText("custom-test-agent");
+            check(dialog.config().userAgentMode == "custom"
+                    && dialog.config().userAgent == "custom-test-agent",
+                "Custom mode must keep the edited User-Agent");
             for (int period : {5, 10, 20, 30, 60, 120, 250}) {
                 auto* ma = dialog.findChild<QCheckBox*>(QStringLiteral("dailyKlineMA%1Check").arg(period));
                 check(ma && ma->isChecked() == (period <= 30), "MA editor defaults are incorrect");
@@ -1003,6 +1144,61 @@ public:
             check(dialog.config().networkInterface == cfg.networkInterface, "Network draft must preserve the selected adapter");
         }
         cfg.networkInterface.clear();
+        {
+            SettingsDialog dialog(cfg,
+                {{"tdx:main:1:600519", "High cost", 30.0},
+                 {"tdx:main:0:000001", "No cost", qQNaN()},
+                 {"tdx:main:0:000002", "Low cost", 10.0}},
+                {}, {}, yaml, {});
+            auto* table = dialog.findChild<QTableWidget*>("stockTable");
+            check(table && table->rowCount() == 3, "The stock table must list every watch item");
+            const auto rowCodes = [table]() {
+                QStringList codes;
+                for (int r = 0; r < table->rowCount(); ++r) codes << table->item(r, 1)->text();
+                return codes;
+            };
+            auto* header = table->horizontalHeader();
+            const auto clickCostHeader = [header]() {
+                const int x = header->sectionViewportPosition(3) + header->sectionSize(3) / 2;
+                const QPoint pos(x, header->height() / 2);
+                for (QEvent::Type type : {QEvent::MouseButtonPress, QEvent::MouseButtonRelease}) {
+                    QMouseEvent event(type, QPointF(pos), QPointF(header->viewport()->mapToGlobal(pos)),
+                        Qt::LeftButton, type == QEvent::MouseButtonPress ? Qt::LeftButton : Qt::NoButton,
+                        Qt::NoModifier);
+                    QApplication::sendEvent(header->viewport(), &event);
+                }
+            };
+            clickCostHeader();
+            check(rowCodes() == QStringList({"tdx:main:1:600519", "tdx:main:0:000002", "tdx:main:0:000001"}),
+                "Clicking the cost header must sort descending and keep cost-less rows last");
+            check(header->isSortIndicatorShown() && header->sortIndicatorSection() == 3
+                && header->sortIndicatorOrder() == Qt::DescendingOrder,
+                "The cost header must show its sort direction");
+            clickCostHeader();
+            check(rowCodes() == QStringList({"tdx:main:0:000002", "tdx:main:1:600519", "tdx:main:0:000001"}),
+                "Clicking the cost header again must sort ascending and keep cost-less rows last");
+            clickCostHeader();
+            check(rowCodes() == QStringList({"tdx:main:1:600519", "tdx:main:0:000002", "tdx:main:0:000001"}),
+                "Sorting must alternate between descending and ascending");
+            // Editing a cost and re-sorting must read the edited value.
+            if (auto* edit = qobject_cast<QLineEdit*>(table->cellWidget(0, 3))) {
+                edit->setText("50.5");
+            }
+            clickCostHeader();
+            check(rowCodes() == QStringList({"tdx:main:0:000002", "tdx:main:1:600519", "tdx:main:0:000001"}),
+                "Sorting must use the edited cost text");
+            const auto editedCost = [table](const QString& code) {
+                for (int r = 0; r < table->rowCount(); ++r) {
+                    if (table->item(r, 1) && table->item(r, 1)->text() == code) {
+                        auto* edit = qobject_cast<QLineEdit*>(table->cellWidget(r, 3));
+                        return edit ? edit->text().toDouble() : qQNaN();
+                    }
+                }
+                return qQNaN();
+            };
+            check(std::abs(editedCost("tdx:main:1:600519") - 50.5) < 1e-9,
+                "Sorting must preserve edited costs");
+        }
         {
             SettingsDialog dialog(cfg, {}, {}, {}, yaml, {});
             auto* edit = dialog.findChild<QLineEdit*>("stockSearchEdit");

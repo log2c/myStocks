@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"math"
+	"strings"
 	"testing"
 
 	"github.com/bensema/gotdx/proto"
@@ -61,5 +63,41 @@ func TestKlineHistoryLimitIncludesMA250Warmup(t *testing.T) {
 	_, err := klines(request{Code: "1.510300", Period: 4, Count: 1050})
 	if err == nil {
 		t.Fatal("K-line request must reject more than 800 visible days plus 249 warm-up days")
+	}
+}
+
+func TestKlineBarsCarryStatisticsFields(t *testing.T) {
+	// The chart header reports amount, turnover and market value from a bar,
+	// so those fields must survive the projection into JSON.
+	b := bar{
+		Time:     "2026-10-19 00:00:00",
+		Open:     10.0,
+		High:     10.8,
+		Low:      10.1,
+		Close:    10.6,
+		Volume:   2000,
+		Amount:   number(2.4e8),
+		Turnover: number(3.0),
+		PreClose: number(10.2),
+	}
+	encoded, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["amount"] != 2.4e8 || decoded["turnover"] != 3.0 || decoded["preClose"] != 10.2 {
+		t.Fatalf("bar statistics missing from JSON: %s", encoded)
+	}
+	// A bar without statistics must serialize nulls, not zeros, so the chart
+	// can tell "no data" from a genuine zero.
+	empty, err := json.Marshal(bar{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(empty), `"amount":null`) {
+		t.Fatalf("missing statistics must stay null: %s", empty)
 	}
 }

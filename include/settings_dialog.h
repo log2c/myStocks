@@ -108,6 +108,7 @@ private:
     QStringList m_tdxBuiltinServerPools[2];
     bool m_tdxServersLoading = false;
     bool m_tdxProbePending = false;
+    QComboBox* m_userAgentModeCombo = nullptr;
     QLineEdit* m_userAgentEdit = nullptr;
     QComboBox* m_networkInterfaceCombo = nullptr;
     QComboBox* m_proxyTypeCombo = nullptr;
@@ -176,7 +177,7 @@ private:
     QPushButton* m_timelineChartDownBtn = nullptr;
     QCheckBox* m_mousePassthroughCheck = nullptr;
     QComboBox* m_mousePassthroughKeyCombo = nullptr;
-    QCheckBox* m_doubleClickCloseWindowCheck = nullptr;
+    QCheckBox* m_rightClickCloseWindowCheck = nullptr;
     QCheckBox* m_doubleClickStockDetailCheck = nullptr;
     QDoubleSpinBox* m_windowPaddingSpin = nullptr;
     QListWidget* m_columnList = nullptr;

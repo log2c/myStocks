@@ -32,7 +32,45 @@ int main(int argc, char** argv) {
     check(defaults.dailyKlineDays == 60, "Daily candles must default to 60 trading days");
     check(defaults.dailyKlineMAPeriods == QVector<int>({5, 10, 20, 30}), "Default MAs must be 5/10/20/30");
     check(defaults.timelineChartHoverDelayMs == 500, "Existing settings must default hover delay to 500ms");
+    check(defaults.globalRightClickClose, "Global right-click close must default to enabled");
+    // Both retired keys must still seed the app-wide option, so an existing
+    // "off" choice is not silently turned back on.
+    {
+        QSettings legacy(path, QSettings::IniFormat);
+        legacy.setValue(QStringLiteral("ui/floatingWindowDoubleClickToHide"), false);
+        legacy.sync();
+        check(!ConfigManager::loadConfig().globalRightClickClose,
+            "A legacy double-click close choice must migrate to the global option");
+        legacy.setValue(QStringLiteral("ui/floatingWindowDoubleClickToHide"), true);
+        legacy.sync();
+        check(ConfigManager::loadConfig().globalRightClickClose,
+            "An enabled legacy double-click close must migrate as enabled");
+        legacy.remove(QStringLiteral("ui/floatingWindowDoubleClickToHide"));
+        legacy.setValue(QStringLiteral("ui/floatingWindowRightClickToHide"), false);
+        legacy.sync();
+        check(!ConfigManager::loadConfig().globalRightClickClose,
+            "The previous floating-window option must migrate to the global option");
+        legacy.remove(QStringLiteral("ui/floatingWindowRightClickToHide"));
+        legacy.sync();
+    }
+    // A settings file from before the mode existed already has a User-Agent and
+    // must keep sending it; only a fresh install starts on the random pool.
+    check(defaults.userAgentMode == "random",
+        "A configuration without a stored User-Agent must default to random");
+    {
+        QSettings legacy(path, QSettings::IniFormat);
+        legacy.setValue(QStringLiteral("cfg/userAgent"), QStringLiteral("legacy-agent/1.0"));
+        legacy.sync();
+        const AppConfig migrated = ConfigManager::loadConfig();
+        check(migrated.userAgentMode == "custom"
+                && migrated.userAgent == QStringLiteral("legacy-agent/1.0"),
+            "An existing stored User-Agent must migrate to the custom mode");
+        legacy.remove(QStringLiteral("cfg/userAgent"));
+        legacy.sync();
+    }
     AppConfig cfg = defaults;
+    cfg.userAgentMode = "random";
+    cfg.userAgent = QStringLiteral("legacy-agent/1.0");
     cfg.timelineChartHoverDelayMs = 800;
     cfg.dailyKlineDays = 120;
     cfg.dailyKlineMAPeriods = {250, 10, 10, 99, 60};
@@ -51,6 +89,8 @@ int main(int argc, char** argv) {
     ConfigManager::saveConfig(cfg);
     const AppConfig loaded = ConfigManager::loadConfig();
     check(loaded.timelineChartHoverDelayMs == 800, "Hover delay must survive saving and loading");
+    check(loaded.userAgentMode == "random" && loaded.userAgent == cfg.userAgent,
+        "The User-Agent mode and custom value must round trip independently");
     check(loaded.dailyKlineDays == 120, "Daily candle range did not persist");
     check(loaded.dailyKlineMAPeriods == QVector<int>({10, 60, 250}), "MA periods must persist, normalize and reject unknowns");
     check(!loaded.tdxMainAutoSelect && loaded.tdxExAutoSelect, "Independent selection modes were lost");
