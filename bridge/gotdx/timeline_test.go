@@ -66,6 +66,113 @@ func TestKlineHistoryLimitIncludesMA250Warmup(t *testing.T) {
 	}
 }
 
+// Captured 2026-10-20 TDX values: 创业板指 daily volume 151827968 shares over
+// 56896388 万股 of float, which the market data reports as 2.67%.
+func TestTurnoverMatchesMarketDataForIndex(t *testing.T) {
+	floatWan := 56896388.0
+	got := turnoverPercent(151827968, 4, mainlandLotsVolume(symbol{market: 0, code: "399006"}), &floatWan)
+	if got == nil || math.Abs(*got-2.668) > 0.01 {
+		t.Fatalf("index turnover must divide shares by the quote float count: %v", got)
+	}
+	// Weekly bars carry lots, so the same series needs the extra factor of 100.
+	// The market data reports 14.90% for the week ending 2026-10-16.
+	weekly := turnoverPercent(8480319, 5, mainlandLotsVolume(symbol{market: 0, code: "399006"}), &floatWan)
+	if weekly == nil || math.Abs(*weekly-14.90) > 0.02 {
+		t.Fatalf("weekly index turnover must scale lots to shares: %v", weekly)
+	}
+}
+
+// Captured 2026-10-20 贵州茅台: daily volume 3413565 shares over 125008 万股
+// float, reported as 0.27%.
+func TestTurnoverMatchesMarketDataForEquity(t *testing.T) {
+	floatWan := 125008.15625
+	s := symbol{market: 1, code: "600519"}
+	if mainlandLotsVolume(s) {
+		t.Fatal("an equity must not take the index volume scale")
+	}
+	daily := turnoverPercent(3413565, 4, false, &floatWan)
+	if daily == nil || math.Abs(*daily-0.273) > 0.005 {
+		t.Fatalf("equity daily turnover: %v", daily)
+	}
+	// Weekly equity bars are lots; the market data reports 1.42% for the week
+	// ending 2026-10-16.
+	weekly := turnoverPercent(178080, 5, false, &floatWan)
+	if weekly == nil || math.Abs(*weekly-1.425) > 0.01 {
+		t.Fatalf("equity weekly turnover: %v", weekly)
+	}
+}
+
+func TestTurnoverStaysUnavailableWithoutFloatShares(t *testing.T) {
+	if got := turnoverPercent(1000, 4, false, nil); got != nil {
+		t.Fatal("turnover must stay unavailable without a float count")
+	}
+	zero := 0.0
+	if got := turnoverPercent(1000, 4, false, &zero); got != nil {
+		t.Fatal("a zero float count must not produce infinite turnover")
+	}
+	if got := turnoverPercent(0, 4, false, &zero); got != nil {
+		t.Fatal("a bar without volume must not report turnover")
+	}
+}
+
+func TestMainlandVolumeScalesByInstrumentClass(t *testing.T) {
+	for _, tc := range []struct {
+		code string
+		lots bool
+	}{
+		{"1.000001", true},  // 上证指数
+		{"0.399001", true},  // 深证成指
+		{"0.399006", true},  // 创业板指
+		{"1.881319", true},  // 半导体 board
+		{"0.000001", false}, // 平安银行, same digits as the Shanghai index
+		{"1.600519", false},
+		{"0.300750", false},
+		{"1.510300", false}, // ETF
+		{"0.159915", false},
+		{"116.00700", false}, // Hong Kong takes its own path
+	} {
+		s, err := resolve(tc.code)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.code, err)
+		}
+		if got := mainlandLotsVolume(s); got != tc.lots {
+			t.Fatalf("%s: lots=%v want %v", tc.code, got, tc.lots)
+		}
+	}
+}
+
+func TestHongKongBarsUseLotVolumes(t *testing.T) {
+	for _, code := range []string{"116.00700", "100.HSI"} {
+		s, err := resolve(code)
+		if err != nil {
+			t.Fatalf("%s: %v", code, err)
+		}
+		if !hongKongVolume(s) {
+			t.Fatalf("%s must take the lot volume scale", code)
+		}
+	}
+	s, _ := resolve("1.600519")
+	if hongKongVolume(s) {
+		t.Fatal("a mainland equity must not take the Hong Kong volume scale")
+	}
+}
+
+// The reported market cap is authoritative for an index: its close is points,
+// so close*shares is not a market value.
+func TestIndexSharesReproduceReportedMarketCap(t *testing.T) {
+	cap := 1.6243908291310838e13
+	got := indexShares(shareCounts{MarketCap: &cap}, 2715.955810546875)
+	if got == nil {
+		t.Fatal("index market cap must produce a share count")
+	}
+	if value := *got * 2715.955810546875 * 10000; math.Abs(value-cap)/cap > 1e-9 {
+		t.Fatalf("share count must reproduce the reported market cap: %v", value)
+	}
+	if indexShares(shareCounts{}, 100) != nil {
+		t.Fatal("a missing market cap must not invent a share count")
+	}
+}
+
 func TestKlineBarsCarryStatisticsFields(t *testing.T) {
 	// The chart header reports amount, turnover and market value from a bar,
 	// so those fields must survive the projection into JSON.

@@ -350,8 +350,21 @@ func klines(req request) (any, error) {
 	if len(reply) == 0 {
 		return nil, fmt.Errorf("TDX returned no K-line for %s", req.Code)
 	}
+	// Share counts turn a bar's close into a market value. They are a
+	// best-effort lookup: indexes, boards and futures simply have none.
+	counts := readShareCounts(s)
+	// The SDK divides by the bar's own FloatShares. That is right for equities
+	// and Hong Kong bars, but mainland index and board bars carry a denormal
+	// there, so their SDK turnover is unusable. Recompute whenever the
+	// quote-level count is available, and always for those series.
+	indexBars := mainlandLotsVolume(s)
+	lots := indexBars || hongKongVolume(s)
 	bars := make([]bar, 0, len(reply))
 	for _, b := range reply {
+		turnover := number(b.Turnover)
+		if indexBars || counts.Float != nil {
+			turnover = turnoverPercent(b.Vol, req.Period, lots, counts.Float)
+		}
 		bars = append(bars, bar{
 			Time:     b.DateTime.Format("2006-01-02 15:04:05"),
 			Open:     b.Open,
@@ -360,22 +373,95 @@ func klines(req request) (any, error) {
 			Close:    b.Close,
 			Volume:   b.Vol,
 			Amount:   number(b.Amount),
-			Turnover: number(b.Turnover),
+			Turnover: turnover,
 			PreClose: number(b.PreClose),
 		})
 	}
 	sort.SliceStable(bars, func(i, j int) bool { return bars[i].Time < bars[j].Time })
-	// Share counts turn a bar's close into a market value. They are a
-	// best-effort lookup: indexes, boards and futures simply have none.
-	counts := readShareCounts(s)
-	return map[string]any{"bars": bars, "totalShares": counts.Total, "floatShares": counts.Float}, nil
+	totalShares, floatShares := counts.Total, counts.Float
+	if indexBars {
+		// An index close is points, not a price, so no share count turns it into
+		// a market value. Only the reported market cap does; express that as the
+		// count which reproduces it, and drop the raw count that would not.
+		totalShares = indexShares(counts, bars[len(bars)-1].Close)
+		floatShares = nil
+	}
+	return map[string]any{"bars": bars, "totalShares": totalShares, "floatShares": floatShares}, nil
+}
+
+func isFinite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
+
+// TDX reports K-line volume in a unit that depends on both the period and the
+// instrument class. Mainland equities and ETFs send daily volume in shares and
+// weekly/monthly volume in lots of 100. Index, board and Hong Kong series are
+// already in lots at every period, so they need one more factor of 100.
+// Turnover divides a share count, so both factors matter.
+func barVolumeInShares(volume float64, period uint16, lots bool) float64 {
+	scale := 1.0
+	if period != 4 { // weekly and monthly
+		scale = 100.0
+	}
+	if lots {
+		scale *= 100.0
+	}
+	return volume * scale
+}
+
+// TDX indexes and boards follow fixed code ranges per market. Market 1 holds
+// both 上证指数 (000001) and 平安银行 (000001, market 0), so the market is part
+// of the test rather than the code alone.
+func mainlandLotsVolume(s symbol) bool {
+	if s.extended {
+		return false
+	}
+	if strings.HasPrefix(s.code, "88") {
+		return true
+	}
+	if s.market == 1 {
+		return strings.HasPrefix(s.code, "000")
+	}
+	return s.market == 0 && strings.HasPrefix(s.code, "399")
+}
+
+// Hong Kong bars report volume in lots too, with a real share count rather
+// than the denormal mainland indexes carry.
+func hongKongVolume(s symbol) bool {
+	if !s.extended {
+		return false
+	}
+	return s.market == types.ExCategoryHKMainBoard || s.market == types.ExCategoryHKIndex
+}
+
+// turnoverPercent is traded shares over the float count, in percent. floatWan
+// counts 10k shares, so floatWan*100 is a hundredth of the share count and the
+// quotient already lands in percent.
+func turnoverPercent(volume float64, period uint16, lots bool, floatWan *float64) *float64 {
+	if floatWan == nil || *floatWan <= 0 {
+		return nil
+	}
+	shares := barVolumeInShares(volume, period, lots)
+	if !isFinite(shares) || shares <= 0 {
+		return nil
+	}
+	return number(shares / (*floatWan * 100.0))
+}
+
+// An index close is points, not a price, so close*shares is meaningless there.
+// The reported total market cap is authoritative; return the share count that
+// reproduces it so the header's market value stays honest.
+func indexShares(counts shareCounts, close float64) *float64 {
+	if counts.MarketCap == nil || *counts.MarketCap <= 0 || !isFinite(close) || close <= 0 {
+		return nil
+	}
+	return number(*counts.MarketCap / close / 10000.0)
 }
 
 // shareCounts holds outstanding share counts in 10k shares, used to derive
-// market value. A missing count stays null rather than zero.
+// market value and turnover. A missing count stays null rather than zero.
 type shareCounts struct {
-	Total *float64 `json:"total"`
-	Float *float64 `json:"float"`
+	Total     *float64 `json:"total"`
+	Float     *float64 `json:"float"`
+	MarketCap *float64 `json:"-"`
 }
 
 // Share counts change only on corporate actions, and the K-line chart
@@ -390,7 +476,7 @@ func readShareCounts(s symbol) shareCounts {
 	}
 	var counts shareCounts
 	reply, err := client(s.extended).MACSymbolQuotes([]uint8{s.market}, []string{s.code},
-		gotdx.MACFieldBitmap(gotdx.MACFieldTotalShares, gotdx.MACFieldFloatShares))
+		gotdx.MACFieldBitmap(gotdx.MACFieldTotalShares, gotdx.MACFieldFloatShares, gotdx.MACFieldTotalMarketCapAb))
 	if err != nil || len(reply.Stocks) == 0 {
 		// Do not cache a failure: the next refresh should retry.
 		return counts
@@ -398,6 +484,7 @@ func readShareCounts(s symbol) shareCounts {
 	values := reply.Stocks[0].Values
 	counts.Total = field(values, "total_shares")
 	counts.Float = field(values, "float_shares")
+	counts.MarketCap = field(values, "total_market_cap_ab")
 	shareCountCache[key] = counts
 	return counts
 }
