@@ -636,6 +636,7 @@ AppConfig ConfigManager::loadConnectionConfig() {
     cfg.proxyPort = readConfigValue(s, "proxyPort", cfg.proxyPort).toInt();
     cfg.proxyUser = readConfigValue(s, "proxyUser", cfg.proxyUser).toString();
     cfg.proxyPassword = readConfigValue(s, "proxyPassword", cfg.proxyPassword).toString();
+    normalizeNetworkSelection(&cfg);
     return cfg;
 }
 
@@ -932,6 +933,7 @@ AppConfig ConfigManager::loadConfig() {
     if (cfg.proxyPort < 0 || cfg.proxyPort > 65535) {
         cfg.proxyPort = 0;
     }
+    normalizeNetworkSelection(&cfg);
 
     cfg.transparentBackgroundOpacity = qBound(0, cfg.transparentBackgroundOpacity, 100);
     cfg.floatingWindowFontSize = qBound(0, cfg.floatingWindowFontSize, 72);
@@ -1008,19 +1010,16 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         cfg.userAgent.trimmed().isEmpty() ? defaultChrome100UserAgent() : cfg.userAgent.trimmed()
     );
 
-    writeConfigValue(s, QStringLiteral("networkInterface"), cfg.networkInterface.trimmed());
-    QString proxyType = cfg.proxyType.trimmed().toLower();
-    if (proxyType == "socks") {
-        proxyType = "socks5";
-    }
-    if (proxyType != "none" && proxyType != "http" && proxyType != "socks5") {
-        proxyType = "none";
-    }
-    writeConfigValue(s, QStringLiteral("proxyType"), proxyType);
-    writeConfigValue(s, QStringLiteral("proxyHost"), cfg.proxyHost.trimmed());
-    writeConfigValue(s, QStringLiteral("proxyPort"), qBound(0, cfg.proxyPort, 65535));
-    writeConfigValue(s, QStringLiteral("proxyUser"), cfg.proxyUser);
-    writeConfigValue(s, QStringLiteral("proxyPassword"), cfg.proxyPassword);
+    // The interface and a remote proxy are mutually exclusive; persist the
+    // resolved choice so the next start does not have to guess.
+    AppConfig networkCfg = cfg;
+    normalizeNetworkSelection(&networkCfg);
+    writeConfigValue(s, QStringLiteral("networkInterface"), networkCfg.networkInterface);
+    writeConfigValue(s, QStringLiteral("proxyType"), networkCfg.proxyType);
+    writeConfigValue(s, QStringLiteral("proxyHost"), networkCfg.proxyHost.trimmed());
+    writeConfigValue(s, QStringLiteral("proxyPort"), networkCfg.proxyPort);
+    writeConfigValue(s, QStringLiteral("proxyUser"), networkCfg.proxyUser);
+    writeConfigValue(s, QStringLiteral("proxyPassword"), networkCfg.proxyPassword);
     writeConfigValue(
         s,
         QStringLiteral("debugIgnoreTradingTime"),

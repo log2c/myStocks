@@ -12,6 +12,7 @@
 #include "tdx_quote_provider.h"
 #include "settings_dialog.h"
 #include "startup_splash.h"
+#include "update_dialog.h"
 #include "updater.h"
 #include "watchlist_utils.h"
 
@@ -316,17 +317,15 @@ void AppController::initializeApplication() {
     connect(m_updater, &Updater::updateAvailable, this,
         [this](const Updater::ReleaseInfo& info) {
             qInfo() << "[AppController] update available:" << info.tagName;
-            if (m_tray) {
-                m_tray->showMessage(
-                    i18n::t("app.name", m_resolvedLanguage),
-                    i18n::t("settings.about.updateAvailable", m_resolvedLanguage)
-                        .arg(info.tagName),
-                    QSystemTrayIcon::Information,
-                    6000
-                );
-            }
+            // A detected update asks the user directly: skip, update, or update
+            // through the mainland-friendly mirror.
+            UpdateDialog dialog(info, m_resolvedLanguage, m_updater, m_window);
+            dialog.exec();
         }
     );
+    connect(m_updater, &Updater::checkFailed, this, [this](const QString& error) {
+        qInfo() << "[AppController] update check failed:" << error;
+    });
     if (m_cfg.autoCheckUpdates) {
         QTimer::singleShot(10000, this, [this]() {
             m_updater->setConfig(m_cfg);

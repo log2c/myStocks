@@ -7,8 +7,10 @@
 #include "quote_provider.h"
 #include "startup_splash.h"
 #include "settings_dialog.h"
+#include "update_dialog.h"
 #include <QComboBox>
 #include <QListWidget>
+#include <QProgressBar>
 #include <QScrollBar>
 #include <QWheelEvent>
 #include <QKeyEvent>
@@ -1145,6 +1147,57 @@ public:
         }
         cfg.networkInterface.clear();
         {
+            // Proxy and interface are alternative routes in the editor too.
+            SettingsDialog dialog(cfg, {}, {}, {}, yaml, {});
+            auto* adapters = dialog.findChild<QComboBox*>("networkInterfaceCombo");
+            auto* proxyType = dialog.findChild<QComboBox*>("proxyTypeCombo");
+            auto* proxyHost = dialog.findChild<QLineEdit*>("proxyHostEdit");
+            auto* proxyPort = dialog.findChild<QSpinBox*>("proxyPortSpin");
+            check(adapters && proxyType && proxyHost && proxyPort,
+                "The network tab must expose the interface and proxy editors");
+            check(adapters->isEnabled() && proxyType->isEnabled(),
+                "Both editors start usable when neither route is configured");
+            proxyType->setCurrentIndex(proxyType->findData("http"));
+            check(!adapters->isEnabled() && proxyType->isEnabled(),
+                "Choosing a proxy must disable the interface selector");
+            proxyHost->setText("127.0.0.1");
+            proxyPort->setValue(8080);
+            check(dialog.config().proxyType == "http" && dialog.config().networkInterface.isEmpty(),
+                "A proxy draft must keep the interface unset");
+            // Clearing the proxy frees the interface selector again.
+            proxyType->setCurrentIndex(proxyType->findData("none"));
+            check(adapters->isEnabled() && proxyType->isEnabled(),
+                "Clearing the proxy must re-enable the interface selector");
+            // A headless sandbox may expose no selectable adapter; the
+            // proxy-only half above still covers the exclusivity rule.
+            if (adapters->count() > 1) {
+                // Selecting an interface must clear the proxy instead of keeping both.
+                adapters->setCurrentIndex(1);
+                const QString adapterId = adapters->currentData().toString();
+                check(!adapterId.isEmpty(), "The test needs at least one real network interface");
+                check(proxyType->currentData().toString() == "none" && !proxyType->isEnabled()
+                        && adapters->isEnabled(),
+                    "Selecting an interface must clear the proxy and disable its editors");
+                check(dialog.config().networkInterface == adapterId
+                        && dialog.config().proxyType == "none",
+                    "An interface draft must drop the proxy from the saved configuration");
+                check(dialog.config().proxyHost == "127.0.0.1" && dialog.config().proxyPort == 8080,
+                    "Switching routes must retain the typed proxy details");
+                // Returning to automatic routing frees the proxy editors.
+                adapters->setCurrentIndex(0);
+                check(adapters->isEnabled() && proxyType->isEnabled(),
+                    "Automatic routing must re-enable the proxy editors");
+                check(dialog.config().networkInterface.isEmpty(),
+                    "Automatic routing must clear the saved interface");
+                proxyType->setCurrentIndex(proxyType->findData("socks5"));
+                check(!adapters->isEnabled() && proxyType->isEnabled(),
+                    "Re-enabling a proxy must disable the interface selector again");
+                check(dialog.config().proxyType == "socks5"
+                        && dialog.config().networkInterface.isEmpty(),
+                    "A proxy draft must keep the interface unset");
+            }
+        }
+        {
             SettingsDialog dialog(cfg,
                 {{"tdx:main:1:600519", "High cost", 30.0},
                  {"tdx:main:0:000001", "No cost", qQNaN()},
@@ -1390,6 +1443,80 @@ public:
     }
 };
 
+// The update dialog offers skip, direct update and the domestic mirror, and it
+// turns into a progress view once a download starts.
+void checkUpdateDialog() {
+    Updater::ReleaseInfo info;
+    info.tagName = QStringLiteral("v9.9.9");
+    info.htmlUrl = QStringLiteral("https://github.com/log2c/myStocks/releases/tag/v9.9.9");
+#if defined(Q_OS_MACOS)
+    const QString assetName = QStringLiteral("myStocks-9.9.9-macos.dmg");
+#elif defined(Q_OS_WIN)
+    const QString assetName = QStringLiteral("myStocks-9.9.9-windows.zip");
+#else
+    const QString assetName = QStringLiteral("myStocks-9.9.9-linux.tar.gz");
+#endif
+    info.assets.push_back({assetName,
+        QStringLiteral("https://github.com/log2c/myStocks/releases/download/v9.9.9/") + assetName,
+        1024});
+
+    Updater updater;
+    {
+        UpdateDialog dialog(info, QStringLiteral("zh_CN"), &updater);
+        auto* skip = dialog.findChild<QPushButton*>("updateSkipButton");
+        auto* update = dialog.findChild<QPushButton*>("updateButton");
+        auto* accelerated = dialog.findChild<QPushButton*>("updateAcceleratedButton");
+        auto* cancel = dialog.findChild<QPushButton*>("updateCancelButton");
+        auto* progress = dialog.findChild<QProgressBar*>("updateProgress");
+        auto* status = dialog.findChild<QLabel*>("updateStatusLabel");
+        check(skip && update && accelerated && cancel && progress && status,
+            "The update dialog must offer skip, update, mirror and cancel actions");
+        check(skip->text() == QStringLiteral("跳过") && update->text() == QStringLiteral("更新")
+                && accelerated->text() == QStringLiteral("更新（国内加速）"),
+            "The three choices must resolve to Chinese labels");
+        check(accelerated->isEnabled() && update->isEnabled() && cancel->isHidden(),
+            "Both download choices are offered before a download starts");
+        check(accelerated->toolTip().contains(QStringLiteral("gh-proxy.com")),
+            "The mirror choice must name the acceleration host");
+        check(progress->isHidden() && status->isHidden(),
+            "No progress is shown before a download starts");
+        accelerated->click();
+        events();
+        check(skip->isHidden() && update->isHidden() && accelerated->isHidden(),
+            "Starting a download must replace the choices");
+        check(!cancel->isHidden() && !progress->isHidden(),
+            "A running download must show progress and a cancel action");
+        Q_EMIT updater.downloadProgress(512, 1024);
+        events();
+        check(progress->value() == 50, "Download progress must be reflected in the bar");
+        check(status->text().contains(QStringLiteral("50")),
+            "Download progress must be reflected in the status text");
+        dialog.reject();
+        events();
+        check(progress->isHidden() && !skip->isHidden() && !accelerated->isHidden(),
+            "Cancelling must restore the choices without leaving a progress bar");
+    }
+    {
+        // Without a platform asset the dialog still lets the user skip, but
+        // offers no download that would fail immediately.
+        Updater::ReleaseInfo noAsset = info;
+        noAsset.assets.clear();
+        UpdateDialog dialog(noAsset, QStringLiteral("en_US"), &updater);
+        auto* skip = dialog.findChild<QPushButton*>("updateSkipButton");
+        auto* update = dialog.findChild<QPushButton*>("updateButton");
+        auto* accelerated = dialog.findChild<QPushButton*>("updateAcceleratedButton");
+        check(skip && skip->isEnabled(), "Skip must stay available without a platform asset");
+        check(update && !update->isEnabled() && accelerated && !accelerated->isEnabled(),
+            "Download choices must be disabled when the release has no platform asset");
+    }
+    {
+        UpdateDialog dialog(info, QStringLiteral("en_US"), &updater);
+        auto* skip = dialog.findChild<QPushButton*>("updateSkipButton");
+        check(skip && skip->text() == QStringLiteral("Skip"),
+            "The update dialog must honour the English UI language");
+    }
+}
+
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
@@ -1414,6 +1541,10 @@ int main(int argc, char** argv) {
     }
     if (app.arguments().contains("--constituent-chart-clicks")) {
         MarketBreadthConstituentInteractionTest::run();
+        return 0;
+    }
+    if (app.arguments().contains("--update-dialog")) {
+        checkUpdateDialog();
         return 0;
     }
     AppControllerStartupTest::run();

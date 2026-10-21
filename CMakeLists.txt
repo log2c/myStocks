@@ -183,6 +183,7 @@ set(MYSTOCKS_SOURCES
     src/tdx_quote_provider.cpp
     src/timeline_popup.cpp
     src/daily_kline_chart.cpp
+    src/update_dialog.cpp
     src/updater.cpp
     src/watchlist_utils.cpp
 )
@@ -210,6 +211,7 @@ set(MYSTOCKS_HEADERS
     include/daily_kline_chart.h
     include/daily_kline_indicators.h
     include/types.h
+    include/update_dialog.h
     include/updater.h
     include/watchlist_utils.h
 )
@@ -401,6 +403,15 @@ if(BUILD_TESTING)
     mystocks_enable_agl_stub(MyStocksTdxConfigTest)
     add_test(NAME tdx_config COMMAND MyStocksTdxConfigTest)
     set_tests_properties(tdx_config PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    qt_add_executable(MyStocksUpdaterTest tests/updater_test.cpp
+        src/updater.cpp src/network_utils.cpp include/updater.h)
+    target_include_directories(MyStocksUpdaterTest PRIVATE include)
+    target_compile_definitions(MyStocksUpdaterTest PRIVATE
+        APP_VERSION_STRING="${PROJECT_VERSION}"
+        APP_GITHUB_URL="https://github.com/log2c/myStocks")
+    target_link_libraries(MyStocksUpdaterTest PRIVATE Qt6::Gui Qt6::Network)
+    mystocks_enable_agl_stub(MyStocksUpdaterTest)
+    add_test(NAME updater COMMAND MyStocksUpdaterTest)
     qt_add_executable(MyStocksStartupSplashTest
         tests/startup_splash_test.cpp src/startup_splash.cpp src/i18n.cpp include/startup_splash.h)
     target_include_directories(MyStocksStartupSplashTest PRIVATE include)
@@ -441,6 +452,8 @@ if(BUILD_TESTING)
     set_tests_properties(breadth_header_click PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
     add_test(NAME breadth_timeline COMMAND MyStocksStartupFlowTest --breadth-timeline)
     set_tests_properties(breadth_timeline PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_test(NAME update_dialog COMMAND MyStocksStartupFlowTest --update-dialog)
+    set_tests_properties(update_dialog PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 20)
     set_tests_properties(startup_flow PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 30)
 
     qt_add_executable(MyStocksNetworkInterfaceTest tests/network_interface_test.cpp

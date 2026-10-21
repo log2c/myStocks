@@ -381,3 +381,30 @@ struct AppConfig {
     QRect windowRect = QRect(120, 120, 760, 280);
     QRect marketBreadthWindowRect;
 };
+
+// A selected network interface and a remote proxy are mutually exclusive: the
+// interface relay already owns routing, so both cannot be active at once. A
+// legacy file that stored both keeps the interface, which is the more specific
+// binding, and drops the proxy. Proxy host, port and credentials are retained
+// so switching back to automatic routing restores them.
+inline void normalizeNetworkSelection(AppConfig* cfg) {
+    if (!cfg) {
+        return;
+    }
+    cfg->networkInterface = cfg->networkInterface.trimmed();
+    cfg->proxyType = cfg->proxyType.trimmed().toLower();
+    if (cfg->proxyType == QLatin1String("socks")) {
+        cfg->proxyType = QStringLiteral("socks5");
+    }
+    if (cfg->proxyType != QLatin1String("none")
+        && cfg->proxyType != QLatin1String("http")
+        && cfg->proxyType != QLatin1String("socks5")) {
+        cfg->proxyType = QStringLiteral("none");
+    }
+    if (cfg->proxyPort < 0 || cfg->proxyPort > 65535) {
+        cfg->proxyPort = 0;
+    }
+    if (!cfg->networkInterface.isEmpty()) {
+        cfg->proxyType = QStringLiteral("none");
+    }
+}

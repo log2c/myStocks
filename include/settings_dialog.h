@@ -55,6 +55,9 @@ private:
 
     QWidget* buildGeneralTab();
     QWidget* buildNetworkTab();
+    // Enables the interface or proxy editors exclusively, mirroring the single
+    // outbound route the saved configuration can hold.
+    void applyNetworkSelectionState();
     QWidget* buildTdxTab();
     void loadTdxServers();
     void populateTdxServers(bool extended, const QStringList& addresses);
@@ -221,5 +224,4 @@ private:
     Updater* m_updater = nullptr;
     QPushButton* m_checkUpdateBtn = nullptr;
     QLabel* m_checkUpdateStatus = nullptr;
-    QProgressBar* m_downloadProgress = nullptr;
 };

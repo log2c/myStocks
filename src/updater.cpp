@@ -28,6 +28,10 @@ constexpr auto kGitHubApiAllReleases =
 constexpr int kCheckTimeoutMs = 15000;
 constexpr int kDownloadTimeoutMs = 300000; // 5 min
 
+// Public GitHub download mirror used by the "国内加速" choice. It accepts the
+// full github.com URL appended to the prefix.
+constexpr auto kAccelerationPrefix = "https://gh-proxy.com/";
+
 // Strip leading 'v' or 'V' from a tag name like "v1.2.3" → "1.2.3".
 QString stripVersionPrefix(const QString& tag) {
     const QString t = tag.trimmed();
@@ -220,16 +224,18 @@ void Updater::checkForUpdates() {
     });
 }
 
-void Updater::downloadAsset(const ReleaseAsset& asset) {
+void Updater::downloadAsset(const ReleaseAsset& asset, bool accelerate) {
     if (asset.browserDownloadUrl.isEmpty()) {
         emit downloadFailed(QStringLiteral("no download URL"));
         return;
     }
 
     if (m_downloadReply) {
-        m_downloadReply->abort();
-        m_downloadReply->deleteLater();
+        // Replacing an in-flight transfer is not a user cancellation.
+        QNetworkReply* previous = m_downloadReply;
         m_downloadReply = nullptr;
+        previous->abort();
+        previous->deleteLater();
     }
 
     const QString downloadDir =
@@ -237,29 +243,38 @@ void Updater::downloadAsset(const ReleaseAsset& asset) {
     QDir().mkpath(downloadDir);
     const QString destPath = QDir(downloadDir).filePath(asset.name);
 
-    QNetworkRequest req(QUrl(asset.browserDownloadUrl));
+    const QString sourceUrl = accelerate
+        ? acceleratedUrl(asset.browserDownloadUrl)
+        : asset.browserDownloadUrl;
+
+    QNetworkRequest req{QUrl(sourceUrl)};
     req.setRawHeader("User-Agent", network_utils::effectiveUserAgent(m_cfg).toUtf8());
     req.setTransferTimeout(kDownloadTimeoutMs);
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                      QNetworkRequest::NoLessSafeRedirectPolicy);
 
-    qInfo() << "[Updater] downloading" << asset.browserDownloadUrl << "->" << destPath;
-    m_downloadReply = m_nam->get(req);
+    qInfo() << "[Updater] downloading" << sourceUrl << "->" << destPath;
+    QNetworkReply* reply = m_nam->get(req);
+    m_downloadReply = reply;
 
-    connect(m_downloadReply, &QNetworkReply::downloadProgress,
-            this, [this](qint64 received, qint64 total) {
+    connect(reply, &QNetworkReply::downloadProgress,
+            this, [this, reply](qint64 received, qint64 total) {
+        if (m_downloadReply != reply) {
+            return;
+        }
         emit downloadProgress(received, total);
     });
 
-    connect(m_downloadReply, &QNetworkReply::finished, this, [this, destPath]() {
-        if (!m_downloadReply) {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, destPath]() {
+        if (m_downloadReply != reply) {
+            reply->deleteLater();
             return;
         }
-
-        const QNetworkReply::NetworkError netErr = m_downloadReply->error();
-        const QByteArray data = m_downloadReply->readAll();
-        m_downloadReply->deleteLater();
         m_downloadReply = nullptr;
+
+        const QNetworkReply::NetworkError netErr = reply->error();
+        const QByteArray data = reply->readAll();
+        reply->deleteLater();
 
         if (netErr != QNetworkReply::NoError) {
             qWarning() << "[Updater] download failed:" << netErr;
@@ -279,6 +294,34 @@ void Updater::downloadAsset(const ReleaseAsset& asset) {
         qInfo() << "[Updater] download complete" << destPath;
         emit downloadFinished(destPath);
     });
+}
+
+void Updater::cancelDownload() {
+    if (!m_downloadReply) {
+        return;
+    }
+    QNetworkReply* reply = m_downloadReply;
+    // Clear the handle first: abort() finishes the reply synchronously and the
+    // finished handler must not report an aborted transfer as a failure.
+    m_downloadReply = nullptr;
+    reply->abort();
+    reply->deleteLater();
+    emit downloadCanceled();
+}
+
+// static
+QString Updater::accelerationPrefix() {
+    return QString::fromLatin1(kAccelerationPrefix);
+}
+
+// static
+QString Updater::acceleratedUrl(const QString& url) {
+    const QString trimmed = url.trimmed();
+    if (trimmed.isEmpty() || trimmed.startsWith(accelerationPrefix(), Qt::CaseInsensitive)) {
+        return trimmed;
+    }
+    // The mirror takes the origin URL verbatim after the prefix.
+    return accelerationPrefix() + trimmed;
 }
 
 // static

@@ -7,6 +7,7 @@
 #include "network_utils.h"
 #include "tdx_bridge.h"
 #include "daily_kline_indicators.h"
+#include "update_dialog.h"
 #include "updater.h"
 #include "watchlist_utils.h"
 
@@ -729,6 +730,7 @@ AppConfig SettingsDialog::config() const {
         out.floatingWindowFontBold = m_fontBoldCheck && m_fontBoldCheck->isChecked();
     }
     out.proxyPassword = m_proxyPasswordEdit->text();
+    normalizeNetworkSelection(&out);
     out.language = m_languageCombo->currentData().toString();
 
     out.bgColor = buttonColor(m_bgBtn);
@@ -1399,6 +1401,7 @@ QWidget* SettingsDialog::buildNetworkTab() {
     m_networkInterfaceCombo->setMinimumContentsLength(28);
 
     m_proxyTypeCombo = new QComboBox(w);
+    m_proxyTypeCombo->setObjectName(QStringLiteral("proxyTypeCombo"));
     m_proxyTypeCombo->addItem(trText("settings.proxy.none"), "none");
     m_proxyTypeCombo->addItem(trText("settings.proxy.http"), "http");
     m_proxyTypeCombo->addItem(trText("settings.proxy.socks5"), "socks5");
@@ -1409,16 +1412,40 @@ QWidget* SettingsDialog::buildNetworkTab() {
     m_proxyTypeCombo->setCurrentIndex(proxyTypeIndex);
 
     m_proxyHostEdit = new QLineEdit(m_cfg.proxyHost, w);
+    m_proxyHostEdit->setObjectName(QStringLiteral("proxyHostEdit"));
 
     m_proxyPortSpin = new QSpinBox(w);
+    m_proxyPortSpin->setObjectName(QStringLiteral("proxyPortSpin"));
     m_proxyPortSpin->setRange(0, 65535);
     m_proxyPortSpin->setValue(qBound(0, m_cfg.proxyPort, 65535));
     applyNumericSpinBoxWidth(m_proxyPortSpin);
 
     m_proxyUserEdit = new QLineEdit(m_cfg.proxyUser, w);
+    m_proxyUserEdit->setObjectName(QStringLiteral("proxyUserEdit"));
 
     m_proxyPasswordEdit = new QLineEdit(m_cfg.proxyPassword, w);
+    m_proxyPasswordEdit->setObjectName(QStringLiteral("proxyPasswordEdit"));
     m_proxyPasswordEdit->setEchoMode(QLineEdit::Password);
+
+    // The interface relay and a remote proxy are alternative routes. Enabling
+    // one clears the other so the saved configuration always has a single
+    // owner of the outbound route.
+    connect(m_networkInterfaceCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        if (!m_networkInterfaceCombo->currentData().toString().isEmpty()
+            && m_proxyTypeCombo->currentIndex() != 0) {
+            m_proxyTypeCombo->setCurrentIndex(0);
+        }
+        applyNetworkSelectionState();
+    });
+    connect(m_proxyTypeCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        if (m_proxyTypeCombo->currentData().toString() != QLatin1String("none")) {
+            if (!m_networkInterfaceCombo->currentData().toString().isEmpty()) {
+                m_networkInterfaceCombo->setCurrentIndex(0);
+            }
+        }
+        applyNetworkSelectionState();
+    });
+    applyNetworkSelectionState();
 
     form->addRow(trText("settings.general.quoteSource"), m_quoteSourceCombo);
     form->addRow(trText("settings.network.interface"), m_networkInterfaceCombo);
@@ -1431,6 +1458,30 @@ QWidget* SettingsDialog::buildNetworkTab() {
     form->addRow(trText("settings.general.proxyPassword"), m_proxyPasswordEdit);
 
     return w;
+}
+
+void SettingsDialog::applyNetworkSelectionState() {
+    const bool proxyActive =
+        m_proxyTypeCombo->currentData().toString() != QLatin1String("none");
+    const bool interfaceActive = !m_networkInterfaceCombo->currentData().toString().isEmpty();
+
+    m_networkInterfaceCombo->setEnabled(!proxyActive);
+    for (QWidget* widget : {static_cast<QWidget*>(m_proxyTypeCombo),
+                            static_cast<QWidget*>(m_proxyHostEdit),
+                            static_cast<QWidget*>(m_proxyPortSpin),
+                            static_cast<QWidget*>(m_proxyUserEdit),
+                            static_cast<QWidget*>(m_proxyPasswordEdit)}) {
+        widget->setEnabled(!interfaceActive);
+    }
+
+    if (proxyActive) {
+        m_networkInterfaceCombo->setToolTip(trText("settings.network.interfaceDisabledByProxy"));
+    } else if (interfaceActive) {
+        m_proxyTypeCombo->setToolTip(trText("settings.proxy.disabledByInterface"));
+    } else {
+        m_networkInterfaceCombo->setToolTip(trText("settings.network.interfaceHint"));
+        m_proxyTypeCombo->setToolTip(QString());
+    }
 }
 
 QWidget* SettingsDialog::buildDisplayTab() {
@@ -2984,6 +3035,7 @@ void SettingsDialog::doStockSearch(bool forceSearch) {
         searchConfig.proxyPort = m_proxyPortSpin->value();
         searchConfig.proxyUser = m_proxyUserEdit->text();
         searchConfig.proxyPassword = m_proxyPasswordEdit->text();
+        normalizeNetworkSelection(&searchConfig);
         m_stockSuggestList->clear();
         m_stockSuggestList->hide();
         m_stockSearchStatus->setText(trText("settings.tdx.searchLoading"));
@@ -3443,12 +3495,6 @@ QWidget* SettingsDialog::buildAboutTab() {
     m_checkUpdateStatus->setWordWrap(true);
     vbox->addWidget(m_checkUpdateStatus);
 
-    m_downloadProgress = new QProgressBar(w);
-    m_downloadProgress->setRange(0, 100);
-    m_downloadProgress->setFixedWidth(300);
-    m_downloadProgress->setVisible(false);
-    vbox->addWidget(m_downloadProgress, 0, Qt::AlignCenter);
-
     // --- Updater setup ---
     m_updater = new Updater(this);
     m_updater->setConfig(m_cfg);
@@ -3456,7 +3502,6 @@ QWidget* SettingsDialog::buildAboutTab() {
     connect(m_checkUpdateBtn, &QPushButton::clicked, this, [this]() {
         m_checkUpdateBtn->setEnabled(false);
         m_checkUpdateStatus->setText(trText("settings.about.checking"));
-        m_downloadProgress->setVisible(false);
         m_updater->setConfig(config());
         m_updater->checkForUpdates();
     });
@@ -3477,68 +3522,14 @@ QWidget* SettingsDialog::buildAboutTab() {
             m_checkUpdateStatus->setText(
                 trText("settings.about.updateAvailable").arg(info.tagName)
             );
-
-            const Updater::ReleaseAsset asset = info.platformAsset();
-            const bool hasAsset = !asset.browserDownloadUrl.isEmpty();
-
-            QMessageBox msgBox(this);
-            msgBox.setWindowTitle(trText("settings.about.updateAvailableTitle"));
-            msgBox.setText(
-                trText("settings.about.updateAvailableMsg").arg(info.tagName)
-            );
-            const QIcon windowIcon = dialogWindowIcon(this);
-            if (!windowIcon.isNull()) {
-                msgBox.setWindowIcon(windowIcon);
-            }
-            msgBox.setIcon(QMessageBox::Information);
-
-            QPushButton* openPageBtn = msgBox.addButton(
-                trText("settings.about.openReleasePage"), QMessageBox::ActionRole
-            );
-            QPushButton* downloadBtn = nullptr;
-            if (hasAsset) {
-                downloadBtn = msgBox.addButton(
-                    trText("settings.about.download"), QMessageBox::AcceptRole
-                );
-            }
-            msgBox.addButton(QMessageBox::Cancel);
-
-            msgBox.exec();
-
-            if (msgBox.clickedButton() == openPageBtn) {
-                QDesktopServices::openUrl(QUrl(info.htmlUrl));
-            } else if (downloadBtn && msgBox.clickedButton() == downloadBtn) {
-                m_checkUpdateBtn->setEnabled(false);
-                m_downloadProgress->setValue(0);
-                m_downloadProgress->setVisible(true);
-                m_checkUpdateStatus->setText(trText("settings.about.downloading").arg(0));
-                m_updater->downloadAsset(asset);
+            // The dialog owns download progress and the acceleration choice.
+            UpdateDialog dialog(info, m_uiLanguage, m_updater, this);
+            dialog.exec();
+            if (!dialog.downloadedPath().isEmpty()) {
+                m_checkUpdateStatus->setText(trText("settings.about.downloadDone"));
             }
         }
     );
-
-    connect(m_updater, &Updater::downloadProgress, this,
-        [this](qint64 received, qint64 total) {
-            if (total > 0) {
-                const int pct = static_cast<int>(received * 100 / total);
-                m_downloadProgress->setValue(pct);
-                m_checkUpdateStatus->setText(trText("settings.about.downloading").arg(pct));
-            }
-        }
-    );
-
-    connect(m_updater, &Updater::downloadFinished, this, [this](const QString& filePath) {
-        m_checkUpdateBtn->setEnabled(true);
-        m_downloadProgress->setVisible(false);
-        m_checkUpdateStatus->setText(trText("settings.about.downloadDone"));
-        QDesktopServices::openUrl(QUrl::fromLocalFile(filePath));
-    });
-
-    connect(m_updater, &Updater::downloadFailed, this, [this](const QString&) {
-        m_checkUpdateBtn->setEnabled(true);
-        m_downloadProgress->setVisible(false);
-        m_checkUpdateStatus->setText(trText("settings.about.downloadFailed"));
-    });
 
     vbox->addStretch();
     return w;

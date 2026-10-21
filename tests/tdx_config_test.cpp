@@ -101,11 +101,38 @@ int main(int argc, char** argv) {
         "Route bootstrap must use saved selections without loading the full configuration");
     check(connection.networkInterface == cfg.networkInterface && loaded.networkInterface == cfg.networkInterface,
         "Selected network interface must persist and be available before route preparation");
-    check(connection.proxyType == cfg.proxyType && connection.proxyPort == cfg.proxyPort,
-        "Route bootstrap must use the saved proxy");
+    check(connection.proxyType == "none" && loaded.proxyType == "none",
+        "A selected interface and a proxy are mutually exclusive; the interface must win");
+    check(loaded.proxyHost == cfg.proxyHost && loaded.proxyPort == cfg.proxyPort,
+        "Proxy host and port must be retained so automatic routing can restore the proxy");
     check(connection.pollMs != cfg.pollMs && loaded.pollMs == cfg.pollMs,
         "Full configuration must be deferred until route preparation finishes");
     check(loaded.quoteSource == "tdx", "Disabled EastMoney setting must load as TDX");
+    {
+        // A legacy file that stored both routes keeps the interface and drops
+        // the proxy instead of failing or silently sending traffic twice.
+        QSettings legacy(path, QSettings::IniFormat);
+        legacy.setValue(QStringLiteral("cfg/networkInterface"), QStringLiteral("legacy-adapter"));
+        legacy.setValue(QStringLiteral("cfg/proxyType"), QStringLiteral("socks5"));
+        legacy.setValue(QStringLiteral("cfg/proxyHost"), QStringLiteral("proxy.example"));
+        legacy.setValue(QStringLiteral("cfg/proxyPort"), 1080);
+        legacy.sync();
+        const AppConfig migrated = ConfigManager::loadConfig();
+        check(migrated.networkInterface == "legacy-adapter" && migrated.proxyType == "none"
+                && migrated.proxyHost == "proxy.example" && migrated.proxyPort == 1080,
+            "Legacy files with both routes must keep the interface and retain proxy details");
+        legacy.setValue(QStringLiteral("cfg/networkInterface"), QString());
+        legacy.sync();
+        const AppConfig proxyOnly = ConfigManager::loadConfig();
+        check(proxyOnly.proxyType == "socks5" && proxyOnly.proxyHost == "proxy.example"
+                && proxyOnly.proxyPort == 1080,
+            "Clearing the interface must make the stored proxy active again");
+        legacy.remove(QStringLiteral("cfg/networkInterface"));
+        legacy.remove(QStringLiteral("cfg/proxyType"));
+        legacy.remove(QStringLiteral("cfg/proxyHost"));
+        legacy.remove(QStringLiteral("cfg/proxyPort"));
+        legacy.sync();
+    }
     QTemporaryDir temp;
     const QString yaml = temp.filePath("mixed.yaml");
     check(ConfigManager::saveDataYamlText(yaml, "ver: 1\nstocks:\n  - code: 90.BK0420\n    name: Legacy\n  - code: tdx:main:0:000001\n    name: Active\ngroups:\n  - name: Mixed\n    stocks: [90.BK0420, 'tdx:main:0:000001']\n"), "Could not prepare mixed-source data");

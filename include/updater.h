@@ -33,7 +33,15 @@ public:
 
     void setConfig(const AppConfig& cfg);
     void checkForUpdates();
-    void downloadAsset(const ReleaseAsset& asset);
+    // `accelerate` fetches the asset through the public gh-proxy.com mirror,
+    // which is reachable from mainland China when github.com is not.
+    void downloadAsset(const ReleaseAsset& asset, bool accelerate = false);
+    void cancelDownload();
+
+    // Returns `url` routed through the acceleration mirror. An empty URL stays
+    // empty and an already accelerated URL is returned unchanged.
+    static QString acceleratedUrl(const QString& url);
+    static QString accelerationPrefix();
 
 signals:
     void updateAvailable(const Updater::ReleaseInfo& info);
@@ -42,6 +50,7 @@ signals:
     void downloadProgress(qint64 bytesReceived, qint64 bytesTotal);
     void downloadFinished(const QString& filePath);
     void downloadFailed(const QString& error);
+    void downloadCanceled();
 
 private:
     // Returns true if remoteTag represents a newer version than currentVersion.
