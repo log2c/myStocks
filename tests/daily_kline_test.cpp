@@ -1,6 +1,7 @@
 #include "daily_kline_chart.h"
 #include "tdx_bridge.h"
 #include "daily_kline_indicators.h"
+#include "kline_popup_geometry.h"
 #include <QApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -478,6 +479,20 @@ int main(int argc, char** argv) {
     check(timeline.grab().toImage().pixelColor(300, 180) == commonBackground,
         "A filled gap must stop shading the chart");
     control(timeline, false);
+    // The K-line detail window only resizes proportionally.
+    const QSize popupBase(kline_popup::kDefaultWidth, kline_popup::kDefaultHeight);
+    check(kline_popup::normalizedSize(QSize(800, 360), popupBase) == QSize(800, 514),
+        "Widening the K-line window must grow its height proportionally");
+    check(kline_popup::normalizedSize(QSize(560, 500), popupBase) == QSize(778, 500),
+        "Heightening the K-line window must grow its width proportionally");
+    check(kline_popup::normalizedSize(QSize(300, 200), popupBase) == popupBase,
+        "The K-line window must not shrink below its default footprint");
+    for (const QSize& requested : {QSize(700, 420), QSize(900, 600), QSize(1200, 900)}) {
+        const QSize normalized = kline_popup::normalizedSize(requested, popupBase);
+        const qreal ratio = static_cast<qreal>(normalized.width()) / normalized.height();
+        check(std::abs(ratio - static_cast<qreal>(popupBase.width()) / popupBase.height()) < 0.01,
+            "Every K-line window size must preserve the default aspect ratio");
+    }
     // Optional actual-data screenshot, used for visual verification without networking.
     if (argc > 2) {
         timeline.resize(560, 360);

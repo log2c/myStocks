@@ -2,6 +2,7 @@
 
 #include "app_constants.h"
 #include "i18n.h"
+#include "kline_popup_geometry.h"
 #include "network_utils.h"
 #include "right_click_close.h"
 #include "watchlist_utils.h"
@@ -51,9 +52,9 @@
 
 namespace {
 
-inline constexpr int kTimelinePopupFixedWidth = 560;
-inline constexpr int kTimelinePopupFixedHeight = 360;
-inline constexpr int kTimelinePopupScreenMarginPx = 12;
+inline constexpr int kTimelinePopupFixedWidth = kline_popup::kDefaultWidth;
+inline constexpr int kTimelinePopupFixedHeight = kline_popup::kDefaultHeight;
+inline constexpr int kTimelinePopupScreenMarginPx = kline_popup::kScreenMarginPx;
 
 #if defined(Q_OS_MACOS)
 static void* macWindowHandleForWidget(const QWidget* widget) {
@@ -1499,6 +1500,41 @@ private:
     bool m_showTitle = true;
 };
 
+// A small corner handle above the chart. It claims its own mouse events so the
+// resize drag does not reach the timeline hover or the daily K-line overlay.
+class KlineResizeGrip : public QWidget {
+public:
+    explicit KlineResizeGrip(QWidget* parent = nullptr) : QWidget(parent) {
+        setObjectName(QStringLiteral("klineResizeGrip"));
+        setCursor(Qt::SizeFDiagCursor);
+        setAttribute(Qt::WA_NoSystemBackground, true);
+        setAutoFillBackground(false);
+    }
+
+    void setGripColor(const QColor& color) {
+        if (m_color == color) return;
+        m_color = color;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        const QRect grip = rect().adjusted(5, 5, -4, -4);
+        QColor color = m_color;
+        color.setAlpha(150);
+        painter.setPen(QPen(color, 1.1, Qt::SolidLine, Qt::RoundCap));
+        for (int offset : {12, 8, 4}) {
+            painter.drawLine(QPoint(grip.right() - offset, grip.bottom()),
+                QPoint(grip.right(), grip.bottom() - offset));
+        }
+    }
+
+private:
+    QColor m_color = QColor(236, 240, 245);
+};
+
 } // namespace
 
 bool isTimelinePopupSupportedCode(const QString& rawCode) {
@@ -1590,6 +1626,9 @@ public:
         m_dailyChart = new DailyKlineChart(m_chart);
         layout->addWidget(m_periodBar);
         layout->addWidget(m_chart, 1);
+        m_resizeGrip = new KlineResizeGrip(this);
+        m_resizeGrip->installEventFilter(this);
+        m_resizeGrip->hide();
 
         m_refreshTimer = new QTimer(this);
         connect(m_refreshTimer, &QTimer::timeout, this, [this]() {
@@ -1640,6 +1679,7 @@ public:
 
     void hidePopup() {
         ++m_requestToken;
+        m_resizing = false;
         stopRefreshTimer();
         if (m_reply) {
             QNetworkReply* pendingReply = m_reply;
@@ -1659,7 +1699,37 @@ public:
     bool isDetailWindow() const { return m_detailMode; }
 
 protected:
+    void resizeEvent(QResizeEvent* event) override {
+        QWidget::resizeEvent(event);
+        updateResizeGripGeometry();
+    }
+
     bool eventFilter(QObject* watched, QEvent* event) override {
+        if (watched == m_resizeGrip) {
+            if (event->type() == QEvent::MouseButtonPress) {
+                auto* mouse = static_cast<QMouseEvent*>(event);
+                if (mouse->button() == Qt::LeftButton) {
+                    m_resizing = true;
+                    m_resizeStartGlobalPos = mouse->globalPosition().toPoint();
+                    m_resizeStartSize = size();
+                    return true;
+                }
+            } else if (event->type() == QEvent::MouseMove) {
+                auto* mouse = static_cast<QMouseEvent*>(event);
+                if (m_resizing && (mouse->buttons() & Qt::LeftButton)) {
+                    applyResizeFromGlobalPos(mouse->globalPosition().toPoint());
+                    return true;
+                }
+            } else if (event->type() == QEvent::MouseButtonRelease) {
+                auto* mouse = static_cast<QMouseEvent*>(event);
+                if (mouse->button() == Qt::LeftButton && m_resizing) {
+                    m_resizing = false;
+                    m_popupSize = size();
+                    return true;
+                }
+            }
+            return QWidget::eventFilter(watched, event);
+        }
         const bool isPeriodControl = watched == m_periodBar
             || (m_periodGroup && m_periodGroup->buttons().contains(qobject_cast<QAbstractButton*>(watched)))
             || watched == m_stockLabel
@@ -1700,6 +1770,66 @@ protected:
     }
 
 private:
+    void updateResizeGripGeometry() {
+        if (!m_resizeGrip) return;
+        m_resizeGrip->setGeometry(
+            qMax(0, width() - kline_popup::kResizeGripSizePx),
+            qMax(0, height() - kline_popup::kResizeGripSizePx),
+            kline_popup::kResizeGripSizePx,
+            kline_popup::kResizeGripSizePx
+        );
+        m_resizeGrip->raise();
+    }
+
+    // Drag the corner: whichever axis moved further from the start determines
+    // the scale, and the other axis follows the fixed default aspect ratio.
+    void applyResizeFromGlobalPos(const QPoint& globalPos) {
+        if (!m_resizing || !m_resizeStartSize.isValid()) return;
+        const QPoint delta = globalPos - m_resizeStartGlobalPos;
+        const qreal widthScale = static_cast<qreal>(m_resizeStartSize.width() + delta.x())
+            / static_cast<qreal>(m_resizeStartSize.width());
+        const qreal heightScale = static_cast<qreal>(m_resizeStartSize.height() + delta.y())
+            / static_cast<qreal>(m_resizeStartSize.height());
+        qreal scale = (std::fabs(widthScale - 1.0) >= std::fabs(heightScale - 1.0))
+            ? widthScale
+            : heightScale;
+        if (!std::isfinite(scale) || scale <= 0.0) return;
+
+        QRect screenRect;
+        if (QScreen* screen = QGuiApplication::screenAt(frameGeometry().center())) {
+            screenRect = screen->availableGeometry();
+        } else if (QScreen* screen = QGuiApplication::primaryScreen()) {
+            screenRect = screen->availableGeometry();
+        }
+        if (screenRect.isValid()) {
+            // Growing past the screen would push the price axis and the grip
+            // out of reach, so cap the size to the room right and below the
+            // window's fixed top-left corner.
+            const QRect frame = frameGeometry();
+            const int roomWidth = screenRect.right() - frame.left()
+                - kline_popup::kScreenMarginPx + 1;
+            const int roomHeight = screenRect.bottom() - frame.top()
+                - kline_popup::kScreenMarginPx + 1;
+            const qreal maxWidthScale = static_cast<qreal>(qMax(
+                kline_popup::kDefaultWidth, roomWidth))
+                / static_cast<qreal>(m_resizeStartSize.width());
+            const qreal maxHeightScale = static_cast<qreal>(qMax(
+                kline_popup::kDefaultHeight, roomHeight))
+                / static_cast<qreal>(m_resizeStartSize.height());
+            scale = qMin(scale, qMin(maxWidthScale, maxHeightScale));
+        }
+
+        const QSize requested(
+            qRound(static_cast<qreal>(m_resizeStartSize.width()) * scale),
+            qRound(static_cast<qreal>(m_resizeStartSize.height()) * scale)
+        );
+        const QSize normalized = kline_popup::normalizedSize(requested, m_resizeStartSize);
+        if (normalized != size()) {
+            resize(normalized);
+            m_popupSize = normalized;
+        }
+    }
+
     void showForStockInternal(
         const QString& code,
         const QString& name,
@@ -1720,6 +1850,8 @@ private:
         setProperty("chartCode", m_code);
         m_cost = cost;
         m_periodBar->setVisible(detail);
+        m_resizeGrip->setVisible(detail);
+        updateResizeGripGeometry();
         updateDetailButtonTexts();
         updateStockLabel();
         applyDetailBarStyle();
@@ -1731,10 +1863,10 @@ private:
             m_hongKongHalfDayDate = QDate();
         }
 
-        // Keep the detailed chart on the same footprint as the existing
-        // intraday/daily popup; the period bar consumes part of the chart area.
-        const int popupWidth = kTimelinePopupFixedWidth;
-        const int popupHeight = kTimelinePopupFixedHeight;
+        // A resized detail window keeps its proportional size for later stocks;
+        // an untouched one starts on the default footprint.
+        const int popupWidth = m_popupSize.width();
+        const int popupHeight = m_popupSize.height();
         resize(popupWidth, popupHeight);
 
         QRect targetRect(anchorRect.topRight() + QPoint(12, 0), size());
@@ -1856,6 +1988,7 @@ private:
         ).arg(textRgb);
 #endif
         m_periodBar->setStyleSheet(style);
+        if (m_resizeGrip) m_resizeGrip->setGripColor(m_cfg.timelineChartTextColor);
     }
 
     void selectDetailMode(int mode, bool userInitiated = true) {
@@ -2137,6 +2270,11 @@ private:
     QLabel* m_stockLabel = nullptr;
     TimelineChartWidget* m_chart = nullptr;
     DailyKlineChart* m_dailyChart = nullptr;
+    KlineResizeGrip* m_resizeGrip = nullptr;
+    QSize m_popupSize{kline_popup::kDefaultWidth, kline_popup::kDefaultHeight};
+    bool m_resizing = false;
+    QPoint m_resizeStartGlobalPos;
+    QSize m_resizeStartSize;
     QTimer* m_refreshTimer = nullptr;
     QNetworkAccessManager m_nam;
     QNetworkReply* m_reply = nullptr;
