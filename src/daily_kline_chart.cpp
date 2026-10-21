@@ -428,10 +428,6 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
             headerMetrics.elidedText(title, Qt::ElideRight, headerRect.width()));
     }
     if (!m_status.isEmpty() || m_bars.isEmpty()) {
-        if (!showStockTitle) {
-            p.drawText(headerRect, Qt::AlignRight | Qt::AlignVCenter,
-                headerMetrics.elidedText(titleBody, Qt::ElideRight, headerRect.width()));
-        }
         p.drawText(bounds.adjusted(0, 28, 0, 0), Qt::AlignCenter | Qt::TextWordWrap, m_status);
         return;
     }
@@ -439,7 +435,9 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
     if (!showStockTitle) {
         // Statistics follow the crosshair: the hovered candle, or the newest
         // one on screen when the pointer is elsewhere. A panned view reports
-        // its own right edge rather than a candle the user cannot see.
+        // its own right edge rather than a candle the user cannot see. The
+        // period bar already names the period, so no "* periods" label shares
+        // this row.
         const int lastVisible = qBound(0, visibleStart + visibleCount - 1, total - 1);
         const int statIndex = (m_hoverIndex >= visibleStart && m_hoverIndex < visibleStart + visibleCount)
             ? m_hoverIndex
@@ -464,15 +462,8 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
                 std::isfinite(amplitude) ? QStringLiteral("%1%").arg(QString::number(amplitude, 'f', 2))
                                          : QStringLiteral("--"))
             .arg(i18n::t("popup.kline.hoverMarketCap", language), daily_kline::formatAmount(marketValue));
-        const int periodWidth = qMin(headerRect.width(), headerMetrics.horizontalAdvance(titleBody));
-        const int gap = headerMetrics.horizontalAdvance(QStringLiteral("  "));
-        const int statsRoom = qMax(0, headerRect.width() - periodWidth - gap);
-        p.drawText(QRect(headerRect.left(), headerRect.top(), statsRoom, headerRect.height()),
-            Qt::AlignLeft | Qt::AlignVCenter,
-            headerMetrics.elidedText(stats, Qt::ElideRight, statsRoom));
-        p.drawText(QRect(headerRect.right() - periodWidth + 1, headerRect.top(), periodWidth,
-                headerRect.height()),
-            Qt::AlignRight | Qt::AlignVCenter, titleBody);
+        p.drawText(headerRect, Qt::AlignLeft | Qt::AlignVCenter,
+            headerMetrics.elidedText(stats, Qt::ElideRight, headerRect.width()));
     }
 
     QMap<int, QVector<double>> averages;
