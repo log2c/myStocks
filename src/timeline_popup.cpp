@@ -1286,16 +1286,20 @@ protected:
                 + (w4 > 0 ? gap + w4 : 0)
                 + (w5 > 0 ? gap + w5 : 0);
             const bool hasBreakevenGainText = breakevenGainTotalWidth > 0;
-            const QRect& marketInfoRect = hasBreakevenGainText ? breakevenGainRect : priceRect;
+            // In the detail window the price readout stays on the first header
+            // line; the breakeven hint keeps its own second line on the right.
+            // The hover popup has no period bar and keeps its original split.
+            const bool priceOnBreakevenLine = m_showTitle && hasBreakevenGainText;
+            const QRect& marketInfoRect = priceOnBreakevenLine ? breakevenGainRect : priceRect;
             const int titleAdvance = m_showTitle
                 ? fm.horizontalAdvance(m_title + QStringLiteral("  "))
                 : 0;
-            const int rightReserve = hasBreakevenGainText
+            const int rightReserve = priceOnBreakevenLine
                 ? (breakevenGainTotalWidth + gap)
                 : (hasCostProfitText ? (costProfitTotalWidth + gap) : 0);
             const int availableWidth = qMax(0, marketInfoRect.width() - rightReserve);
             const int contentRight = marketInfoRect.right() - rightReserve;
-            int x = hasBreakevenGainText
+            int x = priceOnBreakevenLine
                 ? marketInfoRect.left()
                 : ((titleAdvance + totalW + 4 <= marketInfoRect.width())
                     && (titleAdvance + totalW + 4 <= availableWidth)
