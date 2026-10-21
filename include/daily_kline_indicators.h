@@ -70,6 +70,14 @@ inline ViewWindow panView(const ViewWindow& view, int total, double deltaBars,
     return clampView({qRound(view.start + deltaBars), view.count}, total, minCount);
 }
 
+// macOS reports trackpad magnification as a small fraction per event. Scaling
+// it brings a pinch to roughly the same zoom rate as one mouse-wheel notch,
+// and the sign matches the wheel: pinch out (positive) zooms in.
+inline double pinchZoomFactor(double magnification) {
+    if (!std::isfinite(magnification) || magnification == 0.0) return 1.0;
+    return std::pow(0.9, qBound(-1.0, magnification * 10.0, 1.0));
+}
+
 // Pick the window for a freshly loaded series. A user who panned or zoomed
 // keeps that window anchored to the right edge, so a refresh appends candles
 // instead of snapping the chart back to the newest one.

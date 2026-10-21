@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QNativeGestureEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPolygonF>
@@ -146,6 +147,16 @@ bool DailyKlineChart::eventFilter(QObject* watched, QEvent* event) {
                     zoomAt(wheel->position().toPoint(), std::pow(0.9, qBound(-1.0, m_wheelSteps, 1.0)));
                     m_wheelSteps = 0.0;
                 }
+                return true;
+            }
+        } else if (event->type() == QEvent::NativeGesture && isVisible()) {
+            // A Mac trackpad pinch arrives as a native zoom gesture on the
+            // widget under the cursor. Qt reports the magnification increment
+            // in value(); positive means pinch out, i.e. zoom in.
+            const auto* gesture = static_cast<QNativeGestureEvent*>(event);
+            if (gesture->gestureType() == Qt::ZoomNativeGesture) {
+                const double factor = daily_kline::pinchZoomFactor(gesture->value());
+                if (factor != 1.0) zoomAt(gesture->position().toPoint(), factor);
                 return true;
             }
         } else if (event->type() == QEvent::Leave && m_hoverIndex >= 0) {

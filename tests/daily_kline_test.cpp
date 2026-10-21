@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QNativeGestureEvent>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QFile>
@@ -194,6 +195,12 @@ int main(int argc, char** argv) {
         "An empty series must produce an empty view instead of a phantom candle");
     check(daily_kline::zoomView({249, 60}, 309, 279.0, 100.0).count == 309,
         "Zooming out must stop at the loaded history");
+    check(daily_kline::pinchZoomFactor(0.0) == 1.0
+        && daily_kline::pinchZoomFactor(0.1) < 1.0
+        && daily_kline::pinchZoomFactor(-0.1) > 1.0
+        && daily_kline::pinchZoomFactor(10.0) == std::pow(0.9, 1.0)
+        && daily_kline::pinchZoomFactor(-10.0) == std::pow(0.9, -1.0),
+        "Trackpad magnification must map to the wheel's zoom direction and rate");
     check(daily_kline::clampView({-20, 5000}, 309).start == 0
         && daily_kline::clampView({-20, 5000}, 309).count == 309,
         "A stale view must be clamped to the loaded bars after a reload");
@@ -370,6 +377,28 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 80; ++i) wheel(plotCenter, -120);
     check(daily->property("viewCount").toInt() == 300,
         "Zooming out must stop at the loaded history instead of the configured range");
+    // A Mac trackpad pinch reaches the chart as a native zoom gesture, with the
+    // magnification increment in value().
+    const auto pinch = [&](double magnification, const QPoint& pos) {
+        QNativeGestureEvent gesture(Qt::ZoomNativeGesture, QPointingDevice::primaryPointingDevice(), 2,
+            QPointF(pos), QPointF(pos), QPointF(timeline.mapToGlobal(pos)),
+            magnification, QPointF());
+        QApplication::sendEvent(&timeline, &gesture);
+    };
+    const int beforePinch = daily->property("viewCount").toInt();
+    pinch(0.12, plotCenter);
+    const int pinchedIn = daily->property("viewCount").toInt();
+    check(pinchedIn < beforePinch && pinchedIn >= daily_kline::kMinViewCount,
+        "Pinching out must zoom in to fewer candles");
+    pinch(-0.12, plotCenter);
+    check(daily->property("viewCount").toInt() > pinchedIn,
+        "Pinching in must zoom back out");
+    pinch(0.0, plotCenter);
+    check(daily->property("viewCount").toInt() == 300,
+        "A zero-magnification gesture must leave the view untouched");
+    for (int i = 0; i < 40; ++i) pinch(0.2, plotCenter);
+    check(daily->property("viewCount").toInt() == daily_kline::kMinViewCount,
+        "Pinching in must honour the readable minimum");
     daily->setPinnedDaily(false);
     check(daily->isHidden() && timeline.cursor().shape() == Qt::ArrowCursor,
         "Leaving daily mode must restore the normal cursor");
