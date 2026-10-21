@@ -780,6 +780,9 @@ AppConfig ConfigManager::loadConfig() {
         "ui/timelineChartFixedRangeEnabled",
         cfg.timelineChartFixedRangeEnabled
     ).toBool();
+    cfg.timelineChartCandleStyle = normalizeTimelineCandleStyle(
+        s.value("ui/timelineChartCandleStyle", cfg.timelineChartCandleStyle).toString()
+    );
     cfg.timelineChartBgColor = s.value(
         "ui/timelineChartBgColor",
         cfg.timelineChartBgColor
@@ -1084,6 +1087,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue("ui/marketBreadthEnabled", cfg.marketBreadthEnabled);
     s.setValue("ui/marketBreadthRefreshSecs", qBound(10, cfg.marketBreadthRefreshSecs, 3600));
     s.setValue("ui/timelineChartFixedRangeEnabled", cfg.timelineChartFixedRangeEnabled);
+    s.setValue("ui/timelineChartCandleStyle", normalizeTimelineCandleStyle(cfg.timelineChartCandleStyle));
     s.setValue("ui/timelineChartBgColor", cfg.timelineChartBgColor);
     s.setValue("ui/timelineChartGridColor", cfg.timelineChartGridColor);
     s.setValue("ui/timelineChartPriceLineColor", cfg.timelineChartPriceLineColor);

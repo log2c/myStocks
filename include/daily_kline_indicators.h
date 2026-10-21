@@ -97,6 +97,12 @@ inline double candleWidth(double slot) {
     return qBound(1.0, slot * 0.7, 24.0);
 }
 
+// The hollow style leaves rising bodies empty and fills falling ones; the
+// solid style fills both with their rise or fall color.
+inline bool candleBodyFilled(const QString& style, double open, double close) {
+    return normalizeTimelineCandleStyle(style) == QLatin1String("solid") || !(close > open);
+}
+
 // Amounts are yuan, and Chinese market figures are read in 万/亿/万亿 rather
 // than raw digits. Two decimals keep a hovered bar's turnover comparable.
 inline QString formatAmount(double value) {

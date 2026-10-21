@@ -777,6 +777,9 @@ AppConfig SettingsDialog::config() const {
     out.marketBreadthRefreshSecs = m_marketBreadthRefreshSecsSpin
         ? qBound(10, m_marketBreadthRefreshSecsSpin->value(), 3600)
         : out.marketBreadthRefreshSecs;
+    out.timelineChartCandleStyle = m_timelineChartCandleStyleCombo
+        ? normalizeTimelineCandleStyle(m_timelineChartCandleStyleCombo->currentData().toString())
+        : out.timelineChartCandleStyle;
     out.timelineChartFixedRangeEnabled = m_timelineChartFixedRangeCheck
         ? m_timelineChartFixedRangeCheck->isChecked()
         : out.timelineChartFixedRangeEnabled;
@@ -1847,6 +1850,21 @@ QWidget* SettingsDialog::buildDisplayTab() {
         ++maIndex;
     }
     timelineForm->addRow(trText("settings.display.dailyMA"), dailyMARow);
+
+    m_timelineChartCandleStyleCombo = new QComboBox(w);
+    m_timelineChartCandleStyleCombo->setObjectName(QStringLiteral("timelineChartCandleStyleCombo"));
+    m_timelineChartCandleStyleCombo->addItem(
+        trText("settings.display.timelineCandleStyleHollow"), QStringLiteral("hollow"));
+    m_timelineChartCandleStyleCombo->addItem(
+        trText("settings.display.timelineCandleStyleSolid"), QStringLiteral("solid"));
+    int candleStyleIndex = m_timelineChartCandleStyleCombo->findData(
+        normalizeTimelineCandleStyle(m_cfg.timelineChartCandleStyle));
+    if (candleStyleIndex < 0) {
+        candleStyleIndex = m_timelineChartCandleStyleCombo->findData(QStringLiteral("hollow"));
+    }
+    m_timelineChartCandleStyleCombo->setCurrentIndex(candleStyleIndex);
+    timelineForm->addRow(
+        trText("settings.display.timelineCandleStyle"), m_timelineChartCandleStyleCombo);
 
     m_timelineChartFixedRangeCheck = new QCheckBox(trText("settings.display.timelineFixedRange"), w);
     m_timelineChartFixedRangeCheck->setChecked(m_cfg.timelineChartFixedRangeEnabled);

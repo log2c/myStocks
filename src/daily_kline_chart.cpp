@@ -548,7 +548,8 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
         const auto& bar = m_bars[i];
         const QColor color = bar.close >= bar.open ? m_cfg.timelineChartUpColor : m_cfg.timelineChartDownColor;
         p.setPen(QPen(color, 1));
-        p.setBrush(bar.close > bar.open ? Qt::NoBrush : QBrush(color));
+        p.setBrush(daily_kline::candleBodyFilled(m_cfg.timelineChartCandleStyle, bar.open, bar.close)
+            ? QBrush(color) : QBrush(Qt::NoBrush));
         p.drawLine(QPointF(x(i), y(bar.high)), QPointF(x(i), y(bar.low)));
         const double top = std::min(y(bar.open), y(bar.close));
         p.drawRect(QRectF(x(i) - candleWidth / 2, top, candleWidth,

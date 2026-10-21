@@ -212,6 +212,13 @@ int main(int argc, char** argv) {
     check(std::abs(daily_kline::candleWidth(8.0) - 5.6) < 1e-8
         && daily_kline::candleWidth(80.0) == 24.0,
         "Sparse daily histories must use readable but bounded candle widths");
+    check(!daily_kline::candleBodyFilled(QStringLiteral("hollow"), 4.1, 4.2)
+        && daily_kline::candleBodyFilled(QStringLiteral("hollow"), 4.2, 4.1)
+        && daily_kline::candleBodyFilled(QStringLiteral("hollow"), 4.2, 4.2)
+        && daily_kline::candleBodyFilled(QStringLiteral("solid"), 4.1, 4.2)
+        && daily_kline::candleBodyFilled(QStringLiteral("solid"), 4.2, 4.1)
+        && !daily_kline::candleBodyFilled(QStringLiteral("diagonal"), 4.1, 4.2),
+        "Hollow candles must only fill falling bodies; solid candles fill both directions");
     // Header statistics: amount formatting, amplitude against the previous
     // close, and market value from the 10k-share count.
     check(daily_kline::formatAmount(2.4e8) == QStringLiteral("2.40亿")
@@ -399,6 +406,28 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 40; ++i) pinch(0.2, plotCenter);
     check(daily->property("viewCount").toInt() == daily_kline::kMinViewCount,
         "Pinching in must honour the readable minimum");
+    // Solid candle bodies must visibly fill rising candles that the default
+    // hollow style leaves empty.
+    const auto countUpPixels = [](const QImage& image) {
+        int count = 0;
+        const QColor upColor = AppConfig{}.timelineChartUpColor;
+        for (int y = 0; y < image.height(); ++y) {
+            for (int x = 0; x < image.width(); ++x) {
+                if (image.pixelColor(x, y) == upColor) ++count;
+            }
+        }
+        return count;
+    };
+    cfg.timelineChartCandleStyle = QStringLiteral("hollow");
+    daily->setContext(cfg, "1.600000", "Drag fixture");
+    const int hollowPixels = countUpPixels(daily->grab().toImage());
+    cfg.timelineChartCandleStyle = QStringLiteral("solid");
+    daily->setContext(cfg, "1.600000", "Drag fixture");
+    const int solidPixels = countUpPixels(daily->grab().toImage());
+    check(solidPixels > hollowPixels,
+        "Solid candle style must fill rising bodies the hollow style leaves empty");
+    cfg.timelineChartCandleStyle = QStringLiteral("hollow");
+    daily->setContext(cfg, "1.600000", "Drag fixture");
     daily->setPinnedDaily(false);
     check(daily->isHidden() && timeline.cursor().shape() == Qt::ArrowCursor,
         "Leaving daily mode must restore the normal cursor");

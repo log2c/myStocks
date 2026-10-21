@@ -32,6 +32,7 @@ int main(int argc, char** argv) {
     check(defaults.dailyKlineDays == 60, "Daily candles must default to 60 trading days");
     check(defaults.dailyKlineMAPeriods == QVector<int>({5, 10, 20, 30}), "Default MAs must be 5/10/20/30");
     check(defaults.timelineChartHoverDelayMs == 500, "Existing settings must default hover delay to 500ms");
+    check(defaults.timelineChartCandleStyle == "hollow", "K-line candles must default to the hollow style");
     check(defaults.globalRightClickClose, "Global right-click close must default to enabled");
     // Both retired keys must still seed the app-wide option, so an existing
     // "off" choice is not silently turned back on.
@@ -72,6 +73,7 @@ int main(int argc, char** argv) {
     cfg.userAgentMode = "random";
     cfg.userAgent = QStringLiteral("legacy-agent/1.0");
     cfg.timelineChartHoverDelayMs = 800;
+    cfg.timelineChartCandleStyle = "solid";
     cfg.dailyKlineDays = 120;
     cfg.dailyKlineMAPeriods = {250, 10, 10, 99, 60};
     cfg.quoteSource = "eastmoney";
@@ -89,6 +91,7 @@ int main(int argc, char** argv) {
     ConfigManager::saveConfig(cfg);
     const AppConfig loaded = ConfigManager::loadConfig();
     check(loaded.timelineChartHoverDelayMs == 800, "Hover delay must survive saving and loading");
+    check(loaded.timelineChartCandleStyle == "solid", "Candle style must survive saving and loading");
     check(loaded.userAgentMode == "random" && loaded.userAgent == cfg.userAgent,
         "The User-Agent mode and custom value must round trip independently");
     check(loaded.dailyKlineDays == 120, "Daily candle range did not persist");
@@ -153,9 +156,12 @@ int main(int argc, char** argv) {
     check(ConfigManager::loadConfig().timelineChartHoverDelayMs == 0, "Hover delay must have a lower bound");
     cfg.timelineChartHoverDelayMs = 20000;
     cfg.dailyKlineDays = 900;
+    cfg.timelineChartCandleStyle = "diagonal";
     ConfigManager::saveConfig(cfg);
     check(ConfigManager::loadConfig().dailyKlineDays == 800, "Daily range must respect bridge limit");
     check(ConfigManager::loadConfig().timelineChartHoverDelayMs == 10000, "Hover delay must have an upper bound");
+    check(ConfigManager::loadConfig().timelineChartCandleStyle == "hollow",
+        "Unknown candle styles must fall back to hollow");
     check(QFile::remove(path), "Could not clean up isolated test settings");
     return 0;
 }
