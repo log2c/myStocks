@@ -70,6 +70,28 @@ static void* macWindowHandleForWidget(const QWidget* widget) {
 }
 #endif
 
+// Qt keeps NSWindowStyleMaskResizable on frameless windows, so AppKit lets the
+// user drag any window edge and produce an arbitrary width/height. Dropping
+// the bit leaves resizing to the proportional corner grip below; programmatic
+// resize() still works.
+static void disableNativeWindowResizing(QWidget* widget) {
+#if defined(Q_OS_MACOS)
+    void* nsWindow = macWindowHandleForWidget(widget);
+    if (!nsWindow) {
+        return;
+    }
+    constexpr unsigned long kResizableMask = 1UL << 3;
+    auto readStyleMask = reinterpret_cast<unsigned long (*)(void*, SEL)>(objc_msgSend);
+    auto writeStyleMask = reinterpret_cast<void (*)(void*, SEL, unsigned long)>(objc_msgSend);
+    const unsigned long styleMask = readStyleMask(nsWindow, sel_registerName("styleMask"));
+    if (styleMask & kResizableMask) {
+        writeStyleMask(nsWindow, sel_registerName("setStyleMask:"), styleMask & ~kResizableMask);
+    }
+#else
+    Q_UNUSED(widget);
+#endif
+}
+
 static void enforceTimelinePopupWindowLevel(const QWidget* widget) {
     if (!widget) {
         return;
@@ -1701,6 +1723,18 @@ public:
 protected:
     void resizeEvent(QResizeEvent* event) override {
         QWidget::resizeEvent(event);
+        // Any resize that did not come from the grip still has to land on the
+        // default aspect ratio, so no platform or window manager can stretch
+        // the chart out of shape.
+        if (!m_adjustingResize) {
+            const QSize normalized = kline_popup::normalizedSize(event->size(), event->oldSize());
+            if (normalized != event->size()) {
+                m_adjustingResize = true;
+                resize(normalized);
+                m_adjustingResize = false;
+                m_popupSize = normalized;
+            }
+        }
         updateResizeGripGeometry();
     }
 
@@ -1900,6 +1934,7 @@ private:
         setGeometry(targetRect);
 
         if (!isVisible()) {
+            disableNativeWindowResizing(this);
             show();
             raise();
         }
@@ -2273,6 +2308,7 @@ private:
     KlineResizeGrip* m_resizeGrip = nullptr;
     QSize m_popupSize{kline_popup::kDefaultWidth, kline_popup::kDefaultHeight};
     bool m_resizing = false;
+    bool m_adjustingResize = false;
     QPoint m_resizeStartGlobalPos;
     QSize m_resizeStartSize;
     QTimer* m_refreshTimer = nullptr;
