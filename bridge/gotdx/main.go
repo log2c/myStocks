@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/bensema/gotdx"
@@ -187,26 +188,72 @@ func resolve(code string) (symbol, error) {
 	return s, nil
 }
 
+// mainlandOpeningAuction reports whether the opening call auction is running.
+// Mainland instruments report open=0 and vol=0 until continuous trading starts,
+// so during this window the snapshot's last price is the price being matched
+// rather than the previous session's close.
+func mainlandOpeningAuction(now time.Time) bool {
+	now = now.In(chinaZone())
+	if wd := now.Weekday(); wd == time.Saturday || wd == time.Sunday {
+		return false
+	}
+	minute := now.Hour()*60 + now.Minute()
+	return minute >= 9*60+15 && minute < 9*60+30
+}
+
+// snapshotFromAuction checks the server's own stamps. The local clock only says
+// an auction window is open; a weekday holiday keeps the last session's
+// snapshot, and that must not be mistaken for an auction publishing prices now.
+// Either stamp is enough to prove the snapshot is today's: the date advances
+// when the server rolls to the new session, the time advances while it quotes.
+func snapshotFromAuction(values map[string]any, now time.Time) bool {
+	date := field(values, "server_update_date")
+	clock := field(values, "server_update_time")
+	if date == nil && clock == nil {
+		// Without any server stamp the clock alone has to decide.
+		return true
+	}
+	n := now.In(chinaZone())
+	if date != nil && *date > 0 && int(*date) == n.Year()*10000+int(n.Month())*100+n.Day() {
+		return true
+	}
+	return clock != nil && *clock >= 91500 && *clock < 93000
+}
+
+// hasOpeningAuction reports whether the instrument is matched by the 09:15 call
+// auction. Indexes and boards are calculated from their constituents and never
+// auction, so their pre-open snapshot stays the previous close.
+func hasOpeningAuction(s symbol) bool {
+	return !s.extended && !mainlandLotsVolume(s)
+}
+
 // Normalize each instrument independently: other markets may still have live quotes.
-func quoteFromValues(code, name string, values map[string]any) quote {
+func quoteFromValues(code, name string, values map[string]any, now time.Time) quote {
 	q := quote{Code: code, Name: name, Price: field(values, "close"),
 		PreClose: field(values, "pre_close"), RiseSpeed: field(values, "speed_pct")}
 	// Mainland quotes may retain a nonzero last price while the server has
-	// already cleared today's open and volume. That retained price must not
-	// produce a fictitious daily change before the instrument starts trading.
+	// already cleared today's open and volume. Outside the opening call auction
+	// that retained price is the previous session's close and must not produce a
+	// fictitious daily change; during the auction it is the price being matched.
 	open, volume := field(values, "open"), field(values, "vol")
 	unopened := false
+	auctionable := false
 	if open != nil && *open == 0 && volume != nil && *volume == 0 {
 		s, err := resolve(code)
 		unopened = err == nil && !s.extended
+		auctionable = err == nil && hasOpeningAuction(s)
 	}
-	if (q.Price != nil && *q.Price == 0) || unopened {
+	auction := unopened && auctionable && mainlandOpeningAuction(now) && snapshotFromAuction(values, now)
+	if (q.Price != nil && *q.Price == 0) || (unopened && !auction) {
 		q.ResetData = true
 		q.Price = nil
 		q.RiseSpeed = nil
 		if q.PreClose != nil && *q.PreClose > 0 {
 			q.Price = q.PreClose
 		}
+	} else if auction {
+		// 涨速 describes continuous trading, which has not started yet.
+		q.RiseSpeed = nil
 	}
 	if !q.ResetData && q.Price != nil && q.PreClose != nil && *q.PreClose > 0 {
 		change := *q.Price - *q.PreClose
@@ -244,18 +291,20 @@ func quotes(req request) map[string]any {
 		for offset := 0; offset < len(codes); offset += 80 {
 			end := min(offset+80, len(codes))
 			reply, err := client(extended).MACSymbolQuotes(markets[offset:end], codes[offset:end],
-				gotdx.MACFieldBitmap(gotdx.MACFieldPreClose, gotdx.MACFieldOpen, gotdx.MACFieldClose, gotdx.MACFieldVol, gotdx.MACFieldSpeedPct))
+				gotdx.MACFieldBitmap(gotdx.MACFieldPreClose, gotdx.MACFieldOpen, gotdx.MACFieldClose, gotdx.MACFieldVol,
+					gotdx.MACFieldSpeedPct, gotdx.MACFieldServerUpdateDate, gotdx.MACFieldServerUpdateTime))
 			if err != nil {
 				reset(extended)
 				errors = append(errors, err.Error())
 				continue
 			}
+			now := time.Now()
 			for _, item := range reply.Stocks {
 				key := fmt.Sprintf("%d.%s", item.Market, strings.ToUpper(item.Symbol))
 				stocks := originals[key]
 				delete(originals, key)
 				for _, original := range stocks {
-					q := quoteFromValues(original.Code, item.Name, item.Values)
+					q := quoteFromValues(original.Code, item.Name, item.Values, now)
 					if q.Name == "" {
 						q.Name = original.Name
 					}

@@ -76,6 +76,7 @@ private:
     bool isWithinTradingSession(const QDateTime& bjNow) const;
     bool isWithinHongKongTradingSession(const QDateTime& bjNow) const;
     bool isWithinAshareTradingSession(const QDateTime& bjNow) const;
+    bool isWithinOpeningAuction(const QDateTime& bjNow) const;
     bool probeTradingDay(const QDate& bjDate);
     bool probeTradingDay(const QDate& bjDate, bool useHongKongProbe);
     bool shouldPollHotRanksNow();

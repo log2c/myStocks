@@ -1696,6 +1696,13 @@ bool AppController::shouldPollNow() {
     if (!isWithinTradingSession(bjNow)) {
         return false;
     }
+    // The probe reads the trade date off an index quote, and an index has not
+    // printed anything before the opening auction matches. Skip it inside that
+    // window: otherwise the stale stamp hides the very auction prices the
+    // window was added for.
+    if (isWithinOpeningAuction(bjNow)) {
+        return true;
+    }
 
     const QDate today = bjNow.date();
     if (m_probeDate != today) {
@@ -1794,6 +1801,22 @@ bool AppController::isWithinAshareTradingSession(const QDateTime& bjNow) const {
     const bool morning = (t >= QTime(9, 15) && t < QTime(11, 30));
     const bool afternoon = (t >= QTime(13, 0) && t < QTime(15, 0));
     return morning || afternoon;
+}
+
+bool AppController::isWithinOpeningAuction(const QDateTime& bjNow) const {
+    if (!bjNow.isValid()) {
+        return false;
+    }
+
+    if (bjNow.date().dayOfWeek() > 5) {
+        return false;
+    }
+
+    const QTime t = bjNow.time();
+    // The A-share call auction runs 09:15-09:25 and matches at 09:25; Hong Kong
+    // pre-opening runs from 09:00. Both are over by 09:30.
+    const QTime start = hasHongKongTradingScheduleItems() ? QTime(9, 0) : QTime(9, 15);
+    return t >= start && t < QTime(9, 30);
 }
 
 bool AppController::isWithinHongKongTradingSession(const QDateTime& bjNow) const {

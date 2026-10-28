@@ -445,7 +445,10 @@ bool isAshareTradingTimeNow() {
         return false;
     }
     const QTime time = now.time();
-    return (time >= QTime(9, 30) && time <= QTime(11, 30))
+    // Start with the opening call auction: its minute timeline only begins at
+    // 09:30, but a chart opened before the open must already be polling so it
+    // shows today's first point instead of staying on yesterday's session.
+    return (time >= QTime(9, 15) && time <= QTime(11, 30))
         || (time >= QTime(13, 0) && time <= QTime(15, 0));
 }
 

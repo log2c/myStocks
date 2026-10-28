@@ -142,10 +142,14 @@ func TestDistributionBinBoundaries(t *testing.T) {
 	}
 }
 
+// tradingHours is any moment outside the opening auction; these cases only
+// exercise the "not trading yet" state.
+var tradingHours = time.Date(2026, 5, 27, 10, 0, 0, 0, chinaZone())
+
 func TestPreOpenQuoteUsesPreviousClose(t *testing.T) {
 	q := quoteFromValues("1.600519", "Stock", map[string]any{
 		"close": float64(0), "pre_close": float64(18.5), "speed_pct": float64(-100),
-	})
+	}, tradingHours)
 	if !q.ResetData || q.Price == nil || *q.Price != 18.5 || q.PreClose == nil || *q.PreClose != 18.5 {
 		t.Fatalf("reset quote must carry the previous close: %+v", q)
 	}
@@ -153,14 +157,14 @@ func TestPreOpenQuoteUsesPreviousClose(t *testing.T) {
 		t.Fatal("reset quote must not carry intraday change sentinels")
 	}
 	for _, pre := range []any{nil, float64(0), math.NaN()} {
-		q = quoteFromValues("1.600519", "Stock", map[string]any{"close": float64(0), "pre_close": pre})
+		q = quoteFromValues("1.600519", "Stock", map[string]any{"close": float64(0), "pre_close": pre}, tradingHours)
 		if !q.ResetData || q.Price != nil || q.Pct != nil {
 			t.Fatal("unavailable previous close must not become a zero price or -100 percent")
 		}
 	}
 	q = quoteFromValues("1.600519", "Stock", map[string]any{
 		"close": float64(21), "pre_close": float64(20), "speed_pct": float64(0),
-	})
+	}, tradingHours)
 	if q.ResetData || q.Price == nil || *q.Price != 21 || q.Pct == nil || *q.Pct != 5 || q.Change == nil || *q.Change != 1 || q.RiseSpeed == nil || *q.RiseSpeed != 0 {
 		t.Fatal("live quotes must retain prices, changes and valid zero rise speed")
 	}
@@ -173,7 +177,7 @@ func TestUnopenedMainlandQuotesIgnoreRetainedPrices(t *testing.T) {
 				"close": float32(18), "pre_close": float32(18.5),
 				"open": float32(0), "vol": uint32(0), "speed_pct": float32(-2),
 			}
-			q := quoteFromValues(code, "Unopened", values)
+			q := quoteFromValues(code, "Unopened", values, tradingHours)
 			if !q.ResetData || q.Price == nil || *q.Price != 18.5 {
 				t.Fatalf("unopened quote must use previous close despite retained price: %+v", q)
 			}
@@ -181,11 +185,111 @@ func TestUnopenedMainlandQuotesIgnoreRetainedPrices(t *testing.T) {
 				t.Fatalf("unopened quote must hide retained intraday changes: %+v", q)
 			}
 			delete(values, "pre_close")
-			q = quoteFromValues(code, "Unopened", values)
+			q = quoteFromValues(code, "Unopened", values, tradingHours)
 			if !q.ResetData || q.Price != nil || q.Pct != nil {
 				t.Fatal("unavailable previous close must not fall back to a retained price")
 			}
 		})
+	}
+}
+
+func TestOpeningAuctionQuoteUsesMatchedPrice(t *testing.T) {
+	auction := time.Date(2026, 5, 27, 9, 20, 0, 0, chinaZone())
+	values := map[string]any{
+		"close": float32(19), "pre_close": float32(18.5),
+		"open": float32(0), "vol": uint32(0), "speed_pct": float32(-2),
+		"server_update_time": uint32(92015),
+	}
+	q := quoteFromValues("1.600519", "Auction", values, auction)
+	if q.ResetData || q.Price == nil || *q.Price != 19 {
+		t.Fatalf("auction quote must keep the indicative match price: %+v", q)
+	}
+	if q.Change == nil || *q.Change != 0.5 || q.Pct == nil || math.Abs(*q.Pct-2.7027) > 0.001 {
+		t.Fatalf("auction quote must compute change against the previous close: %+v", q)
+	}
+	if q.RiseSpeed != nil {
+		t.Fatal("auction quote must not carry a rise speed")
+	}
+}
+
+func TestIndexesAndBoardsStayOnPreviousCloseDuringAuction(t *testing.T) {
+	auction := time.Date(2026, 5, 27, 9, 20, 0, 0, chinaZone())
+	// They are computed from constituents, so a pre-open snapshot is still the
+	// previous close, and treating it as a match price would invent a change.
+	for _, code := range []string{"1.000001", "0.399006", "tdx:main:1:000001", "tdx:main:1:881319"} {
+		t.Run(code, func(t *testing.T) {
+			q := quoteFromValues(code, "Index", map[string]any{
+				"close": float32(3681), "pre_close": float32(3648),
+				"open": float32(0), "vol": uint32(0), "server_update_time": uint32(92015),
+			}, auction)
+			if !q.ResetData || q.Price == nil || *q.Price != 3648 || q.Pct != nil {
+				t.Fatalf("non-auction series must keep the previous close: %+v", q)
+			}
+		})
+	}
+}
+
+func TestAuctionWindowRequiresAnAuctionStamp(t *testing.T) {
+	auction := time.Date(2026, 5, 27, 9, 20, 0, 0, chinaZone())
+	values := map[string]any{
+		"close": float32(19), "pre_close": float32(18.5),
+		"open": float32(0), "vol": uint32(0),
+		"server_update_date": uint32(20260526), "server_update_time": uint32(150001),
+	}
+	q := quoteFromValues("1.600519", "Holiday", values, auction)
+	if !q.ResetData || q.Price == nil || *q.Price != 18.5 || q.Pct != nil {
+		t.Fatalf("a snapshot stamped with the last session's close is not a live auction: %+v", q)
+	}
+
+	// Either stamp is enough: the date alone proves the snapshot is today's even
+	// if the update time has not advanced yet.
+	values["server_update_date"] = uint32(20260527)
+	q = quoteFromValues("1.600519", "Auction", values, auction)
+	if q.ResetData || q.Price == nil || *q.Price != 19 {
+		t.Fatalf("today's date must be enough to accept the auction snapshot: %+v", q)
+	}
+	values["server_update_date"] = uint32(20260526)
+	values["server_update_time"] = uint32(92015)
+	q = quoteFromValues("1.600519", "Auction", values, auction)
+	if q.ResetData || q.Price == nil || *q.Price != 19 {
+		t.Fatalf("an auction-time stamp must be enough: %+v", q)
+	}
+
+	// A snapshot with no server stamp stays usable; the clock alone decides.
+	delete(values, "server_update_date")
+	delete(values, "server_update_time")
+	q = quoteFromValues("1.600519", "Auction", values, auction)
+	if q.ResetData || q.Price == nil || *q.Price != 19 {
+		t.Fatalf("a stamp-less auction snapshot must remain usable: %+v", q)
+	}
+
+	// Hong Kong and futures have their own opening mechanics and are untouched.
+	q = quoteFromValues("116.00700", "Tencent", map[string]any{
+		"close": float32(380), "pre_close": float32(382.4), "open": float32(0), "vol": uint32(0),
+	}, auction)
+	if q.ResetData || q.Price == nil || *q.Price != 380 {
+		t.Fatalf("extended-market quotes must not go through the mainland auction path: %+v", q)
+	}
+}
+
+func TestMainlandOpeningAuctionWindow(t *testing.T) {
+	for _, tc := range []struct {
+		at   time.Time
+		want bool
+	}{
+		{time.Date(2026, 5, 27, 9, 14, 59, 0, chinaZone()), false},
+		{time.Date(2026, 5, 27, 9, 15, 0, 0, chinaZone()), true},
+		{time.Date(2026, 5, 27, 9, 29, 59, 0, chinaZone()), true},
+		{time.Date(2026, 5, 27, 9, 30, 0, 0, chinaZone()), false},
+		{time.Date(2026, 5, 27, 10, 0, 0, 0, chinaZone()), false},
+		{time.Date(2026, 5, 27, 14, 57, 0, 0, chinaZone()), false},
+		{time.Date(2026, 5, 30, 9, 20, 0, 0, chinaZone()), false},
+		{time.Date(2026, 5, 31, 9, 20, 0, 0, chinaZone()), false},
+		{time.Date(2026, 5, 27, 1, 20, 0, 0, time.UTC), true},
+	} {
+		if got := mainlandOpeningAuction(tc.at); got != tc.want {
+			t.Fatalf("mainlandOpeningAuction(%s) = %v, want %v", tc.at, got, tc.want)
+		}
 	}
 }
 
@@ -208,7 +312,7 @@ func TestOpeningStateDoesNotHideLiveQuotes(t *testing.T) {
 			tc.values["close"] = float32(21)
 			tc.values["pre_close"] = float32(20)
 			tc.values["speed_pct"] = float32(0)
-			q := quoteFromValues(tc.code, "Live", tc.values)
+			q := quoteFromValues(tc.code, "Live", tc.values, tradingHours)
 			if q.ResetData || q.Price == nil || *q.Price != 21 || q.Pct == nil || *q.Pct != 5 || q.Change == nil || *q.Change != 1 || q.RiseSpeed == nil || *q.RiseSpeed != 0 {
 				t.Fatalf("live or incomplete opening state must preserve the quote: %+v", q)
 			}

@@ -750,7 +750,9 @@ bool isAshareTradingTimeNow() {
     }
 
     const QTime time = now.time();
-    const bool morning = time >= QTime(9, 30) && time <= QTime(11, 30);
+    // Include the opening call auction so a popup left open before 09:30 keeps
+    // polling and picks up today's first point as soon as the open prints.
+    const bool morning = time >= QTime(9, 15) && time <= QTime(11, 30);
     const bool afternoon = time >= QTime(13, 0) && time <= QTime(15, 0);
     return morning || afternoon;
 }
