@@ -55,8 +55,23 @@ func TestPrepareRouteAndQuotesUseSelectedInterface(t *testing.T) {
 	if err != nil || len(result.(map[string]any)["quotes"].([]quote)) != 2 || count.Load() < 2 {
 		t.Fatalf("Bound route must support protocol preparation and compatible legacy symbols: %+v %v", result, err)
 	}
-	if currentServer(false) != address || len(mainRoute.tunnels) != 1 {
+	routeMu.Lock()
+	routeTunnels := len(mainRoute.tunnels)
+	routeMu.Unlock()
+	if currentServer(false) != address || routeTunnels != 1 {
 		t.Fatal("SDK traffic must go through the interface-bound tunnel")
+	}
+	// Reconnecting lanes must not accumulate dead loopback listeners: each lane
+	// owns one tunnel and closes it with its client.
+	for _, extended := range []bool{false, true} {
+		for _, kind := range []laneKind{laneHot, laneBulk, laneScan} {
+			if n := laneFor(extended, kind).tunnelCount(); n > 1 {
+				t.Fatalf("lane holds %d tunnels after one connect", n)
+			}
+		}
+	}
+	if n := mainHot.tunnelCount(); n != 1 {
+		t.Fatalf("hot lane holds %d tunnels, want 1", n)
 	}
 	p.Interface = "mystocks-nonexistent-interface"
 	if _, err := processRequest(request{Operation: "prepare_servers", Kind: "main", Proxy: p, Servers: cfg}); err == nil {
@@ -135,9 +150,9 @@ func TestNetworkRelayAuthenticationAndMissingInterface(t *testing.T) {
 	if _, err := dialProxy(missing, target, time.Second); err == nil {
 		t.Fatal("Loopback relay must not route around an unavailable selected interface")
 	}
-	// Starting a relay must stay independent of lengthy serialized quotation I/O.
+	// Starting a relay must stay independent of in-flight quotation I/O.
 	loopback := loopbackInterface(t)
-	mu.Lock()
+	mainHot.mu.Lock()
 	done := make(chan struct{})
 	go func() {
 		start, _ := json.Marshal(proxyConfig{Interface: loopback})
@@ -147,10 +162,10 @@ func TestNetworkRelayAuthenticationAndMissingInterface(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		mu.Unlock()
+		mainHot.mu.Unlock()
 		t.Fatal("Relay initialization blocked behind quotation requests")
 	}
-	mu.Unlock()
+	mainHot.mu.Unlock()
 }
 
 func TestNetworkRelayUsesBoundUpstreamHTTPProxy(t *testing.T) {

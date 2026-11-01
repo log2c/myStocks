@@ -646,6 +646,8 @@ AppConfig ConfigManager::loadConfig() {
     QSettings& s = *settings;
 
     cfg.pollMs = readConfigValue(s, QStringLiteral("pollMs"), cfg.pollMs).toInt();
+    cfg.quoteSnapshotSecs = readConfigValue(
+        s, QStringLiteral("quoteSnapshotSecs"), cfg.quoteSnapshotSecs).toInt();
     cfg.opacity = readConfigValue(s, QStringLiteral("opacity"), cfg.opacity).toDouble();
     cfg.hotkey = readConfigValue(s, QStringLiteral("hotkey"), cfg.hotkey).toString();
     cfg.marketBreadthHotkey = readConfigValue(
@@ -761,6 +763,8 @@ AppConfig ConfigManager::loadConfig() {
     cfg.timelineChartHoverDelayMs = qBound(0,
         s.value("ui/timelineChartHoverDelayMs", cfg.timelineChartHoverDelayMs).toInt(), 10000);
     cfg.dailyKlineDays = qBound(1, s.value("ui/dailyKlineDays", cfg.dailyKlineDays).toInt(), 800);
+    cfg.dailyKlineRefreshSecs = qBound(1,
+        s.value("ui/dailyKlineRefreshSecs", cfg.dailyKlineRefreshSecs).toInt(), 300);
     if (s.contains("ui/dailyKlineMAPeriods")) {
         QVector<int> periods;
         for (const QString& value : s.value("ui/dailyKlineMAPeriods").toStringList()) {
@@ -916,6 +920,7 @@ AppConfig ConfigManager::loadConfig() {
     cfg.columnOrder = watchlist_utils::normalizedColumnOrder(loadedOrder);
 
     cfg.pollMs = qMax(500, cfg.pollMs);
+    cfg.quoteSnapshotSecs = qBound(1, cfg.quoteSnapshotSecs, 300);
     cfg.opacity = qBound(0.2, cfg.opacity, 1.0);
     cfg.userAgentMode = normalizeUserAgentMode(cfg.userAgentMode);
     cfg.userAgent = cfg.userAgent.trimmed();
@@ -938,7 +943,8 @@ AppConfig ConfigManager::loadConfig() {
     cfg.transparentBackgroundOpacity = qBound(0, cfg.transparentBackgroundOpacity, 100);
     cfg.floatingWindowFontSize = qBound(0, cfg.floatingWindowFontSize, 72);
     cfg.hoverReadingDelaySecs = qBound(0.1, cfg.hoverReadingDelaySecs, 60.0);
-    cfg.timelineChartRefreshSecs = qBound(10, cfg.timelineChartRefreshSecs, 3600);
+    cfg.timelineChartRefreshSecs = qBound(1, cfg.timelineChartRefreshSecs, 3600);
+    cfg.dailyKlineRefreshSecs = qBound(1, cfg.dailyKlineRefreshSecs, 300);
     cfg.marketBreadthRefreshSecs = qBound(10, cfg.marketBreadthRefreshSecs, 3600);
     cfg.hoverReadingUiMode = normalizeHoverReadingUiMode(cfg.hoverReadingUiMode);
     cfg.hotRankPollSecs = qBound(10, cfg.hotRankPollSecs, 3600);
@@ -979,6 +985,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
             << "logLevel=" << cfg.logLevel;
 
     writeConfigValue(s, QStringLiteral("pollMs"), cfg.pollMs);
+    writeConfigValue(s, QStringLiteral("quoteSnapshotSecs"), cfg.quoteSnapshotSecs);
     writeConfigValue(s, QStringLiteral("opacity"), cfg.opacity);
     writeConfigValue(s, QStringLiteral("hotkey"), cfg.hotkey);
     writeConfigValue(s, QStringLiteral("marketBreadthHotkey"), cfg.marketBreadthHotkey);
@@ -1073,6 +1080,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
         cfg.hoverReadingTransparentBackgroundEnabled
     );
     s.setValue("ui/dailyKlineDays", qBound(1, cfg.dailyKlineDays, 800));
+    s.setValue("ui/dailyKlineRefreshSecs", qBound(1, cfg.dailyKlineRefreshSecs, 300));
     QStringList dailyMAPeriods;
     for (int period : normalizeDailyKlineMAPeriods(cfg.dailyKlineMAPeriods)) {
         dailyMAPeriods.append(QString::number(period));
@@ -1080,7 +1088,7 @@ void ConfigManager::saveConfig(const AppConfig& cfg) {
     s.setValue("ui/dailyKlineMAPeriods", dailyMAPeriods);
     s.setValue("ui/timelineChartHoverDelayMs", qBound(0, cfg.timelineChartHoverDelayMs, 10000));
     s.setValue("ui/timelineChartEnabled", cfg.timelineChartEnabled);
-    s.setValue("ui/timelineChartRefreshSecs", qBound(10, cfg.timelineChartRefreshSecs, 3600));
+    s.setValue("ui/timelineChartRefreshSecs", qBound(1, cfg.timelineChartRefreshSecs, 3600));
     s.setValue("ui/marketBreadthEnabled", cfg.marketBreadthEnabled);
     s.setValue("ui/marketBreadthRefreshSecs", qBound(10, cfg.marketBreadthRefreshSecs, 3600));
     s.setValue("ui/timelineChartFixedRangeEnabled", cfg.timelineChartFixedRangeEnabled);

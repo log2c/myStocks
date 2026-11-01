@@ -328,12 +328,16 @@ void DailyKlineChart::fetch() {
         : QString();
     update();
     const int generation = m_generation;
+    // One klines request is ~43 ms, so the wait between fetches is what made the
+    // newest candle trail the quote list. Read the interval per fetch so a
+    // settings change applies to the window that is already open.
+    const int refreshMs = qBound(1, m_cfg.dailyKlineRefreshSecs, 300) * 1000;
     tdx_bridge::request(this, m_cfg, {{"operation", "klines"}, {"code", m_code},
         {"name", m_name}, {"period", period}, {"count", daily_kline::kMaxHistoryCount}},
-        [this, generation, period, language, periodLabel](const QJsonObject& result, const QString& error) {
+        [this, generation, period, language, periodLabel, refreshMs](const QJsonObject& result, const QString& error) {
             if (generation != m_generation || period != activePeriod()) return;
             m_pending = false;
-            m_nextFetchMs = QDateTime::currentMSecsSinceEpoch() + 30000;
+            m_nextFetchMs = QDateTime::currentMSecsSinceEpoch() + refreshMs;
             if (!error.isEmpty()) {
                 m_status = i18n::t("popup.kline.error", language).arg(periodLabel, error);
                 update();

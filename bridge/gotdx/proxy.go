@@ -252,21 +252,36 @@ func (t *proxyTunnel) close() {
 
 var activeProxy proxyConfig
 
-func configureProxy(p proxyConfig) error {
+// setProxyLocked validates and commits a proxy configuration. The caller holds
+// configMu; connection teardown stays with the caller so it happens outside it.
+func setProxyLocked(p proxyConfig) (bool, error) {
 	if err := p.validate(); err != nil {
-		return err
+		return false, err
 	}
 	if p == activeProxy {
-		return nil
+		return false, nil
 	}
-	dropClient(false, false)
-	dropClient(true, false)
-	mainRoute.ordered, mainRoute.failed, mainRoute.expires = nil, nil, time.Time{}
-	exRoute.ordered, exRoute.failed, exRoute.expires = nil, nil, time.Time{}
 	activeProxy = p
-	catalog = nil
-	catalogWarning = ""
+	return true, nil
+}
+
+func configureProxy(p proxyConfig) error {
+	configMu.Lock()
+	changed, err := setProxyLocked(p)
+	configMu.Unlock()
+	if err != nil || !changed {
+		return err
+	}
+	catalogMu.Lock()
+	catalog, catalogWarning = nil, ""
 	boardLists = make(map[uint16][]proto.MACBoardListItem)
+	catalogMu.Unlock()
+	breadthMu.Lock()
 	breadthCache = nil
+	breadthMu.Unlock()
+	resetRoute(false)
+	resetRoute(true)
+	dropClient(false)
+	dropClient(true)
 	return nil
 }

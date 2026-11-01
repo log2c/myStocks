@@ -49,6 +49,9 @@ struct QuoteItem {
     // Pre-open reset rows display yesterday's close with a flat-price visual state.
     // Intraday change, indicators and rise speed remain blank.
     bool resetData = false;
+    // A partial update arrives from the push refresh channel: it carries the
+    // live price but no name or rise speed, so those must survive the update.
+    bool partial = false;
 };
 
 struct HotRankItem {
@@ -94,6 +97,18 @@ struct MarketBreadthTimelinePoint {
     int fallCount = -1;
     int limitUpCount = -1;
     int limitDownCount = -1;
+};
+
+// The counts a quote batch can carry for the market summary board. The floating
+// window's row needs only these; the distribution and timeline stay with the
+// breadth window, which is the only consumer that pays for them.
+struct MarketBreadthCounts {
+    int upCount = -1;
+    int flatCount = -1;
+    int downCount = -1;
+    int limitUpCount = 0;
+    int limitDownCount = 0;
+    qint64 lastUpdatedAtMs = 0;
 };
 
 struct MarketBreadthSnapshot {
@@ -222,7 +237,14 @@ inline QVector<int> normalizeDailyKlineMAPeriods(const QVector<int>& periods) {
 }
 
 struct AppConfig {
-    int pollMs = 3000;
+    // One batched quote request costs ~40 ms, so the wait between requests is
+    // what the list actually feels. The push channel refreshes at the same
+    // cadence, and both sit well inside the hot lane's budget.
+    int pollMs = 1000;
+    // The full snapshot exists for what a price refresh cannot carry: name, rise
+    // speed, the reset/auction decision. Once the push channel supplies every
+    // price, this is how often that metadata is refreshed instead.
+    int quoteSnapshotSecs = 3;
     double opacity = 0.9;
     QString hotkey;
     QString marketBreadthHotkey;
@@ -327,6 +349,10 @@ struct AppConfig {
     int timelineChartRefreshSecs = 10;
     int timelineChartHoverDelayMs = 500;
     int dailyKlineDays = 60;
+    // The daily K-line window used to hard-code 30 s between fetches, so its
+    // newest candle trailed the quote list. A refresh is one 0x122E round trip
+    // (~43 ms), so the default sits at the polling cadence.
+    int dailyKlineRefreshSecs = 2;
     QVector<int> dailyKlineMAPeriods{5, 10, 20, 30};
     bool marketBreadthEnabled = true;
     int marketBreadthRefreshSecs = 10;

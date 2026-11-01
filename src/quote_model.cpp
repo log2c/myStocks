@@ -390,13 +390,22 @@ void QuoteModel::setStocks(const QVector<StockItem>& stocks) {
 
 void QuoteModel::updateQuotes(const QVector<QuoteItem>& quotes) {
     const bool resetBatch = isMarketResetBatch(quotes);
+    // One dataChanged for the whole batch: the views would otherwise repaint
+    // once per row, which is the dominant cost when the list refreshes at the
+    // configured polling cadence.
+    int lowestModelRow = -1;
+    int highestModelRow = -1;
     for (const QuoteItem& q : quotes) {
         if (!m_rowByCode.contains(q.code)) {
             continue;
         }
 
         const int row = m_rowByCode.value(q.code);
-        m_rows[row].name = q.name.isEmpty() ? m_rows[row].name : q.name;
+        // Push refresh frames carry price only; keep the slower snapshot's name
+        // and rise speed instead of blanking them between snapshots.
+        if (!q.partial) {
+            m_rows[row].name = q.name.isEmpty() ? m_rows[row].name : q.name;
+        }
 
         const bool resetData = resetBatch || q.resetData
             || (std::isfinite(q.pct) && q.pct <= -99.0);
@@ -423,7 +432,9 @@ void QuoteModel::updateQuotes(const QVector<QuoteItem>& quotes) {
         }
         m_rows[row].pct = resetData ? qQNaN() : q.pct;
         m_rows[row].change = resetData ? qQNaN() : q.change;
-        m_rows[row].riseSpeed = resetData ? qQNaN() : q.riseSpeed;
+        if (!q.partial) {
+            m_rows[row].riseSpeed = resetData ? qQNaN() : q.riseSpeed;
+        }
 
         if (indicatorChanged && m_cfg.blinkReminderEnabled) {
             m_blinkCounters[row] = 4; // 4 half-periods = 2 full blinks
@@ -433,7 +444,11 @@ void QuoteModel::updateQuotes(const QVector<QuoteItem>& quotes) {
         }
 
         const int modelRow = quoteModelRow(row);
-        emit dataChanged(index(modelRow, 0), index(modelRow, ColCount - 1));
+        lowestModelRow = lowestModelRow < 0 ? modelRow : qMin(lowestModelRow, modelRow);
+        highestModelRow = qMax(highestModelRow, modelRow);
+    }
+    if (lowestModelRow >= 0) {
+        emit dataChanged(index(lowestModelRow, 0), index(highestModelRow, ColCount - 1));
     }
 }
 
@@ -442,6 +457,21 @@ void QuoteModel::setMarketBreadthSnapshot(const MarketBreadthSnapshot& snapshot)
     const qint64 total = qint64(snapshot.upCount) + snapshot.flatCount + snapshot.downCount;
     m_marketBreadth.breadthValid = snapshot.breadthValid
         && snapshot.upCount >= 0 && snapshot.flatCount >= 0 && snapshot.downCount >= 0
+        && total > 0 && total <= std::numeric_limits<int>::max();
+    emitSpecialRowsChanged();
+}
+
+void QuoteModel::setMarketBreadthCounts(const MarketBreadthCounts& counts) {
+    m_marketBreadth.upCount = counts.upCount;
+    m_marketBreadth.flatCount = counts.flatCount;
+    m_marketBreadth.downCount = counts.downCount;
+    m_marketBreadth.limitUpCount = counts.limitUpCount;
+    m_marketBreadth.limitDownCount = counts.limitDownCount;
+    if (counts.lastUpdatedAtMs > 0) {
+        m_marketBreadth.lastUpdatedAtMs = counts.lastUpdatedAtMs;
+    }
+    const qint64 total = qint64(counts.upCount) + counts.flatCount + counts.downCount;
+    m_marketBreadth.breadthValid = counts.upCount >= 0 && counts.flatCount >= 0 && counts.downCount >= 0
         && total > 0 && total <= std::numeric_limits<int>::max();
     emitSpecialRowsChanged();
 }

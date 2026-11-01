@@ -12,9 +12,15 @@ import (
 
 func isolateCatalog(t *testing.T) {
 	t.Helper()
+	catalogMu.Lock()
 	old, expiry, warning := catalog, catalogExpires, catalogWarning
 	catalog, catalogExpires, catalogWarning = nil, time.Time{}, ""
-	t.Cleanup(func() { catalog, catalogExpires, catalogWarning = old, expiry, warning })
+	catalogMu.Unlock()
+	t.Cleanup(func() {
+		catalogMu.Lock()
+		catalog, catalogExpires, catalogWarning = old, expiry, warning
+		catalogMu.Unlock()
+	})
 }
 
 func TestExtendedCatalogAdvertisedTotalExceedsDirectory(t *testing.T) {
@@ -87,21 +93,21 @@ func TestCatalogKeepsSuccessfulSourcesWhenOthersFail(t *testing.T) {
 	if len(items) != 1 || items[0].Code != "1.600519" || !strings.Contains(result["warning"].(string), "extended unavailable") {
 		t.Fatalf("available results or warning missing: %+v", result)
 	}
-	if time.Until(catalogExpires) > time.Minute {
+	if time.Until(catalogExpiry()) > time.Minute {
 		t.Fatal("unavailable sources must be retried before the normal cache expiry")
 	}
 	// Retry after a transient failure, then restore the full cache lifetime.
-	catalogExpires = time.Time{}
+	resetCatalogExpiry()
 	loader.stocks = func(uint8) ([]proto.Security, error) { return nil, nil }
 	loader.boards = func() ([]proto.MACBoardListItem, error) { return nil, nil }
 	loader.extended = func() ([]catalogItem, error) {
 		return []catalogItem{{Code: "tdx:ex:31:00700", Name: "腾讯控股", Kind: "扩展市场"}}, nil
 	}
-	if err := loadCatalogWith(loader); err != nil || catalogWarning != "" || time.Until(catalogExpires) < 29*time.Minute {
-		t.Fatalf("recovered catalog should have no warning: %v %s", err, catalogWarning)
+	if err := loadCatalogWith(loader); err != nil || catalogDiagnostic() != "" || time.Until(catalogExpiry()) < 29*time.Minute {
+		t.Fatalf("recovered catalog should have no warning: %v %s", err, catalogDiagnostic())
 	}
-	if len(catalog) != 1 || catalog[0].Code != "tdx:ex:31:00700" {
-		t.Fatalf("recovered source missing: %+v", catalog)
+	if items := catalogSnapshot(); len(items) != 1 || items[0].Code != "tdx:ex:31:00700" {
+		t.Fatalf("recovered source missing: %+v", items)
 	}
 }
 
@@ -115,7 +121,7 @@ func TestCatalogAllSourcesFail(t *testing.T) {
 	if err := loadCatalogWith(loader); err == nil || !strings.Contains(err.Error(), "stocks failed") || !strings.Contains(err.Error(), "extended failed") {
 		t.Fatalf("missing directory failures: %v", err)
 	}
-	if len(catalog) != 0 || !catalogExpires.IsZero() {
+	if len(catalogSnapshot()) != 0 || !catalogExpiry().IsZero() {
 		t.Fatal("failed catalog must not be cached")
 	}
 }

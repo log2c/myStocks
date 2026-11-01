@@ -16,12 +16,17 @@ public:
     explicit IQuoteProvider(QObject* parent = nullptr);
     ~IQuoteProvider() override;
 
-    virtual void fetchQuotes(const QVector<StockItem>& stocks) = 0;
+    // `force` bypasses any provider-side throttling, for a manual reload or a
+    // settings change where the user expects an immediate request.
+    virtual void fetchQuotes(const QVector<StockItem>& stocks, bool force = false) = 0;
     virtual void setLanguage(const QString& language);
     virtual void applyConfig(const AppConfig& cfg);
 
 signals:
     void quotesReady(const QVector<QuoteItem>& quotes);
+    // Emitted when a quote batch also carried the market summary board, so the
+    // floating window's breadth row rides the same request as its prices.
+    void breadthReady(const MarketBreadthCounts& counts);
     void error(const QString& message);
 
 protected:
@@ -33,7 +38,7 @@ class EastMoneyQuoteProvider : public IQuoteProvider {
 public:
     explicit EastMoneyQuoteProvider(QObject* parent = nullptr);
 
-    void fetchQuotes(const QVector<StockItem>& stocks) override;
+    void fetchQuotes(const QVector<StockItem>& stocks, bool force = false) override;
 
 private:
     static QString toSecId(const QString& rawCode);

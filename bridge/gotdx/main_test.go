@@ -135,7 +135,7 @@ func TestDistributionBinBoundaries(t *testing.T) {
 	for _, test := range []struct {
 		pct float64
 		bin int
-	}{{-10, 0}, {-9, 0}, {-8, 1}, {-6, 2}, {-4, 3}, {-0.1, 4}, {0, 5}, {0.1, 6}, {3, 7}, {5, 8}, {7, 9}, {9, 10}} {
+	}{{-11, 0}, {-10, 0}, {-9, 1}, {-8, 1}, {-6, 2}, {-4, 3}, {-0.1, 4}, {0, 5}, {0.1, 6}, {3, 7}, {5, 8}, {7, 9}, {9, 9}, {10, 10}, {11, 10}} {
 		if distributionBin(test.pct) != test.bin {
 			t.Fatalf("wrong distribution bucket %v", test)
 		}

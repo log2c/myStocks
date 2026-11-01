@@ -12,6 +12,13 @@ inline constexpr auto kLegacyConfigPrefix = "general/";
 inline constexpr auto kWatchIndexesKey = "watch/indexes";
 inline constexpr qint64 kNetworkCacheTtlSecs = 30;
 inline constexpr qint64 kNetworkCacheTtlMs = kNetworkCacheTtlSecs * 1000;
+// The timeline cache must never outlive the refresh interval, otherwise a
+// shorter setting only makes the timer fire while every request is answered from
+// the cache. Thirty seconds stays the ceiling for long intervals.
+inline qint64 timelineCacheTtlMs(int refreshSecs) {
+    const qint64 requested = qint64(qBound(1, refreshSecs, 3600)) * 1000;
+    return requested < kNetworkCacheTtlMs ? requested : kNetworkCacheTtlMs;
+}
 inline constexpr qint64 kMarketBreadthPopupAutoRefreshDelayMs = 1000;
 inline constexpr qint64 kMarketBreadthPopupAutoRefreshIntervalMs =
     kNetworkCacheTtlMs + kMarketBreadthPopupAutoRefreshDelayMs;

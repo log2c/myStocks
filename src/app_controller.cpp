@@ -830,8 +830,9 @@ void AppController::toggleMarketBreadthDetailWindow() {
         return;
     }
 
-    refreshMarketBreadth(true);
+    // Show first: the fetch is gated on the window being visible.
     m_window->toggleMarketBreadthDetailPopupFromTray();
+    refreshMarketBreadth(true);
 }
 
 void AppController::captureRuntimeWindowGeometries(AppConfig* cfg) const {
@@ -1176,7 +1177,8 @@ void AppController::refreshQuotes(bool force) {
 
     const QVector<StockItem> merged = mergedWatchItemsForGroup();
     if (!merged.isEmpty()) {
-        m_provider->fetchQuotes(merged);
+        // A manual reload must not be swallowed by the snapshot throttle.
+        m_provider->fetchQuotes(merged, force);
     }
 }
 
@@ -1193,13 +1195,14 @@ void AppController::refreshMarketBreadth(bool force) {
         return;
     }
 
-    if (!force) {
-        if (!m_window || !m_window->isVisible()) {
-            return;
-        }
-        if (!shouldPollMarketBreadthNow()) {
-            return;
-        }
+    // Only the breadth window reads the distribution and the timeline. The
+    // floating window's summary row arrives with the quote batch, so this
+    // full-market request must not run just because the floating window is up.
+    if (!m_window || !m_window->marketBreadthDetailPopupVisible()) {
+        return;
+    }
+    if (!force && !shouldPollMarketBreadthNow()) {
+        return;
     }
 
     m_marketBreadthProvider->fetch(force);
@@ -1593,6 +1596,9 @@ void AppController::rebuildProvider() {
     });
 
     connect(m_provider, &IQuoteProvider::quotesReady, m_model, &QuoteModel::updateQuotes);
+    // The summary row rides the quote batch, so it refreshes on the price cadence
+    // without the full-market request the breadth window needs.
+    connect(m_provider, &IQuoteProvider::breadthReady, m_model, &QuoteModel::setMarketBreadthCounts);
     connect(m_provider, &IQuoteProvider::quotesReady, this, [this](const QVector<QuoteItem>&) {
         updateTrayTooltip();
     });
@@ -1607,7 +1613,9 @@ void AppController::rebuildProvider() {
         &AshareMarketBreadthProvider::dataReady,
         this,
         [this](const MarketBreadthSnapshot& snapshot) {
-            if (m_model) {
+            // A failed request publishes an empty snapshot. The quote batch still
+            // owns the counts, so leave the row alone instead of blanking it.
+            if (m_model && snapshot.breadthValid) {
                 m_model->setMarketBreadthSnapshot(snapshot);
             }
         }

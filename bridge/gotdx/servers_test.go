@@ -18,17 +18,34 @@ import (
 
 func isolateServers(t *testing.T) {
 	t.Helper()
-	oldServers, oldProxy := activeServers, activeProxy
-	dropClient(false, false)
-	dropClient(true, false)
-	mainRoute, exRoute = serverRoute{}, serverRoute{}
+	configMu.Lock()
+	oldServers, oldProxy, oldCalendar := activeServers, activeProxy, calendarPath
 	activeServers, activeProxy = serverConfig{}, proxyConfig{}
+	configMu.Unlock()
+	dropClient(false)
+	dropClient(true)
+	routeMu.Lock()
+	mainRoute, exRoute = serverRoute{}, serverRoute{}
+	routeMu.Unlock()
 	t.Cleanup(func() {
-		dropClient(false, false)
-		dropClient(true, false)
+		dropClient(false)
+		dropClient(true)
+		routeMu.Lock()
 		mainRoute, exRoute = serverRoute{}, serverRoute{}
-		activeServers, activeProxy = oldServers, oldProxy
+		routeMu.Unlock()
+		configMu.Lock()
+		activeServers, activeProxy, calendarPath = oldServers, oldProxy, oldCalendar
+		configMu.Unlock()
 	})
+}
+
+func activeGroup(extended bool) serverGroup {
+	configMu.Lock()
+	defer configMu.Unlock()
+	if extended {
+		return activeServers.Ex
+	}
+	return activeServers.Main
 }
 
 // A local MAC quotation peer. Probe connections close before sending a request;
@@ -156,8 +173,12 @@ func TestProbeAvailabilityAndSettingsIsolation(t *testing.T) {
 	if err := configureServers(serverConfig{Main: serverGroup{Addresses: []string{good}}}); err != nil {
 		t.Fatal(err)
 	}
-	client(false)
-	beforeClient, beforeConfig := mainClient, activeServers
+	mainHot.mu.Lock()
+	mainHot.mu.Unlock()
+	mainBulk.mu.Lock()
+	mainBulk.mu.Unlock()
+	beforeHot, beforeBulk := mainHot.connection(), mainBulk.connection()
+	beforeConfig := activeGroup(false)
 	result, err := processRequest(request{Operation: "server_probe", Kind: "main", Servers: serverConfig{Main: serverGroup{Addresses: []string{bad, good}}}})
 	if err != nil {
 		t.Fatal(err)
@@ -166,7 +187,7 @@ func TestProbeAvailabilityAndSettingsIsolation(t *testing.T) {
 	if len(probes) != 2 || probes[0].Address != good || !probes[0].Reachable || probes[1].Reachable || probes[1].LatencyMS != nil {
 		t.Fatalf("unexpected probe results: %+v", probes)
 	}
-	if mainClient != beforeClient || !reflect.DeepEqual(activeServers, beforeConfig) {
+	if mainHot.connection() != beforeHot || mainBulk.connection() != beforeBulk || !reflect.DeepEqual(activeGroup(false), beforeConfig) {
 		t.Fatal("settings preview changed the live connection")
 	}
 }
@@ -212,13 +233,20 @@ func TestManualSelectionNeverFallsBack(t *testing.T) {
 	bad, badCount := quotePeer(t, true)
 	good, goodCount := quotePeer(t, false)
 	cfg := serverConfig{Main: serverGroup{Mode: "manual", Address: bad, Addresses: []string{bad, good}}}
-	result, err := processRequest(request{Operation: "quotes", Stocks: []stock{{Code: "1.600519"}}, Servers: cfg})
+	result, err := processRequest(request{Operation: "quotes", Stocks: []stock{{Code: "1.600519"}, {Code: "1.510300"}}, Servers: cfg})
 	if err != nil {
 		t.Fatal(err)
 	}
 	data := result.(map[string]any)
 	if len(data["quotes"].([]quote)) != 0 || badCount.Load() != 1 || goodCount.Load() != 0 {
 		t.Fatal("manual selection silently used another server")
+	}
+	// A failed exchange must be reported as the transport problem it is. Claiming
+	// "no quote" for every symbol misled users into checking the tokens.
+	for _, message := range data["errors"].([]string) {
+		if strings.Contains(message, "no quote") {
+			t.Fatalf("transport failure reported as a missing quote: %v", data["errors"])
+		}
 	}
 }
 

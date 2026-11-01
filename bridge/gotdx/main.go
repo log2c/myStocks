@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -44,8 +45,14 @@ type request struct {
 	Kind         string          `json:"kind"`
 	SortField    string          `json:"sortField"`
 	SortOrder    string          `json:"sortOrder"`
-	Force        bool            `json:"force"`
-	Servers      serverConfig    `json:"servers"`
+	// PushIntervalMs is how long the push channel waits for a server-sent frame
+	// before asking again, so the price cadence follows the app's polling setting.
+	PushIntervalMs int `json:"pushIntervalMs"`
+	// IncludeBreadth adds the market summary board to the quote batch, so the
+	// floating window's breadth row costs nothing beyond one more symbol.
+	IncludeBreadth bool         `json:"includeBreadth"`
+	Force          bool         `json:"force"`
+	Servers        serverConfig `json:"servers"`
 }
 type symbol struct {
 	market   uint8
@@ -80,33 +87,33 @@ type bar struct {
 	PreClose *float64 `json:"preClose"`
 }
 
-var mu sync.Mutex
-var mainClient, exClient *gotdx.Client
 var calendarPath string
 var mainContractPattern = regexp.MustCompile(`^[A-Z]+0$`)
 var mainlandPattern = regexp.MustCompile(`^[0-9]{6}$`)
 
-func client(extended bool) *gotdx.Client {
-	slot := &mainClient
-	if extended {
-		slot = &exClient
-	}
-	if *slot == nil {
-		opts := []gotdx.Option{gotdx.WithTimeoutSec(3), gotdx.WithFuturesCalendarPath(calendarPath)}
-		if activeProxy.enabled() {
-			opts = append(opts, gotdx.WithTimeoutSec(20))
-		}
-		opts = append(opts, serverOptions(extended)...)
-		if extended {
-			*slot = gotdx.NewMACEx(opts...)
-		} else {
-			*slot = gotdx.NewMAC(opts...)
-		}
-	}
-	return *slot
+// withHot runs one operation on the family's interactive lane; bulk work goes
+// to the lane that is allowed to be slow.
+func withHot(extended bool, fn func(*gotdx.Client) error) error {
+	return withClient(extended, laneHot, fn)
 }
-func reset(extended bool) {
-	dropClient(extended, true)
+
+func withBulk(extended bool, fn func(*gotdx.Client) error) error {
+	return withClient(extended, laneBulk, fn)
+}
+
+func withScan(extended bool, fn func(*gotdx.Client) error) error {
+	return withClient(extended, laneScan, fn)
+}
+
+func buildClientOptions(extended bool) ([]gotdx.Option, []*proxyTunnel, map[string]string) {
+	timeout := 3
+	if proxyActive() {
+		// A proxy hop adds a full round trip to every exchange.
+		timeout = 20
+	}
+	opts := []gotdx.Option{gotdx.WithTimeoutSec(timeout), gotdx.WithFuturesCalendarPath(calendarPathSnapshot())}
+	serverOpts, tunnels, remote := serverOptions(extended)
+	return append(opts, serverOpts...), tunnels, remote
 }
 func number(n float64) *float64 {
 	if math.IsNaN(n) || math.IsInf(n, 0) {
@@ -263,9 +270,15 @@ func quoteFromValues(code, name string, values map[string]any, now time.Time) qu
 	return q
 }
 
+// breadthSymbol is the market summary board. Its quote carries the up/down and
+// limit counts the summary row shows, so it rides the same batch as the
+// watchlist instead of costing a separate full-market request.
+const breadthSymbol = "880001"
+
 func quotes(req request) map[string]any {
 	result := make([]quote, 0)
 	errors := make([]string, 0)
+	var breadth any
 	for _, extended := range []bool{false, true} {
 		markets := make([]uint8, 0)
 		codes := make([]string, 0)
@@ -288,19 +301,50 @@ func quotes(req request) map[string]any {
 			}
 			originals[key] = append(originals[key], item)
 		}
+		withBreadth := req.IncludeBreadth && !extended
+		if withBreadth {
+			markets = append(markets, 1)
+			codes = append(codes, breadthSymbol)
+		}
+		// Symbols whose exchange failed are reported through the transport error
+		// only. Saying "no quote" for data the server never answered implies the
+		// instrument is delisted, which sent users chasing the wrong problem.
+		unanswered := make(map[string]bool)
 		for offset := 0; offset < len(codes); offset += 80 {
 			end := min(offset+80, len(codes))
-			reply, err := client(extended).MACSymbolQuotes(markets[offset:end], codes[offset:end],
-				gotdx.MACFieldBitmap(gotdx.MACFieldPreClose, gotdx.MACFieldOpen, gotdx.MACFieldClose, gotdx.MACFieldVol,
-					gotdx.MACFieldSpeedPct, gotdx.MACFieldServerUpdateDate, gotdx.MACFieldServerUpdateTime))
+			fields := []gotdx.MACFieldSelector{gotdx.MACFieldPreClose, gotdx.MACFieldOpen, gotdx.MACFieldClose,
+				gotdx.MACFieldVol, gotdx.MACFieldSpeedPct, gotdx.MACFieldServerUpdateDate, gotdx.MACFieldServerUpdateTime}
+			if withBreadth {
+				// On ordinary equities these bits encode orderbook sizes; only the
+				// 880001 row reads them, and the extra bytes are negligible.
+				fields = append(fields, gotdx.MACFieldUpCount, gotdx.MACFieldDownCount,
+					gotdx.MACFieldLimitUpCount, gotdx.MACFieldLimitDownCount)
+			}
+			var reply *proto.MACSymbolQuotesReply
+			err := withHot(extended, func(c *gotdx.Client) error {
+				var err error
+				reply, err = c.MACSymbolQuotes(markets[offset:end], codes[offset:end], gotdx.MACFieldBitmap(fields...))
+				return err
+			})
 			if err != nil {
-				reset(extended)
 				errors = append(errors, err.Error())
+				for i := offset; i < end; i++ {
+					unanswered[fmt.Sprintf("%d.%s", markets[i], strings.ToUpper(codes[i]))] = true
+				}
 				continue
 			}
 			now := time.Now()
 			for _, item := range reply.Stocks {
 				key := fmt.Sprintf("%d.%s", item.Market, strings.ToUpper(item.Symbol))
+				if withBreadth && item.Market == 1 && strings.EqualFold(item.Symbol, breadthSymbol) {
+					// The summary row degrades on its own: a failed universe lookup
+					// leaves the previous counts on screen, so this must not surface
+					// as a quotation error the user has to dismiss.
+					if snapshot, err := breadthCounts(item.Values); err == nil {
+						breadth = snapshot
+					}
+					continue
+				}
 				stocks := originals[key]
 				delete(originals, key)
 				for _, original := range stocks {
@@ -316,14 +360,95 @@ func quotes(req request) map[string]any {
 				}
 			}
 		}
-		for _, stocks := range originals {
+		for key, stocks := range originals {
+			if unanswered[key] {
+				continue
+			}
 			for _, s := range stocks {
 				errors = append(errors, s.Code+": TDX returned no quote")
 			}
 		}
 	}
 	sort.Strings(errors)
-	return map[string]any{"quotes": result, "errors": errors}
+	response := map[string]any{"quotes": result, "errors": errors}
+	if req.IncludeBreadth {
+		response["breadth"] = breadth
+	}
+	return response
+}
+
+// breadthCounts turns the summary board's quote into the four counts plus the
+// universe size. The counts are free with the batch; the size changes only on a
+// listing or delisting, so it is cached far longer than the counts.
+func breadthCounts(values map[string]any) (map[string]any, error) {
+	up, down := field(values, "up_count"), field(values, "down_count")
+	limitUp, limitDown := field(values, "limit_up_count"), field(values, "limit_down_count")
+	if up == nil || down == nil || limitUp == nil || limitDown == nil {
+		return nil, fmt.Errorf("TDX market summary lacks required fields")
+	}
+	total, err := breadthUniverse()
+	if err != nil {
+		return nil, err
+	}
+	flat := total - int(*up) - int(*down)
+	if flat < 0 {
+		return nil, fmt.Errorf("TDX market breadth counts exceed membership total")
+	}
+	updatedAtMs := int64(0)
+	if date, clock := field(values, "server_update_date"), field(values, "server_update_time"); date != nil && clock != nil {
+		if stamp, err := time.ParseInLocation("20060102 150405",
+			fmt.Sprintf("%08d %06d", int(*date), int(*clock)), chinaZone()); err == nil {
+			updatedAtMs = stamp.UnixMilli()
+		}
+	}
+	return map[string]any{
+		"upCount": int(*up), "downCount": int(*down), "flatCount": flat,
+		"limitUpCount": int(*limitUp), "limitDownCount": int(*limitDown),
+		"lastUpdatedAtMs": updatedAtMs, "total": total,
+	}, nil
+}
+
+var (
+	breadthUniverseMu    sync.Mutex
+	breadthUniverseValue int
+	breadthUniverseAt    time.Time
+)
+
+// The universe size only moves when an instrument lists or delists, so a half
+// hour of staleness is invisible while it keeps the summary row free.
+const breadthUniverseTTL = 30 * time.Minute
+
+func breadthUniverse() (int, error) {
+	breadthUniverseMu.Lock()
+	cached, at := breadthUniverseValue, breadthUniverseAt
+	breadthUniverseMu.Unlock()
+	if cached > 0 && time.Since(at) < breadthUniverseTTL {
+		return cached, nil
+	}
+	var reply *proto.MACBoardMembersQuotesDynamicReply
+	if err := withBulk(false, func(c *gotdx.Client) error {
+		// The Get* call does not connect on its own, and this lane may never have
+		// been used before; the MAC* wrapper would connect but rewrites a zero
+		// count into a full-market page, which is the request being avoided.
+		if err := c.ConnectMAC(); err != nil {
+			return err
+		}
+		var err error
+		// One row is enough: the reply carries the membership total beside it.
+		reply, err = c.GetMACBoardMembersQuotesDynamic(breadthSymbol, 0, 0, 1, 1,
+			gotdx.MACFieldBitmap(gotdx.MACFieldClose))
+		return err
+	}); err != nil {
+		return 0, err
+	}
+	total := int(reply.Total)
+	if total <= 0 {
+		return 0, fmt.Errorf("TDX returned no market universe size")
+	}
+	breadthUniverseMu.Lock()
+	breadthUniverseValue, breadthUniverseAt = total, time.Now()
+	breadthUniverseMu.Unlock()
+	return total, nil
 }
 func timeline(req request) (any, error) {
 	s, err := resolveNamed(req.Code, req.Name)
@@ -332,9 +457,12 @@ func timeline(req request) (any, error) {
 	}
 	// Ask for two sessions, then use the last available trading day. This also
 	// handles weekends and holidays without guessing a trading calendar.
-	reply, err := client(s.extended).MACTickCharts(s.market, s.code, 0, 2)
-	if err != nil {
-		reset(s.extended)
+	var reply *proto.MACTickChartsReply
+	if err := withHot(s.extended, func(c *gotdx.Client) error {
+		var err error
+		reply, err = c.MACTickCharts(s.market, s.code, 0, 2)
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	return timelineResponse(req.Code, reply)
@@ -391,9 +519,12 @@ func klines(req request) (any, error) {
 	if req.Count > 1049 {
 		return nil, fmt.Errorf("K-line count exceeds 1049")
 	}
-	reply, err := client(s.extended).MACSymbolBars(s.market, s.code, req.Period, 1, uint32(req.Start), uint32(req.Count), types.AdjustNone)
-	if err != nil {
-		reset(s.extended)
+	var reply []proto.MACSymbolBar
+	if err := withHot(s.extended, func(c *gotdx.Client) error {
+		var err error
+		reply, err = c.MACSymbolBars(s.market, s.code, req.Period, 1, uint32(req.Start), uint32(req.Count), types.AdjustNone)
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	if len(reply) == 0 {
@@ -514,39 +645,67 @@ type shareCounts struct {
 }
 
 // Share counts change only on corporate actions, and the K-line chart
-// refreshes every 30 seconds. Cache per symbol so a refresh costs no extra
-// round trip on the serialized bridge.
-var shareCountCache = map[string]shareCounts{}
+// throttles its own fetches to 30 seconds. Cache per symbol so a refresh costs
+// no extra round trip on the hot lane.
+var (
+	shareCountMu    sync.Mutex
+	shareCountCache = map[string]shareCounts{}
+)
 
 func readShareCounts(s symbol) shareCounts {
 	key := fmt.Sprintf("%d.%s", s.market, s.code)
-	if cached, ok := shareCountCache[key]; ok {
+	shareCountMu.Lock()
+	cached, ok := shareCountCache[key]
+	shareCountMu.Unlock()
+	if ok {
 		return cached
 	}
 	var counts shareCounts
-	reply, err := client(s.extended).MACSymbolQuotes([]uint8{s.market}, []string{s.code},
+	if err := withHot(s.extended, func(c *gotdx.Client) error {
+		counts = fetchShareCounts(c, s)
+		return nil
+	}); err != nil {
+		return shareCounts{}
+	}
+	if counts.Total == nil && counts.Float == nil {
+		// Do not cache a failure: the next refresh should retry.
+		return counts
+	}
+	shareCountMu.Lock()
+	shareCountCache[key] = counts
+	shareCountMu.Unlock()
+	return counts
+}
+
+func fetchShareCounts(c *gotdx.Client, s symbol) shareCounts {
+	var counts shareCounts
+	reply, err := c.MACSymbolQuotes([]uint8{s.market}, []string{s.code},
 		gotdx.MACFieldBitmap(gotdx.MACFieldTotalShares, gotdx.MACFieldFloatShares, gotdx.MACFieldTotalMarketCapAb))
 	if err != nil || len(reply.Stocks) == 0 {
-		// Do not cache a failure: the next refresh should retry.
 		return counts
 	}
 	values := reply.Stocks[0].Values
 	counts.Total = field(values, "total_shares")
 	counts.Float = field(values, "float_shares")
 	counts.MarketCap = field(values, "total_market_cap_ab")
-	shareCountCache[key] = counts
 	return counts
 }
+
 func dispatch(req request) (any, error) {
 	switch req.Operation {
 	case "capabilities":
-		return map[string]any{"abi": 1, "authentication": false, "operations": []string{"quotes", "timeline", "klines", "search", "hot_boards", "members", "breadth", "server_list", "server_probe", "prepare_servers"}}, nil
+		return map[string]any{"abi": 1, "authentication": false, "operations": []string{"quotes", "timeline", "klines", "search", "warm", "hot_boards", "members", "breadth", "server_list", "server_probe", "prepare_servers", "push_start", "push_stop", "push_poll"}}, nil
 	case "server_list":
 		return listServers(), nil
 	case "server_probe":
 		return testServers(req)
 	case "search":
 		return search(req)
+	case "warm":
+		// Prime the directory in the background so the first stock search does
+		// not wait for a full scan of every market.
+		warmCatalog()
+		return map[string]any{"started": true}, nil
 	case "hot_boards":
 		return hotBoards(req)
 	case "members":
@@ -555,6 +714,12 @@ func dispatch(req request) (any, error) {
 		return marketBreadth(req)
 	case "quotes":
 		return quotes(req), nil
+	case "push_start":
+		return pushStart(req)
+	case "push_stop":
+		return pushStop()
+	case "push_poll":
+		return pushPoll()
 	case "timeline":
 		return timeline(req)
 	case "klines":
@@ -578,8 +743,8 @@ func MyStocksTdxRequest(input *C.char) (output *C.char) {
 	if err := json.Unmarshal([]byte(C.GoString(input)), &req); err != nil {
 		return C.CString(`{"error":"invalid request JSON"}`)
 	}
-	mu.Lock()
-	defer mu.Unlock()
+	// Requests are independent: each operation takes its lane lock, so a
+	// directory scan can no longer hold every quotation behind it.
 	result, err := processRequest(req)
 	if err != nil {
 		result = map[string]any{"error": err.Error()}
@@ -591,26 +756,75 @@ func MyStocksTdxRequest(input *C.char) (output *C.char) {
 	return C.CString(string(data))
 }
 
+// prepareMu makes route preparation exclusive. It only mutates committed
+// settings and validates one node, so plain requests never wait on it.
+var prepareMu sync.Mutex
+
 func processRequest(req request) (any, error) {
 	if req.Operation == "prepare_servers" {
+		prepareMu.Lock()
+		defer prepareMu.Unlock()
 		return prepareServers(req)
 	}
 	// Settings previews never alter active connections or account/proxy state.
-	if req.Operation == "server_list" || req.Operation == "server_probe" || req.Operation == "capabilities" {
+	// push_poll and push_stop only read or stop local state, so the high-rate
+	// poll the UI drives must not pay for config commits or failover.
+	if req.Operation == "server_list" || req.Operation == "server_probe" || req.Operation == "capabilities" ||
+		req.Operation == "push_poll" || req.Operation == "push_stop" {
 		return dispatch(req)
 	}
-	if err := configureProxy(req.Proxy); err != nil {
+	if err := applyConfig(req); err != nil {
 		return nil, err
-	}
-	if err := configureServers(req.Servers); err != nil {
-		return nil, err
-	}
-	if req.CalendarPath != calendarPath {
-		dropClient(false, false)
-		dropClient(true, false)
-		calendarPath = req.CalendarPath
 	}
 	return dispatchWithFailover(req)
+}
+
+// applyConfig commits the settings carried by a request. Every caller in one
+// process sends the same settings, so a concurrent commit is a no-op; the lock
+// exists only to keep the globals consistent, and it is never held while a
+// socket is being closed.
+func applyConfig(req request) error {
+	configMu.Lock()
+	proxyChanged, err := setProxyLocked(req.Proxy)
+	if err != nil {
+		configMu.Unlock()
+		return err
+	}
+	servers, err := normalizeServers(req.Servers)
+	if err != nil {
+		configMu.Unlock()
+		return err
+	}
+	mainChanged := !reflect.DeepEqual(activeServers.Main, servers.Main)
+	exChanged := !reflect.DeepEqual(activeServers.Ex, servers.Ex)
+	activeServers = servers
+	calendarChanged := req.CalendarPath != calendarPath
+	calendarPath = req.CalendarPath
+	configMu.Unlock()
+
+	if proxyChanged {
+		catalogMu.Lock()
+		catalog, catalogWarning = nil, ""
+		boardLists = make(map[uint16][]proto.MACBoardListItem)
+		breadthMu.Lock()
+		breadthCache = nil
+		breadthMu.Unlock()
+		catalogMu.Unlock()
+		resetRoute(false)
+		resetRoute(true)
+		dropClient(false)
+		dropClient(true)
+		return nil
+	}
+	if mainChanged || calendarChanged {
+		resetRoute(false)
+		dropClient(false)
+	}
+	if exChanged || calendarChanged {
+		resetRoute(true)
+		dropClient(true)
+	}
+	return nil
 }
 
 //export MyStocksNetworkProxy

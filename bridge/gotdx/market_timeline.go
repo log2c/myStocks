@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/bensema/gotdx"
 	"github.com/bensema/gotdx/proto"
 )
 
@@ -20,11 +21,22 @@ type breadthTimelinePoint struct {
 func marketBreadthTimeline(asOf time.Time, total int) ([]breadthTimelinePoint, error) {
 	// For these two statistical instruments, Price/Avg contain counts rather
 	// than security prices: 880005 = rise/fall, 880006 = limit up/down.
-	riseFall, err := client(false).MACTickCharts(1, "880005", 0, 1)
-	if err != nil {
+	var riseFall, limits *proto.MACTickChartsReply
+	if err := withBulk(false, func(c *gotdx.Client) error {
+		var err error
+		riseFall, err = c.MACTickCharts(1, "880005", 0, 1)
+		return err
+	}); err != nil {
 		return nil, fmt.Errorf("TDX breadth timeline: %w", err)
 	}
-	limits, limitErr := client(false).MACTickCharts(1, "880006", 0, 1)
+	var limitErr error
+	if err := withBulk(false, func(c *gotdx.Client) error {
+		var err error
+		limits, err = c.MACTickCharts(1, "880006", 0, 1)
+		return err
+	}); err != nil {
+		limitErr = err
+	}
 	points, err := projectBreadthTimeline(riseFall, limits, asOf, total)
 	if err != nil {
 		return nil, err

@@ -5,9 +5,11 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bensema/gotdx"
+	"github.com/bensema/gotdx/proto"
 	"github.com/bensema/gotdx/types"
 )
 
@@ -58,9 +60,12 @@ func hotBoards(req request) (any, error) {
 			markets = append(markets, uint8(b.Market))
 			codes = append(codes, b.Code)
 		}
-		reply, err := client(false).MACSymbolQuotes(markets, codes, rankFields())
-		if err != nil {
-			reset(false)
+		var reply *proto.MACSymbolQuotesReply
+		if err := withBulk(false, func(c *gotdx.Client) error {
+			var err error
+			reply, err = c.MACSymbolQuotes(markets, codes, rankFields())
+			return err
+		}); err != nil {
 			return nil, err
 		}
 		if len(reply.Stocks) != end-start {
@@ -116,9 +121,12 @@ func members(req request) (any, error) {
 	if count > 10000 {
 		return nil, fmt.Errorf("member count exceeds 10000")
 	}
-	reply, err := client(false).MACBoardMembersQuotesDynamic(s.code, count, uint16(gotdx.MACSortChangePct), 1, rankFields())
-	if err != nil {
-		reset(false)
+	var reply *proto.MACBoardMembersQuotesDynamicReply
+	if err := withBulk(false, func(c *gotdx.Client) error {
+		var err error
+		reply, err = c.MACBoardMembersQuotesDynamic(s.code, count, uint16(gotdx.MACSortChangePct), 1, rankFields())
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	items := []rankItem{}
@@ -130,19 +138,31 @@ func members(req request) (any, error) {
 	return map[string]any{"items": items}, nil
 }
 
-var breadthCache map[string]any
-var breadthExpires time.Time
+// breadthMu guards the shared breadth snapshot. The breadth aggregation walks
+// the whole market on the bulk lane and takes seconds, so concurrent callers
+// share one result instead of each starting a scan.
+var (
+	breadthMu      sync.Mutex
+	breadthCache   map[string]any
+	breadthExpires time.Time
+)
 
 func marketBreadth(req request) (any, error) {
-	if !req.Force && breadthCache != nil && time.Now().Before(breadthExpires) {
-		return breadthCache, nil
+	breadthMu.Lock()
+	cached, expires := breadthCache, breadthExpires
+	breadthMu.Unlock()
+	if !req.Force && cached != nil && time.Now().Before(expires) {
+		return cached, nil
 	}
 	// 880001 covers the complete A-share market. These fields are counts for
 	// boards; on ordinary equities the same field bits encode orderbook sizes.
 	bitmap := gotdx.MACFieldBitmap(gotdx.MACFieldClose, gotdx.MACFieldUpCount, gotdx.MACFieldDownCount, gotdx.MACFieldLimitUpCount, gotdx.MACFieldLimitDownCount, gotdx.MACFieldServerUpdateDate, gotdx.MACFieldServerUpdateTime)
-	reply, err := client(false).MACSymbolQuotes([]uint8{1}, []string{"880001"}, bitmap)
-	if err != nil {
-		reset(false)
+	var reply *proto.MACSymbolQuotesReply
+	if err := withBulk(false, func(c *gotdx.Client) error {
+		var err error
+		reply, err = c.MACSymbolQuotes([]uint8{1}, []string{"880001"}, bitmap)
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	if len(reply.Stocks) != 1 {
@@ -154,16 +174,17 @@ func marketBreadth(req request) (any, error) {
 		return nil, fmt.Errorf("TDX market summary lacks required fields")
 	}
 	// The membership total gives the universe size; no equity quotes are summed
-	// on top of index turnover, which would double-count the same trades.
-	count, err := client(false).GetMACBoardMembersQuotesDynamic("880001", 0, 0, 1, 1, gotdx.MACFieldBitmap(gotdx.MACFieldClose))
+	// on top of index turnover, which would double-count the same trades. The
+	// same cached value serves the lightweight summary on the quote batch.
+	total, err := breadthUniverse()
 	if err != nil {
 		return nil, err
 	}
-	flat := int(count.Total) - int(*up) - int(*down)
+	flat := total - int(*up) - int(*down)
 	if flat < 0 {
 		return nil, fmt.Errorf("TDX market breadth counts exceed membership total")
 	}
-	distribution, err := breadthDistribution()
+	distribution, distributionSource, err := breadthDistribution()
 	if err != nil {
 		return nil, err
 	}
@@ -176,16 +197,17 @@ func marketBreadth(req request) (any, error) {
 		return nil, fmt.Errorf("TDX returned invalid trading timestamp")
 	}
 	now := updated.UnixMilli()
-	timeline, trendErr := marketBreadthTimeline(updated, int(count.Total))
+	timeline, trendErr := marketBreadthTimeline(updated, total)
 	// The server keeps both series after the close; startup no longer needs
 	// a process-local history of snapshots to reconstruct the trading day.
 	timeline = appendBreadthClose(timeline, updated, int(*up), int(*down), int(*limitUp), int(*limitDown))
-	result := map[string]any{"upCount": int(*up), "downCount": int(*down), "flatCount": flat, "limitUpCount": int(*limitUp), "limitDownCount": int(*limitDown), "lastUpdatedAtMs": now, "distribution": distribution, "overviewTimeline": timeline}
+	result := map[string]any{"upCount": int(*up), "downCount": int(*down), "flatCount": flat, "limitUpCount": int(*limitUp), "limitDownCount": int(*limitDown), "lastUpdatedAtMs": now, "distribution": distribution, "distributionSource": distributionSource, "overviewTimeline": timeline}
 	if trendErr != nil {
 		result["trendError"] = trendErr.Error()
 	}
-	breadthCache = result
-	breadthExpires = time.Now().Add(30 * time.Second)
+	breadthMu.Lock()
+	breadthCache, breadthExpires = result, time.Now().Add(30*time.Second)
+	breadthMu.Unlock()
 	return result, nil
 }
 func chinaZone() *time.Location {
@@ -195,11 +217,26 @@ func chinaZone() *time.Location {
 	}
 	return z
 }
-func breadthDistribution() ([]map[string]any, error) {
+
+// breadthDistribution prefers the published aggregate and only pays for the
+// full-market pull when that is unavailable. The source is reported so a silent
+// regression back to the expensive path stays visible.
+func breadthDistribution() ([]map[string]any, string, error) {
+	if items, err := thsDistribution(); err == nil {
+		return items, "ths", nil
+	}
+	items, err := breadthDistributionTDX()
+	return items, "tdx", err
+}
+
+func breadthDistributionTDX() ([]map[string]any, error) {
 	bitmap := gotdx.MACFieldBitmap(gotdx.MACFieldClose, gotdx.MACFieldPreClose)
-	reply, err := client(false).MACBoardMembersQuotesDynamic("880001", 10000, uint16(gotdx.MACSortCode), 1, bitmap)
-	if err != nil {
-		reset(false)
+	var reply *proto.MACBoardMembersQuotesDynamicReply
+	if err := withBulk(false, func(c *gotdx.Client) error {
+		var err error
+		reply, err = c.MACBoardMembersQuotesDynamic("880001", 10000, uint16(gotdx.MACSortCode), 1, bitmap)
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	if len(reply.Stocks) != int(reply.Total) {
@@ -213,16 +250,15 @@ func breadthDistribution() ([]map[string]any, error) {
 		}
 		bins[distributionBin(*pct)]++
 	}
-	labels := []string{"<-9%", "-9~-7%", "-7~-5%", "-5~-3%", "-3~0%", "0%", "0~3%", "3~5%", "5~7%", "7~9%", ">9%"}
 	result := []map[string]any{}
 	for i, n := range bins {
-		result = append(result, map[string]any{"bucket": labels[i], "value": n})
+		result = append(result, map[string]any{"bucket": distributionLabels[i], "value": n})
 	}
 	return result, nil
 }
 func distributionBin(p float64) int {
 	switch {
-	case p <= -9:
+	case p <= -10:
 		return 0
 	case p <= -7:
 		return 1
@@ -240,7 +276,7 @@ func distributionBin(p float64) int {
 		return 7
 	case p < 7:
 		return 8
-	case p < 9:
+	case p < 10:
 		return 9
 	default:
 		return 10

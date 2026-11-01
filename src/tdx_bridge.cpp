@@ -8,8 +8,6 @@
 #include <QJsonArray>
 #include <QJsonParseError>
 #include <QLibrary>
-#include <QMutex>
-#include <QMutexLocker>
 #include <QtConcurrent>
 
 namespace tdx_bridge {
@@ -95,8 +93,8 @@ QJsonObject networkProxyBlocking(const AppConfig& config, QString* error) {
 }
 
 QJsonObject requestBlocking(const QJsonObject& payload, QString* error) {
-    static QMutex mutex;
-    QMutexLocker locker(&mutex);
+    // No client-side serialization: the bridge keeps one connection per lane and
+    // serializes only within a lane, so a directory scan cannot block quotes.
     QJsonObject request = payload;
     const QDir bridgeDir = QFileInfo(bridge().library.fileName()).dir();
 #if defined(Q_OS_MACOS)

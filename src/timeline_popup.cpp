@@ -1925,7 +1925,7 @@ private:
     }
 
     void startRefreshTimer() {
-        const int intervalMs = qBound(10, m_cfg.timelineChartRefreshSecs, 3600) * 1000;
+        const int intervalMs = qBound(1, m_cfg.timelineChartRefreshSecs, 3600) * 1000;
         m_refreshTimer->start(intervalMs);
     }
 
@@ -1999,7 +1999,8 @@ private:
         entry.points = points;
         entry.preClose = preClose;
         entry.tradePeriods = tradePeriods;
-        entry.expiresAtUtc = QDateTime::currentDateTimeUtc().addMSecs(app_constants::kNetworkCacheTtlMs);
+        entry.expiresAtUtc = QDateTime::currentDateTimeUtc()
+            .addMSecs(app_constants::timelineCacheTtlMs(m_cfg.timelineChartRefreshSecs));
         m_timelineCache.insert(cacheKey, entry);
     }
 

@@ -28,6 +28,9 @@ public:
     void setHotSectors(const QVector<HotRankItem>& items);
     void setHotConcepts(const QVector<HotRankItem>& items);
     void setMarketBreadthSnapshot(const MarketBreadthSnapshot& snapshot);
+    // Counts arrive with the quote batch far more often than the full snapshot.
+    // They must not clear the distribution and timeline the breadth window keeps.
+    void setMarketBreadthCounts(const MarketBreadthCounts& counts);
     void setConfig(const AppConfig& cfg);
     void setHoverReadingVisualState(bool active);
     void setLanguage(const QString& language);

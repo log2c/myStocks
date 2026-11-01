@@ -80,6 +80,7 @@ int main(int argc, char** argv) {
     cfg.proxyHost = "127.0.0.1";
     cfg.proxyPort = 17890;
     cfg.pollMs = 4700;
+    cfg.quoteSnapshotSecs = 9;
     cfg.tdxMainAutoSelect = false;
     cfg.tdxMainServer = QStringLiteral("127.0.0.1:17709");
     cfg.tdxMainServerPool = {QStringLiteral("127.0.0.1:17709"), QStringLiteral("main.example:7709")};
@@ -92,6 +93,7 @@ int main(int argc, char** argv) {
     check(loaded.userAgentMode == "random" && loaded.userAgent == cfg.userAgent,
         "The User-Agent mode and custom value must round trip independently");
     check(loaded.dailyKlineDays == 120, "Daily candle range did not persist");
+    check(loaded.quoteSnapshotSecs == 9, "Quote snapshot interval did not persist");
     check(loaded.dailyKlineMAPeriods == QVector<int>({10, 60, 250}), "MA periods must persist, normalize and reject unknowns");
     check(!loaded.tdxMainAutoSelect && loaded.tdxExAutoSelect, "Independent selection modes were lost");
     check(loaded.tdxMainServer == cfg.tdxMainServer && loaded.tdxExServer == cfg.tdxExServer, "Selected server addresses were lost");

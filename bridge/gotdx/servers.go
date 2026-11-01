@@ -37,8 +37,16 @@ type serverRoute struct {
 	generation uint64
 }
 
-var activeServers serverConfig
-var mainRoute, exRoute serverRoute
+var (
+	// configMu guards the settings snapshot (proxy, servers, calendar). It is
+	// only ever held for short reads and writes, never across an exchange, so
+	// a lane may take it while holding its own lock.
+	configMu      sync.Mutex
+	routeMu       sync.Mutex
+	activeServers serverConfig
+	mainRoute     serverRoute
+	exRoute       serverRoute
+)
 
 func route(extended bool) *serverRoute {
 	if extended {
@@ -47,11 +55,46 @@ func route(extended bool) *serverRoute {
 	return &mainRoute
 }
 func group(extended bool) serverGroup {
+	configMu.Lock()
+	defer configMu.Unlock()
 	if extended {
 		return activeServers.Ex
 	}
 	return activeServers.Main
 }
+func proxySnapshot() proxyConfig {
+	configMu.Lock()
+	defer configMu.Unlock()
+	return activeProxy
+}
+func proxyActive() bool {
+	p := proxySnapshot()
+	return p.enabled() || p.Interface != ""
+}
+func calendarPathSnapshot() string {
+	configMu.Lock()
+	defer configMu.Unlock()
+	return calendarPath
+}
+func routeGeneration(extended bool) uint64 {
+	routeMu.Lock()
+	defer routeMu.Unlock()
+	return route(extended).generation
+}
+func markRouteFailure(extended bool, address string) {
+	routeMu.Lock()
+	defer routeMu.Unlock()
+	r := route(extended)
+	if address != "" {
+		if r.failed == nil {
+			r.failed = make(map[string]time.Time)
+		}
+		r.failed[address] = time.Now().Add(time.Minute)
+	}
+	r.expires = time.Time{}
+	r.generation++
+}
+
 func defaultHosts(extended bool) []gotdx.HostInfo {
 	if extended {
 		return gotdx.MACExHosts()
@@ -107,30 +150,49 @@ func normalizeGroup(g serverGroup, extended bool) (serverGroup, error) {
 	}
 	return g, nil
 }
-func configureServers(config serverConfig) error {
+func normalizeServers(config serverConfig) (serverConfig, error) {
 	var err error
 	config.Main, err = normalizeGroup(config.Main, false)
 	if err != nil {
-		return err
+		return config, err
 	}
 	config.Ex, err = normalizeGroup(config.Ex, true)
 	if err != nil {
+		return config, err
+	}
+	return config, nil
+}
+
+func configureServers(config serverConfig) error {
+	configMu.Lock()
+	config, err := normalizeServers(config)
+	if err != nil {
+		configMu.Unlock()
 		return err
 	}
-	for _, extended := range []bool{false, true} {
-		next := config.Main
-		if extended {
-			next = config.Ex
-		}
-		if !reflect.DeepEqual(group(extended), next) {
-			dropClient(extended, false)
-			r := route(extended)
-			r.ordered, r.failed = nil, nil
-			r.expires = time.Time{}
-		}
-	}
+	mainChanged := !reflect.DeepEqual(activeServers.Main, config.Main)
+	exChanged := !reflect.DeepEqual(activeServers.Ex, config.Ex)
 	activeServers = config
+	configMu.Unlock()
+	// Lanes rebuild lazily; closing them here only reclaims sockets that are
+	// already idle, and the epoch bump also covers the bulk lane.
+	if mainChanged {
+		resetRoute(false)
+		dropClient(false)
+	}
+	if exChanged {
+		resetRoute(true)
+		dropClient(true)
+	}
 	return nil
+}
+
+func resetRoute(extended bool) {
+	routeMu.Lock()
+	defer routeMu.Unlock()
+	r := route(extended)
+	r.ordered, r.failed = nil, nil
+	r.expires = time.Time{}
 }
 
 // Probe through the same proxy as quotation traffic; TCP timing is not ICMP ping.
@@ -175,8 +237,11 @@ func serverOrder(extended bool) []string {
 		return []string{g.Address}
 	}
 	now := time.Now()
+	routeMu.Lock()
 	if now.Before(r.expires) && len(r.ordered) != 0 {
-		return r.ordered
+		ordered := append([]string(nil), r.ordered...)
+		routeMu.Unlock()
+		return ordered
 	}
 	candidates := make([]string, 0, len(g.Addresses))
 	for _, a := range g.Addresses {
@@ -184,38 +249,53 @@ func serverOrder(extended bool) []string {
 			candidates = append(candidates, a)
 		}
 	}
+	routeMu.Unlock()
 	// Retry the pool when every entry is cooling down, so recovered nodes return.
 	if len(candidates) == 0 {
 		candidates = g.Addresses
 	}
-	r.ordered = nil
-	for _, p := range probeServers(candidates, activeProxy) {
+	// Probing is network work and must not run under the route lock.
+	reachable := make([]string, 0, len(candidates))
+	for _, p := range probeServers(candidates, proxySnapshot()) {
 		if p.Reachable {
-			r.ordered = append(r.ordered, p.Address)
+			reachable = append(reachable, p.Address)
 		}
 	}
+	routeMu.Lock()
+	r.ordered = reachable
 	r.expires = now.Add(5 * time.Minute)
-	return r.ordered
+	routeMu.Unlock()
+	return append([]string(nil), reachable...)
 }
-func serverOptions(extended bool) []gotdx.Option {
+
+// serverOptions resolves addresses and, when a proxy or interface is active,
+// wraps each of them in a loopback tunnel. The returned tunnels belong to the
+// lane that called this, which closes them with its client; the route only keeps
+// a diagnostic record so a reconnect does not accumulate dead listeners.
+func serverOptions(extended bool) ([]gotdx.Option, []*proxyTunnel, map[string]string) {
 	addresses := serverOrder(extended)
+	p := proxySnapshot()
 	r := route(extended)
-	r.remote = make(map[string]string)
+	remote := make(map[string]string)
+	tunnels := make([]*proxyTunnel, 0)
 	local := make([]string, 0, len(addresses))
 	for _, address := range addresses {
-		if activeProxy.enabled() || activeProxy.Interface != "" {
-			t, err := newTunnel(activeProxy, []string{address})
+		if p.enabled() || p.Interface != "" {
+			t, err := newTunnel(p, []string{address})
 			if err != nil {
 				continue
 			}
-			r.tunnels = append(r.tunnels, t)
+			tunnels = append(tunnels, t)
 			a := t.listener.Addr().String()
-			r.remote[a] = address
+			remote[a] = address
 			local = append(local, a)
 		} else {
 			local = append(local, address)
 		}
 	}
+	routeMu.Lock()
+	r.tunnels = tunnels
+	routeMu.Unlock()
 	// Clear the SDK defaults even if a local tunnel could not be created.
 	address := ""
 	if len(local) > 0 {
@@ -223,48 +303,24 @@ func serverOptions(extended bool) []gotdx.Option {
 		local = local[1:]
 	}
 	if extended {
-		return []gotdx.Option{gotdx.WithMacExTCPAddress(address), gotdx.WithMacExTCPAddressPool(local...), gotdx.WithAutoSelectFastest(false)}
+		return []gotdx.Option{gotdx.WithMacExTCPAddress(address), gotdx.WithMacExTCPAddressPool(local...), gotdx.WithAutoSelectFastest(false)}, tunnels, remote
 	}
-	return []gotdx.Option{gotdx.WithMacTCPAddress(address), gotdx.WithMacTCPAddressPool(local...), gotdx.WithAutoSelectFastest(false)}
+	return []gotdx.Option{gotdx.WithMacTCPAddress(address), gotdx.WithMacTCPAddressPool(local...), gotdx.WithAutoSelectFastest(false)}, tunnels, remote
 }
 func currentServer(extended bool) string {
-	c := mainClient
-	if extended {
-		c = exClient
-	}
-	if c == nil {
-		return ""
-	}
-	a := c.CurrentAddress()
-	if remote := route(extended).remote[a]; remote != "" {
-		return remote
-	}
-	return a
+	return laneFor(extended, laneHot).address()
 }
-func dropClient(extended, failed bool) {
+func dropClient(extended bool) {
+	// Lanes rebuild lazily; bumping the family epoch covers the hot, bulk and
+	// scan sockets without cutting an exchange that is already in flight. Each
+	// lane closes its own tunnels with its client, so the route record is only
+	// dropped here rather than closed.
+	familyEpoch(extended).Add(1)
+	closeFamilyLanes(extended)
+	routeMu.Lock()
 	r := route(extended)
-	if failed {
-		if address := currentServer(extended); address != "" {
-			if r.failed == nil {
-				r.failed = make(map[string]time.Time)
-			}
-			r.failed[address] = time.Now().Add(time.Minute)
-			r.generation++
-		}
-		r.expires = time.Time{}
-	}
-	slot := &mainClient
-	if extended {
-		slot = &exClient
-	}
-	if *slot != nil {
-		(*slot).Disconnect()
-		*slot = nil
-	}
-	for _, t := range r.tunnels {
-		t.close()
-	}
 	r.tunnels, r.remote = nil, nil
+	routeMu.Unlock()
 }
 func listServers() any {
 	groups := make(map[string]any)
@@ -303,10 +359,10 @@ func testServers(req request) (any, error) {
 // Retry once only after a transport reset. Invalid symbols and empty data do not
 // trigger node rotation; successful parts of a quote batch remain intact.
 func dispatchWithFailover(req request) (any, error) {
-	mainGeneration, exGeneration := mainRoute.generation, exRoute.generation
+	mainGeneration, exGeneration := routeGeneration(false), routeGeneration(true)
 	result, err := dispatch(req)
-	failed := (mainGeneration != mainRoute.generation && group(false).Mode == "auto") ||
-		(exGeneration != exRoute.generation && group(true).Mode == "auto")
+	failed := (mainGeneration != routeGeneration(false) && group(false).Mode == "auto") ||
+		(exGeneration != routeGeneration(true) && group(true).Mode == "auto")
 	if !failed {
 		return result, err
 	}
@@ -347,10 +403,12 @@ func prepareServers(req request) (any, error) {
 	if err := configureProxy(req.Proxy); err != nil {
 		return nil, err
 	}
-	if req.CalendarPath != calendarPath {
-		dropClient(false, false)
-		dropClient(true, false)
+	if req.CalendarPath != calendarPathSnapshot() {
+		dropClient(false)
+		dropClient(true)
+		configMu.Lock()
 		calendarPath = req.CalendarPath
+		configMu.Unlock()
 	}
 	if _, err := interfaceDialer(req.Proxy.Interface, 3*time.Second); err != nil {
 		return nil, err
@@ -392,41 +450,45 @@ func prepareServers(req request) (any, error) {
 			}
 		}
 	}
-	dropClient(extended, false)
-	if extended {
-		activeServers.Ex = g
-	} else {
-		activeServers.Main = g
-	}
+	dropClient(extended)
+	setActiveGroup(extended, g)
+	routeMu.Lock()
 	r := route(extended)
 	r.failed = make(map[string]time.Time)
+	routeMu.Unlock()
 	for _, candidate := range candidates {
 		// Limit each protocol validation to this one node. SDK fallback must not
 		// silently accept a different address than the one being measured.
+		routeMu.Lock()
 		r.ordered, r.expires = []string{candidate.Address}, time.Now().Add(5*time.Minute)
-		opts := append(serverOptions(extended), gotdx.WithTimeoutSec(3), gotdx.WithFuturesCalendarPath(calendarPath))
+		routeMu.Unlock()
+		opts, tunnels, remote := serverOptions(extended)
+		opts = append(opts, gotdx.WithTimeoutSec(3), gotdx.WithFuturesCalendarPath(calendarPathSnapshot()))
 		var c *gotdx.Client
 		market, code := uint8(1), "000001"
 		if extended {
 			c = gotdx.NewMACEx(opts...)
 			market, code = 27, "HSI"
-			exClient = c
 		} else {
 			c = gotdx.NewMAC(opts...)
-			mainClient = c
 		}
 		_, err := c.MACSymbolQuotes([]uint8{market}, []string{code}, gotdx.MACFieldBitmap(gotdx.MACFieldClose))
 		if err != nil {
+			for _, t := range tunnels {
+				t.close()
+			}
+			routeMu.Lock()
 			r.failed[candidate.Address] = time.Now().Add(time.Minute)
-			dropClient(extended, false)
+			routeMu.Unlock()
+			dropClient(extended)
 			continue
 		}
 		g.Mode, g.Address = mode, candidate.Address
-		if extended {
-			activeServers.Ex = g
-		} else {
-			activeServers.Main = g
-		}
+		setActiveGroup(extended, g)
+		// Hand the verified connection to the hot lane so the first quote does
+		// not pay for a second handshake. The bulk lane reconnects on demand.
+		installLaneClient(extended, laneHot, c, tunnels, remote)
+		routeMu.Lock()
 		r.ordered = []string{candidate.Address}
 		for _, other := range candidates {
 			if other.Address != candidate.Address && r.failed[other.Address].IsZero() {
@@ -434,12 +496,25 @@ func prepareServers(req request) (any, error) {
 			}
 		}
 		r.expires = time.Now().Add(5 * time.Minute)
+		routeMu.Unlock()
 		return map[string]any{
 			"address": candidate.Address, "latencyMs": candidate.LatencyMS,
 			"previous": previous, "switched": mode == "manual" && previous != candidate.Address,
 			"protocolVerified": true,
 		}, nil
 	}
+	routeMu.Lock()
 	r.ordered, r.expires = nil, time.Time{}
+	routeMu.Unlock()
 	return nil, fmt.Errorf("no usable %s TDX route; check the address pool or proxy", req.Kind)
+}
+
+func setActiveGroup(extended bool, g serverGroup) {
+	configMu.Lock()
+	defer configMu.Unlock()
+	if extended {
+		activeServers.Ex = g
+	} else {
+		activeServers.Main = g
+	}
 }

@@ -16,7 +16,7 @@ import (
 // Qt has no general API to bind QNetworkAccessManager to an interface. Its
 // HTTP(S) traffic uses an authenticated loopback SOCKS5 relay; TLS stays in Qt,
 // and every remote connection (including an upstream proxy) uses dialProxy.
-// Relay creation uses its own lock, independent of serialized TDX requests.
+// Relay creation uses its own lock, independent of the TDX request lanes.
 type networkRelay struct {
 	listener net.Listener
 	password string

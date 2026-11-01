@@ -172,6 +172,11 @@ void AppController::completeLoading() {
     m_splash->hide();
     if (m_window) m_window->setLoading(false);
     m_loading = false;
+    // The directory scan takes seconds on a cold TDX session. Start it now on
+    // the bridge's bulk lane so opening the search box later is instant.
+    tdx_bridge::request(this, m_cfg,
+        {{QStringLiteral("operation"), QStringLiteral("warm")}},
+        [](const QJsonObject&, const QString&) {});
     if (!m_routeWarnings.isEmpty() && m_tray) {
         m_tray->showMessage(i18n::t("app.name", m_resolvedLanguage), m_routeWarnings.join(QLatin1Char('\n')),
             QSystemTrayIcon::Warning, 7000);

@@ -30,6 +30,9 @@ public:
     void setLoading(bool loading);
     void toggleMarketBreadthDetailPopupFromTray();
     QRect marketBreadthDetailPopupGeometry() const;
+    // The breadth window is the only consumer of the distribution and timeline,
+    // so its visibility decides whether that expensive request is worth running.
+    bool marketBreadthDetailPopupVisible() const;
     void setMarketBreadthDetailPopupGeometry(const QRect& rect);
     void setMarketBreadthDetailWatchlistCallbacks(
         std::function<bool(const QString&)> containsCallback,

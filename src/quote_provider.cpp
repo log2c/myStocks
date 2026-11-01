@@ -503,7 +503,8 @@ void IQuoteProvider::applyConfig(const AppConfig& cfg) {
 EastMoneyQuoteProvider::EastMoneyQuoteProvider(QObject* parent)
     : IQuoteProvider(parent) {}
 
-void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks) {
+void EastMoneyQuoteProvider::fetchQuotes(const QVector<StockItem>& stocks, bool force) {
+    Q_UNUSED(force)
     // Ensure only one in-flight polling request at a time: cancel any previous
     // request (e.g. one that is timing out) so its stale handler cannot run and
     // corrupt the shared buffer with an overlapping response.
@@ -2363,7 +2364,10 @@ void EastMoneyIndexQuoteProvider::applyConfig(const AppConfig& cfg) {
         m_tdxProvider = nullptr;
     }
     if (normalizeQuoteSource(cfg.quoteSource) == QStringLiteral("tdx")) {
-        m_tdxProvider = new TdxQuoteProvider(this);
+        // Index quotes are a handful of preset codes refreshed on the breadth
+        // cadence; they must not touch the watchlist's push subscription, which
+        // the bridge holds once per process.
+        m_tdxProvider = new TdxQuoteProvider(this, false);
         m_tdxProvider->applyConfig(cfg);
         connect(m_tdxProvider, &IQuoteProvider::quotesReady, this, [this](const QVector<QuoteItem>& quotes) {
             QHash<QString, QuoteItem> byCode;

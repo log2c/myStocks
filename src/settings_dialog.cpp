@@ -672,7 +672,10 @@ SettingsDialog::SettingsDialog(
 AppConfig SettingsDialog::config() const {
     AppConfig out = m_cfg;
 
-    out.pollMs = m_pollSpin->value();
+    out.pollMs = qBound(500, m_pollSpin->value(), 60000);
+    out.quoteSnapshotSecs = m_quoteSnapshotSpin
+        ? qBound(1, m_quoteSnapshotSpin->value(), 300)
+        : out.quoteSnapshotSecs;
     out.hotkey = normalizedHotkeySequence(m_hotkeyEdit->keySequence()).toString(QKeySequence::PortableText);
     out.marketBreadthHotkey = normalizedHotkeySequence(
         m_marketBreadthHotkeyEdit->keySequence()
@@ -762,6 +765,9 @@ AppConfig SettingsDialog::config() const {
         ? m_timelineChartEnabledCheck->isChecked()
         : out.timelineChartEnabled;
     out.dailyKlineDays = m_dailyKlineDaysSpin ? m_dailyKlineDaysSpin->value() : out.dailyKlineDays;
+    out.dailyKlineRefreshSecs = m_dailyKlineRefreshSecsSpin
+        ? qBound(1, m_dailyKlineRefreshSecsSpin->value(), 300)
+        : out.dailyKlineRefreshSecs;
     out.dailyKlineMAPeriods.clear();
     for (auto it = m_dailyKlineMAChecks.cbegin(); it != m_dailyKlineMAChecks.cend(); ++it) {
         if (it.value()->isChecked()) out.dailyKlineMAPeriods.append(it.key());
@@ -769,7 +775,7 @@ AppConfig SettingsDialog::config() const {
     out.timelineChartHoverDelayMs = m_timelineChartHoverDelaySpin
         ? m_timelineChartHoverDelaySpin->value() : out.timelineChartHoverDelayMs;
     out.timelineChartRefreshSecs = m_timelineChartRefreshSecsSpin
-        ? qBound(10, m_timelineChartRefreshSecsSpin->value(), 3600)
+        ? qBound(1, m_timelineChartRefreshSecsSpin->value(), 3600)
         : out.timelineChartRefreshSecs;
     out.marketBreadthEnabled = m_marketBreadthEnabledCheck
         ? m_marketBreadthEnabledCheck->isChecked()
@@ -1094,10 +1100,20 @@ QWidget* SettingsDialog::buildGeneralTab() {
     applyCompactFormLayout(form);
 
     m_pollSpin = new QSpinBox(w);
-    m_pollSpin->setRange(3000, 60000);
-    m_pollSpin->setSingleStep(10);
-    m_pollSpin->setValue(qMax(3000, m_cfg.pollMs));
+    // The refresh timer already accepts 500 ms; only this range kept it at 3 s.
+    m_pollSpin->setRange(500, 60000);
+    m_pollSpin->setSingleStep(50);
+    m_pollSpin->setValue(qMax(500, m_cfg.pollMs));
+    m_pollSpin->setToolTip(trText("settings.general.pollHint"));
     applyNumericSpinBoxWidth(m_pollSpin);
+
+    m_quoteSnapshotSpin = new QSpinBox(w);
+    m_quoteSnapshotSpin->setObjectName(QStringLiteral("quoteSnapshotSecsSpin"));
+    m_quoteSnapshotSpin->setRange(1, 300);
+    m_quoteSnapshotSpin->setValue(qBound(1, m_cfg.quoteSnapshotSecs, 300));
+    m_quoteSnapshotSpin->setSuffix(trText("settings.display.timelineRefreshSuffix"));
+    m_quoteSnapshotSpin->setToolTip(trText("settings.general.snapshotHint"));
+    applyNumericSpinBoxWidth(m_quoteSnapshotSpin);
 
     auto buildHotkeyEditorWidget = [this, w](
         const QString& configuredHotkey,
@@ -1184,6 +1200,7 @@ QWidget* SettingsDialog::buildGeneralTab() {
     }
 
     form->addRow(trText("settings.general.poll"), m_pollSpin);
+    form->addRow(trText("settings.general.snapshot"), m_quoteSnapshotSpin);
     addCompactFormRow(form, m_startupShowFloatingWindowCheck);
     form->addRow(trText("settings.general.language"), m_languageCombo);
     root->addWidget(baseSection);
@@ -1815,10 +1832,10 @@ QWidget* SettingsDialog::buildDisplayTab() {
     timelineForm->addRow(trText("settings.display.timelineHoverDelay"), m_timelineChartHoverDelaySpin);
 
     m_timelineChartRefreshSecsSpin = new QSpinBox(w);
-    m_timelineChartRefreshSecsSpin->setRange(10, 3600);
+    m_timelineChartRefreshSecsSpin->setRange(1, 3600);
     m_timelineChartRefreshSecsSpin->setSingleStep(1);
     m_timelineChartRefreshSecsSpin->setSuffix(trText("settings.display.timelineRefreshSuffix"));
-    m_timelineChartRefreshSecsSpin->setValue(qBound(10, m_cfg.timelineChartRefreshSecs, 3600));
+    m_timelineChartRefreshSecsSpin->setValue(qBound(1, m_cfg.timelineChartRefreshSecs, 3600));
     applyNumericSpinBoxWidth(m_timelineChartRefreshSecsSpin);
     timelineForm->addRow(trText("settings.display.timelineRefresh"), m_timelineChartRefreshSecsSpin);
 
@@ -1830,6 +1847,15 @@ QWidget* SettingsDialog::buildDisplayTab() {
     m_dailyKlineDaysSpin->setToolTip(trText("settings.display.dailyHint"));
     applyNumericSpinBoxWidth(m_dailyKlineDaysSpin);
     timelineForm->addRow(trText("settings.display.dailyDays"), m_dailyKlineDaysSpin);
+
+    m_dailyKlineRefreshSecsSpin = new QSpinBox(w);
+    m_dailyKlineRefreshSecsSpin->setObjectName(QStringLiteral("dailyKlineRefreshSecsSpin"));
+    m_dailyKlineRefreshSecsSpin->setRange(1, 300);
+    m_dailyKlineRefreshSecsSpin->setValue(qBound(1, m_cfg.dailyKlineRefreshSecs, 300));
+    m_dailyKlineRefreshSecsSpin->setSuffix(trText("settings.display.timelineRefreshSuffix"));
+    m_dailyKlineRefreshSecsSpin->setToolTip(trText("settings.display.dailyRefreshHint"));
+    applyNumericSpinBoxWidth(m_dailyKlineRefreshSecsSpin);
+    timelineForm->addRow(trText("settings.display.dailyRefresh"), m_dailyKlineRefreshSecsSpin);
 
     QWidget* dailyMARow = new QWidget(w);
     QGridLayout* dailyMALayout = new QGridLayout(dailyMARow);

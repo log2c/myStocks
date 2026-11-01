@@ -1,5 +1,18 @@
 find_program(MYSTOCKS_GO_EXECUTABLE go REQUIRED)
-set(MYSTOCKS_GOTDX_REF "main" CACHE STRING "gotdx Git branch, tag or commit")
+# Pinned rather than "main": upstream 7cedf6d replaced WithAutoSelectFastest with
+# a dynamic connection pool, which the bridge has not been migrated to yet. Bump
+# this together with that migration, not on its own.
+set(MYSTOCKS_GOTDX_PINNED_REF "d2b25b9")
+set(MYSTOCKS_GOTDX_REF "${MYSTOCKS_GOTDX_PINNED_REF}" CACHE STRING "gotdx Git branch, tag or commit")
+# A cache written before the pin still holds the old default, and a cached value
+# always wins over the default above, so treat "main" as "never configured" or an
+# existing build tree would keep failing to compile. Tracking the tip stays
+# possible by naming it explicitly, e.g. "origin/main".
+if(MYSTOCKS_GOTDX_REF STREQUAL "" OR MYSTOCKS_GOTDX_REF STREQUAL "main")
+    set(MYSTOCKS_GOTDX_REF "${MYSTOCKS_GOTDX_PINNED_REF}")
+    # Write it back so the cache reports the ref actually being fetched.
+    set(MYSTOCKS_GOTDX_REF "${MYSTOCKS_GOTDX_REF}" CACHE STRING "gotdx Git branch, tag or commit" FORCE)
+endif()
 set(MYSTOCKS_GOTDX_SOURCE_DIR "" CACHE PATH "Use a local gotdx checkout instead of downloading")
 include(FetchContent)
 if(MYSTOCKS_GOTDX_SOURCE_DIR)
