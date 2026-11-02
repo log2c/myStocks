@@ -12,8 +12,10 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QUrl>
+#include <QVersionNumber>
 
 namespace {
 
@@ -41,34 +43,46 @@ QString stripVersionPrefix(const QString& tag) {
     return t;
 }
 
-// Parse "1.2.3" into a comparable tuple of ints.
-QVector<int> parseVersion(const QString& ver) {
-    QVector<int> parts;
-    const QStringList tokens = ver.split(QLatin1Char('.'));
-    for (const QString& tok : tokens) {
-        bool ok = false;
-        const int n = tok.trimmed().toInt(&ok);
-        parts.push_back(ok ? n : 0);
-    }
-    // Normalise to at least 3 components.
-    while (parts.size() < 3) {
-        parts.push_back(0);
-    }
-    return parts;
-}
-
-// Returns true when remoteVer > localVer (simple numeric comparison).
 bool versionGreaterThan(const QString& remoteVer, const QString& localVer) {
-    const QVector<int> remote = parseVersion(remoteVer);
-    const QVector<int> local = parseVersion(localVer);
-    const int n = qMax(remote.size(), local.size());
-    for (int i = 0; i < n; ++i) {
-        const int r = (i < remote.size()) ? remote[i] : 0;
-        const int l = (i < local.size())  ? local[i]  : 0;
-        if (r > l) return true;
-        if (r < l) return false;
+    static const QRegularExpression pattern(QStringLiteral(
+        "^([0-9]+(?:\\.[0-9]+)*)(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?"
+        "(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"));
+    const auto remote = pattern.match(stripVersionPrefix(remoteVer));
+    const auto local = pattern.match(stripVersionPrefix(localVer));
+    if (!remote.hasMatch() || !local.hasMatch()) {
+        return false;
     }
-    return false;
+    const int coreComparison = QVersionNumber::compare(
+        QVersionNumber::fromString(remote.captured(1)).normalized(),
+        QVersionNumber::fromString(local.captured(1)).normalized());
+    if (coreComparison != 0) {
+        return coreComparison > 0;
+    }
+    const QString remotePrerelease = remote.captured(2);
+    const QString localPrerelease = local.captured(2);
+    if (remotePrerelease.isEmpty() || localPrerelease.isEmpty()) {
+        return remotePrerelease.isEmpty() && !localPrerelease.isEmpty();
+    }
+    const QStringList remoteParts = remotePrerelease.split(QLatin1Char('.'));
+    const QStringList localParts = localPrerelease.split(QLatin1Char('.'));
+    static const QRegularExpression numeric(QStringLiteral("^[0-9]+$"));
+    for (qsizetype index = 0; index < qMin(remoteParts.size(), localParts.size()); ++index) {
+        const QString& remotePart = remoteParts[index];
+        const QString& localPart = localParts[index];
+        if (remotePart == localPart) {
+            continue;
+        }
+        const bool remoteNumeric = numeric.match(remotePart).hasMatch();
+        const bool localNumeric = numeric.match(localPart).hasMatch();
+        if (remoteNumeric != localNumeric) {
+            return !remoteNumeric;
+        }
+        if (remoteNumeric && remotePart.size() != localPart.size()) {
+            return remotePart.size() > localPart.size();
+        }
+        return remotePart > localPart;
+    }
+    return remoteParts.size() > localParts.size();
 }
 
 // Pick a platform-appropriate keyword for matching asset filenames.
@@ -191,7 +205,7 @@ void Updater::checkForUpdates() {
 
         qInfo() << "[Updater] current=" << currentVer << "remote=" << remoteVer;
 
-        if (!versionGreaterThan(remoteVer, currentVer)) {
+        if (!isNewerVersion(currentVer, tagName)) {
             emit noUpdateAvailable();
             return;
         }

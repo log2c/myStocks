@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.21)
 project(MyStocks VERSION 0.0.7 LANGUAGES CXX)
 
+set(MYSTOCKS_VERSION "${PROJECT_VERSION}" CACHE STRING "Full application version including prerelease suffix")
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
@@ -279,7 +281,7 @@ if(WIN32)
 endif()
 
 target_compile_definitions(MyStocks PRIVATE
-    APP_VERSION_STRING="${PROJECT_VERSION}"
+    APP_VERSION_STRING="${MYSTOCKS_VERSION}"
     APP_GITHUB_URL="https://github.com/log2c/myStocks"
 )
 
@@ -407,7 +409,7 @@ if(BUILD_TESTING)
         src/updater.cpp src/network_utils.cpp include/updater.h)
     target_include_directories(MyStocksUpdaterTest PRIVATE include)
     target_compile_definitions(MyStocksUpdaterTest PRIVATE
-        APP_VERSION_STRING="${PROJECT_VERSION}"
+        APP_VERSION_STRING="${MYSTOCKS_VERSION}"
         APP_GITHUB_URL="https://github.com/log2c/myStocks")
     target_link_libraries(MyStocksUpdaterTest PRIVATE Qt6::Gui Qt6::Network)
     mystocks_enable_agl_stub(MyStocksUpdaterTest)
@@ -426,7 +428,7 @@ if(BUILD_TESTING)
         ${_startup_test_sources} ${MYSTOCKS_HEADERS})
     target_include_directories(MyStocksStartupFlowTest PRIVATE include)
     target_compile_definitions(MyStocksStartupFlowTest PRIVATE
-        APP_VERSION_STRING="${PROJECT_VERSION}"
+        APP_VERSION_STRING="${MYSTOCKS_VERSION}"
         APP_GITHUB_URL="https://github.com/log2c/myStocks")
     target_link_libraries(MyStocksStartupFlowTest PRIVATE Qt6::Widgets Qt6::Network Qt6::Concurrent
         $<IF:$<TARGET_EXISTS:yaml-cpp::yaml-cpp>,yaml-cpp::yaml-cpp,yaml-cpp>)

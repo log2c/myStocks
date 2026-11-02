@@ -81,8 +81,13 @@ jobs:
       - name: Configure (Release)
         shell: bash
         run: |
+          VERSION_ARGS=()
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VERSION_ARGS+=("-DMYSTOCKS_VERSION=${GITHUB_REF_NAME#v}")
+          fi
           if [ "${{ runner.os }}" = "Windows" ]; then
             cmake -S . -B build -G Ninja \
+              "${VERSION_ARGS[@]}" \
               -DCMAKE_BUILD_TYPE=Release \
               -DBUILD_TESTING=OFF \
               -DQt6_DIR="${Qt6_DIR}" \
@@ -90,6 +95,7 @@ jobs:
               -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
           else
             cmake -S . -B build -G Ninja \
+              "${VERSION_ARGS[@]}" \
               -DCMAKE_BUILD_TYPE=Release \
               -DBUILD_TESTING=OFF \
               -DQt6_DIR="${Qt6_DIR}"

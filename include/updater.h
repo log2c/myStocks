@@ -42,6 +42,7 @@ public:
     // empty and an already accelerated URL is returned unchanged.
     static QString acceleratedUrl(const QString& url);
     static QString accelerationPrefix();
+    static bool isNewerVersion(const QString& currentVersion, const QString& remoteTag);
 
 signals:
     void updateAvailable(const Updater::ReleaseInfo& info);
@@ -53,9 +54,6 @@ signals:
     void downloadCanceled();
 
 private:
-    // Returns true if remoteTag represents a newer version than currentVersion.
-    static bool isNewerVersion(const QString& currentVersion, const QString& remoteTag);
-
     AppConfig m_cfg;
     QNetworkAccessManager* m_nam = nullptr;
     QNetworkReply* m_checkReply = nullptr;

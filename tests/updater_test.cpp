@@ -20,6 +20,23 @@ QJsonObject networkProxyBlocking(const AppConfig&, QString* error) {
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
 
+    check(Updater::isNewerVersion("0.0.7", "v0.0.8-beta.1"),
+        "A beta with a newer core version must trigger an update");
+    check(Updater::isNewerVersion("0.0.8-beta.2", "v0.0.8-beta.10"),
+        "Beta sequence numbers must be compared numerically");
+    check(Updater::isNewerVersion("0.0.8-beta.10", "v0.0.8"),
+        "A stable release must supersede its beta versions");
+    check(!Updater::isNewerVersion("0.0.8", "v0.0.8-beta.1"),
+        "A beta must not downgrade the same stable version");
+    check(!Updater::isNewerVersion("0.0.8-beta.10", "v0.0.8-beta.2"),
+        "An older beta must not trigger an update");
+    check(!Updater::isNewerVersion("0.0.8-beta.1+local", "v0.0.8-beta.1+remote"),
+        "Build metadata must not change version precedence");
+    check(Updater::isNewerVersion("0.0.8-alpha.1", "v0.0.8-beta.1"),
+        "Beta must supersede alpha for the same core version");
+    check(!Updater::isNewerVersion("0.0.8", "invalid"),
+        "Invalid release tags must not trigger an update");
+
     check(Updater::accelerationPrefix() == "https://gh-proxy.com/",
         "The domestic mirror must be gh-proxy.com");
 
