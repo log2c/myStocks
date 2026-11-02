@@ -169,6 +169,7 @@ private:
     QSpinBox* m_quoteSnapshotSpin = nullptr;
     QSpinBox* m_dailyKlineDaysSpin = nullptr;
     QSpinBox* m_dailyKlineRefreshSecsSpin = nullptr;
+    QComboBox* m_timelineChartCandleStyleCombo = nullptr;
     QMap<int, QCheckBox*> m_dailyKlineMAChecks;
     QCheckBox* m_marketBreadthEnabledCheck = nullptr;
     QSpinBox* m_marketBreadthRefreshSecsSpin = nullptr;

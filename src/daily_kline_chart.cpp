@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QNativeGestureEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPolygonF>
@@ -146,6 +147,16 @@ bool DailyKlineChart::eventFilter(QObject* watched, QEvent* event) {
                     zoomAt(wheel->position().toPoint(), std::pow(0.9, qBound(-1.0, m_wheelSteps, 1.0)));
                     m_wheelSteps = 0.0;
                 }
+                return true;
+            }
+        } else if (event->type() == QEvent::NativeGesture && isVisible()) {
+            // A Mac trackpad pinch arrives as a native zoom gesture on the
+            // widget under the cursor. Qt reports the magnification increment
+            // in value(); positive means pinch out, i.e. zoom in.
+            const auto* gesture = static_cast<QNativeGestureEvent*>(event);
+            if (gesture->gestureType() == Qt::ZoomNativeGesture) {
+                const double factor = daily_kline::pinchZoomFactor(gesture->value());
+                if (factor != 1.0) zoomAt(gesture->position().toPoint(), factor);
                 return true;
             }
         } else if (event->type() == QEvent::Leave && m_hoverIndex >= 0) {
@@ -421,10 +432,6 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
             headerMetrics.elidedText(title, Qt::ElideRight, headerRect.width()));
     }
     if (!m_status.isEmpty() || m_bars.isEmpty()) {
-        if (!showStockTitle) {
-            p.drawText(headerRect, Qt::AlignRight | Qt::AlignVCenter,
-                headerMetrics.elidedText(titleBody, Qt::ElideRight, headerRect.width()));
-        }
         p.drawText(bounds.adjusted(0, 28, 0, 0), Qt::AlignCenter | Qt::TextWordWrap, m_status);
         return;
     }
@@ -432,7 +439,9 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
     if (!showStockTitle) {
         // Statistics follow the crosshair: the hovered candle, or the newest
         // one on screen when the pointer is elsewhere. A panned view reports
-        // its own right edge rather than a candle the user cannot see.
+        // its own right edge rather than a candle the user cannot see. The
+        // period bar already names the period, so no "* periods" label shares
+        // this row.
         const int lastVisible = qBound(0, visibleStart + visibleCount - 1, total - 1);
         const int statIndex = (m_hoverIndex >= visibleStart && m_hoverIndex < visibleStart + visibleCount)
             ? m_hoverIndex
@@ -457,15 +466,8 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
                 std::isfinite(amplitude) ? QStringLiteral("%1%").arg(QString::number(amplitude, 'f', 2))
                                          : QStringLiteral("--"))
             .arg(i18n::t("popup.kline.hoverMarketCap", language), daily_kline::formatAmount(marketValue));
-        const int periodWidth = qMin(headerRect.width(), headerMetrics.horizontalAdvance(titleBody));
-        const int gap = headerMetrics.horizontalAdvance(QStringLiteral("  "));
-        const int statsRoom = qMax(0, headerRect.width() - periodWidth - gap);
-        p.drawText(QRect(headerRect.left(), headerRect.top(), statsRoom, headerRect.height()),
-            Qt::AlignLeft | Qt::AlignVCenter,
-            headerMetrics.elidedText(stats, Qt::ElideRight, statsRoom));
-        p.drawText(QRect(headerRect.right() - periodWidth + 1, headerRect.top(), periodWidth,
-                headerRect.height()),
-            Qt::AlignRight | Qt::AlignVCenter, titleBody);
+        p.drawText(headerRect, Qt::AlignLeft | Qt::AlignVCenter,
+            headerMetrics.elidedText(stats, Qt::ElideRight, headerRect.width()));
     }
 
     QMap<int, QVector<double>> averages;
@@ -550,7 +552,8 @@ void DailyKlineChart::paintEvent(QPaintEvent*) {
         const auto& bar = m_bars[i];
         const QColor color = bar.close >= bar.open ? m_cfg.timelineChartUpColor : m_cfg.timelineChartDownColor;
         p.setPen(QPen(color, 1));
-        p.setBrush(bar.close > bar.open ? Qt::NoBrush : QBrush(color));
+        p.setBrush(daily_kline::candleBodyFilled(m_cfg.timelineChartCandleStyle, bar.open, bar.close)
+            ? QBrush(color) : QBrush(Qt::NoBrush));
         p.drawLine(QPointF(x(i), y(bar.high)), QPointF(x(i), y(bar.low)));
         const double top = std::min(y(bar.open), y(bar.close));
         p.drawRect(QRectF(x(i) - candleWidth / 2, top, candleWidth,

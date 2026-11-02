@@ -4,6 +4,7 @@
 #include <QApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QNativeGestureEvent>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QFile>
@@ -194,6 +195,12 @@ int main(int argc, char** argv) {
         "An empty series must produce an empty view instead of a phantom candle");
     check(daily_kline::zoomView({249, 60}, 309, 279.0, 100.0).count == 309,
         "Zooming out must stop at the loaded history");
+    check(daily_kline::pinchZoomFactor(0.0) == 1.0
+        && daily_kline::pinchZoomFactor(0.1) < 1.0
+        && daily_kline::pinchZoomFactor(-0.1) > 1.0
+        && daily_kline::pinchZoomFactor(10.0) == std::pow(0.9, 1.0)
+        && daily_kline::pinchZoomFactor(-10.0) == std::pow(0.9, -1.0),
+        "Trackpad magnification must map to the wheel's zoom direction and rate");
     check(daily_kline::clampView({-20, 5000}, 309).start == 0
         && daily_kline::clampView({-20, 5000}, 309).count == 309,
         "A stale view must be clamped to the loaded bars after a reload");
@@ -205,6 +212,13 @@ int main(int argc, char** argv) {
     check(std::abs(daily_kline::candleWidth(8.0) - 5.6) < 1e-8
         && daily_kline::candleWidth(80.0) == 24.0,
         "Sparse daily histories must use readable but bounded candle widths");
+    check(!daily_kline::candleBodyFilled(QStringLiteral("hollow"), 4.1, 4.2)
+        && daily_kline::candleBodyFilled(QStringLiteral("hollow"), 4.2, 4.1)
+        && daily_kline::candleBodyFilled(QStringLiteral("hollow"), 4.2, 4.2)
+        && daily_kline::candleBodyFilled(QStringLiteral("solid"), 4.1, 4.2)
+        && daily_kline::candleBodyFilled(QStringLiteral("solid"), 4.2, 4.1)
+        && !daily_kline::candleBodyFilled(QStringLiteral("diagonal"), 4.1, 4.2),
+        "Hollow candles must only fill falling bodies; solid candles fill both directions");
     // Header statistics: amount formatting, amplitude against the previous
     // close, and market value from the 10k-share count.
     check(daily_kline::formatAmount(2.4e8) == QStringLiteral("2.40亿")
@@ -370,6 +384,50 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 80; ++i) wheel(plotCenter, -120);
     check(daily->property("viewCount").toInt() == 300,
         "Zooming out must stop at the loaded history instead of the configured range");
+    // A Mac trackpad pinch reaches the chart as a native zoom gesture, with the
+    // magnification increment in value().
+    const auto pinch = [&](double magnification, const QPoint& pos) {
+        QNativeGestureEvent gesture(Qt::ZoomNativeGesture, QPointingDevice::primaryPointingDevice(), 2,
+            QPointF(pos), QPointF(pos), QPointF(timeline.mapToGlobal(pos)),
+            magnification, QPointF());
+        QApplication::sendEvent(&timeline, &gesture);
+    };
+    const int beforePinch = daily->property("viewCount").toInt();
+    pinch(0.12, plotCenter);
+    const int pinchedIn = daily->property("viewCount").toInt();
+    check(pinchedIn < beforePinch && pinchedIn >= daily_kline::kMinViewCount,
+        "Pinching out must zoom in to fewer candles");
+    pinch(-0.12, plotCenter);
+    check(daily->property("viewCount").toInt() > pinchedIn,
+        "Pinching in must zoom back out");
+    pinch(0.0, plotCenter);
+    check(daily->property("viewCount").toInt() == 300,
+        "A zero-magnification gesture must leave the view untouched");
+    for (int i = 0; i < 40; ++i) pinch(0.2, plotCenter);
+    check(daily->property("viewCount").toInt() == daily_kline::kMinViewCount,
+        "Pinching in must honour the readable minimum");
+    // Solid candle bodies must visibly fill rising candles that the default
+    // hollow style leaves empty.
+    const auto countUpPixels = [](const QImage& image) {
+        int count = 0;
+        const QColor upColor = AppConfig{}.timelineChartUpColor;
+        for (int y = 0; y < image.height(); ++y) {
+            for (int x = 0; x < image.width(); ++x) {
+                if (image.pixelColor(x, y) == upColor) ++count;
+            }
+        }
+        return count;
+    };
+    cfg.timelineChartCandleStyle = QStringLiteral("hollow");
+    daily->setContext(cfg, "1.600000", "Drag fixture");
+    const int hollowPixels = countUpPixels(daily->grab().toImage());
+    cfg.timelineChartCandleStyle = QStringLiteral("solid");
+    daily->setContext(cfg, "1.600000", "Drag fixture");
+    const int solidPixels = countUpPixels(daily->grab().toImage());
+    check(solidPixels > hollowPixels,
+        "Solid candle style must fill rising bodies the hollow style leaves empty");
+    cfg.timelineChartCandleStyle = QStringLiteral("hollow");
+    daily->setContext(cfg, "1.600000", "Drag fixture");
     daily->setPinnedDaily(false);
     check(daily->isHidden() && timeline.cursor().shape() == Qt::ArrowCursor,
         "Leaving daily mode must restore the normal cursor");

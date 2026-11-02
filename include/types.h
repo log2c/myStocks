@@ -228,6 +228,13 @@ inline QString normalizeQuoteSource(const QString& source) {
     return QStringLiteral("tdx");
 }
 
+// K-line candle bodies: "hollow" keeps rising candles unfilled, "solid" fills
+// both directions. Anything unknown falls back to the traditional hollow look.
+inline QString normalizeTimelineCandleStyle(const QString& rawStyle) {
+    const QString style = rawStyle.trimmed().toLower();
+    return style == QLatin1String("solid") ? style : QStringLiteral("hollow");
+}
+
 inline QVector<int> normalizeDailyKlineMAPeriods(const QVector<int>& periods) {
     QVector<int> normalized;
     for (int period : {5, 10, 20, 30, 60, 120, 250}) {
@@ -357,6 +364,7 @@ struct AppConfig {
     bool marketBreadthEnabled = true;
     int marketBreadthRefreshSecs = 10;
     bool timelineChartFixedRangeEnabled = false;
+    QString timelineChartCandleStyle = "hollow";
     QColor timelineChartBgColor = QColor(14, 18, 24, 238);
     QColor timelineChartGridColor = QColor(255, 255, 255, 45);
     QColor timelineChartPriceLineColor = QColor("#3cb2ef");
