@@ -765,34 +765,29 @@ void AppController::loadExtraWatchItems() {
     m_indexes.reserve(decodedIndexes.size());
 
     QSet<QString> indexSeen;
-    bool migratedStarIndex = false;
     for (const StockItem& index : decodedIndexes) {
-        QString normalizedCode = normalizeApiWatchCode(index.code);
-        QString displayName = index.name.trimmed();
-        if (normalizedCode == QStringLiteral("1.000688")
-            || normalizedCode == QStringLiteral("tdx:main:1:000688")) {
-            normalizedCode = QStringLiteral("1.000680");
-            displayName = QStringLiteral("科创综指");
-            migratedStarIndex = true;
-        }
+        const QString normalizedCode = normalizeApiWatchCode(index.code);
         if (!watchlist_utils::isTdxCompatibleCode(normalizedCode) || !isPredefinedIndexCode(normalizedCode)) {
             continue;
         }
 
-        const QString key = normalizedCode == QStringLiteral("tdx:main:1:000680")
-            ? QStringLiteral("1.000680") : watchCodeKey(normalizedCode);
+        QString key = watchCodeKey(normalizedCode);
+        if (normalizedCode == QStringLiteral("tdx:main:1:000680")) {
+            key = QStringLiteral("1.000680");
+        } else if (normalizedCode == QStringLiteral("tdx:main:1:000688")) {
+            key = QStringLiteral("1.000688");
+        }
         if (indexSeen.contains(key)) {
             continue;
         }
         indexSeen.insert(key);
 
-        m_indexes.push_back({normalizedCode, displayName});
+        m_indexes.push_back({normalizedCode, index.name.trimmed()});
     }
 
     if (!hasStoredIndexes && m_indexes.isEmpty()) {
         m_indexes = defaultCommonIndexes();
     }
-    if (migratedStarIndex) saveExtraWatchItems();
 }
 
 void AppController::saveExtraWatchItems() const {

@@ -121,6 +121,7 @@ const QVector<IndexPreset>& indexPresets() {
         {QStringLiteral("tdx:main:1:000001"), QStringLiteral("上证指数"), QStringLiteral("沪市主板综合指数")},
         {QStringLiteral("tdx:main:0:399001"), QStringLiteral("深证成指"), QStringLiteral("深市核心宽基指数")},
         {QStringLiteral("tdx:main:0:399006"), QStringLiteral("创业板指"), QStringLiteral("创业板市场代表指数")},
+        {QStringLiteral("1.000688"), QStringLiteral("科创50"), QStringLiteral("科创板50只证券代表指数")},
         {QStringLiteral("1.000680"), QStringLiteral("科创综指"), QStringLiteral("科创板综合指数")},
         {QStringLiteral("tdx:main:1:000300"), QStringLiteral("沪深300"), QStringLiteral("沪深两市核心蓝筹")},
         {QStringLiteral("tdx:main:1:000905"), QStringLiteral("中证500"), QStringLiteral("A股中盘代表指数")},

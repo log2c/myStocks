@@ -1339,15 +1339,20 @@ public:
                 const auto originalIndexes = settings->value(app_constants::kWatchIndexesKey);
                 settings->setValue(app_constants::kWatchIndexesKey, QStringList{
                     "1.000001\tLegacy index", "tdx:main:1:000688\t科创50",
-                    "1.000688\t科创50", "tdx:main:1:000680\t科创综指", "90.BK0420\tLegacy board"});
+                    "1.000688\t科创50", "tdx:main:1:000680\t科创综指",
+                    "1.000680\t科创综指", "90.BK0420\tLegacy board"});
                 controller.loadExtraWatchItems();
-                check(controller.m_indexes.size() == 2 && controller.m_indexes[0].code == "1.000001"
-                    && controller.m_indexes[1].code == "1.000680" && controller.m_indexes[1].name == "科创综指",
-                    "Saved STAR 50 selections must migrate in place and deduplicate STAR Composite formats");
+                check(controller.m_indexes.size() == 3 && controller.m_indexes[0].code == "1.000001"
+                    && controller.m_indexes[1].code == "tdx:main:1:000688"
+                    && controller.m_indexes[1].name == "科创50"
+                    && controller.m_indexes[2].code == "tdx:main:1:000680"
+                    && controller.m_indexes[2].name == "科创综指",
+                    "STAR 50 and STAR Composite selections must remain distinct and deduplicate identifier formats");
                 const auto migrated = settings->value(app_constants::kWatchIndexesKey).toStringList();
-                check(migrated.contains("1.000680\t科创综指") && migrated.contains("90.BK0420\tLegacy board")
-                    && !migrated.join("|").contains("000688"),
-                    "Index replacement must persist while preserving unsupported saved selections");
+                check(migrated.contains("tdx:main:1:000688\t科创50")
+                    && migrated.contains("tdx:main:1:000680\t科创综指")
+                    && migrated.contains("90.BK0420\tLegacy board"),
+                    "STAR index selections must persist while preserving unsupported saved selections");
                 settings->remove(app_constants::kWatchIndexesKey);
                 controller.loadExtraWatchItems();
                 check(controller.m_indexes.size() == 4 && controller.m_indexes[2].code == "1.000680"
